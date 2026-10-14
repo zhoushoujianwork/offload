@@ -4,23 +4,28 @@ import (
 	"bufio"
 	"encoding/json"
 	"errors"
+	"math"
 	"os"
 	"path/filepath"
 )
 
 // Record is one line of the run log.
 type Record struct {
-	TS         string  `json:"ts"`
-	Status     string  `json:"status"` // ok | error | timeout
-	Profile    string  `json:"profile"`
-	Model      string  `json:"model"`
-	Dir        string  `json:"dir"`
-	Task       string  `json:"task"`
-	Session    string  `json:"session"`
-	Turns      int     `json:"turns"`
-	CostUSD    float64 `json:"cost_usd"`
-	DurationMs int64   `json:"duration_ms"`
-	Result     string  `json:"result"`
+	TS             string   `json:"ts"`
+	Status         string   `json:"status"` // ok | error | timeout
+	ExitCode       *int     `json:"exit_code"`
+	Profile        string   `json:"profile"`
+	Model          string   `json:"model"`
+	Dir            string   `json:"dir"`
+	Task           string   `json:"task"`
+	Session        string   `json:"session"`
+	Turns          int      `json:"turns"`
+	CostUSD        *float64 `json:"cost_usd"` // worker estimate, never verified billing; nil means unavailable
+	CostIsEstimate bool     `json:"cost_is_estimate"`
+	DurationMs     int64    `json:"duration_ms"` // duration reported by the worker (legacy field)
+	ElapsedMs      *int64   `json:"elapsed_ms"`  // measured end-to-end, including setup; nil for older records
+	Result         string   `json:"result"`
+	Error          string   `json:"error,omitempty"`
 }
 
 func historyPath() string {
@@ -64,6 +69,12 @@ func readRecords(path string) ([]Record, error) {
 	for sc.Scan() {
 		var r Record
 		if json.Unmarshal(sc.Bytes(), &r) == nil {
+			// Old versions serialized missing costs as zero. Without the new marker,
+			// an old zero is ambiguous and must not be presented as a known estimate.
+			if r.CostUSD != nil && (!validCost(*r.CostUSD) || (!r.CostIsEstimate && *r.CostUSD == 0)) {
+				r.CostUSD = nil
+			}
+			r.CostIsEstimate = true
 			rs = append(rs, r)
 		}
 	}
@@ -78,4 +89,8 @@ func bySession(rs []Record, session string) []Record {
 		}
 	}
 	return out
+}
+
+func validCost(cost float64) bool {
+	return cost >= 0 && !math.IsNaN(cost) && !math.IsInf(cost, 0)
 }

@@ -29,8 +29,22 @@ func setup(t *testing.T, reply string) (work, record string) {
 	fake := filepath.Join(tmp, "claude")
 	script := "#!/bin/sh\n" +
 		"{ printf '%s\\n' \"$@\"; echo \"ENV token=$ANTHROPIC_AUTH_TOKEN base=$ANTHROPIC_BASE_URL model=$ANTHROPIC_MODEL key=$ANTHROPIC_API_KEY hdr=$ANTHROPIC_CUSTOM_HEADERS pwd=$(pwd -P)\"; } > " + record + "\n" +
+		"prompt_file=''; inline_prompt=0; previous=''\n" +
+		"for arg in \"$@\"; do\n" +
+		"  [ \"$previous\" = '--append-system-prompt-file' ] && prompt_file=$arg\n" +
+		"  [ \"$arg\" = '--append-system-prompt' ] && inline_prompt=1\n" +
+		"  previous=$arg\n" +
+		"done\n" +
+		"if [ -n \"$prompt_file\" ] && [ \"$inline_prompt\" = 1 ]; then echo 'Cannot use both append prompt flags' >&2; exit 9; fi\n" +
+		"if [ -n \"$prompt_file\" ]; then\n" +
+		"  printf '%s\\n' \"$prompt_file\" > '" + record + ".prompt-path'\n" +
+		"  cat \"$prompt_file\" > '" + record + ".prompt'\n" +
+		"  ls -l \"$prompt_file\" > '" + record + ".prompt-mode'\n" +
+		"fi\n" +
 		"[ -n \"$FAKE_SLEEP\" ] && sleep \"$FAKE_SLEEP\"\n" +
-		"cat <<'EOF'\n" + reply + "\nEOF\n"
+		"[ -n \"$FAKE_STDERR\" ] && printf '%s\\n' \"$FAKE_STDERR\" >&2\n" +
+		"cat <<'EOF'\n" + reply + "\nEOF\n" +
+		"exit \"${FAKE_EXIT:-0}\"\n"
 	if err := os.WriteFile(fake, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -69,11 +83,15 @@ func TestRunReadOnlyPrintsReportAndIsolatesCredentials(t *testing.T) {
 	}
 	rec, _ := os.ReadFile(record)
 	got := string(rec)
-	for _, want := range []string{"--bare", "find the bug", "Read-only task",
+	for _, want := range []string{"--bare", "find the bug",
 		"token=tok-123 base=https://gw.example/anthropic model=m-1 key= hdr= pwd=" + work} {
 		if !strings.Contains(got, want) {
 			t.Errorf("argv/env missing %q in:\n%s", want, got)
 		}
+	}
+	prompt, err := os.ReadFile(record + ".prompt")
+	if err != nil || !strings.Contains(string(prompt), "Read-only task") {
+		t.Fatalf("read-only instruction missing from merged prompt: %q err=%v", prompt, err)
 	}
 	if strings.Contains(got, "tok-123\n") || strings.Contains(got, "caller-") {
 		t.Errorf("token leaked into argv or caller credential reached worker:\n%s", got)
@@ -90,10 +108,14 @@ func TestWriteModeAndProjectInstructions(t *testing.T) {
 		t.Fatal(e)
 	}
 	rec, _ := os.ReadFile(record)
-	for _, want := range []string{"acceptEdits", "Bash(go test:*)", filepath.Join(work, "AGENTS.md")} {
+	for _, want := range []string{"acceptEdits", "Bash(go test:*)"} {
 		if !strings.Contains(string(rec), want) {
 			t.Errorf("missing %q", want)
 		}
+	}
+	prompt, err := os.ReadFile(record + ".prompt")
+	if err != nil || !strings.Contains(string(prompt), filepath.Join(work, "AGENTS.md")) || !strings.Contains(string(prompt), "rules") || strings.Contains(string(prompt), "Read-only task") {
+		t.Fatalf("write-mode project instructions: %q err=%v", prompt, err)
 	}
 	if strings.Contains(string(rec), "Bash(git push") || strings.Contains(string(rec), "Bash(rm") {
 		t.Error("write mode must not allow push or rm")
