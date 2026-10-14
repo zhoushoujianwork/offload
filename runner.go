@@ -37,38 +37,71 @@ type RunOpts struct {
 	Task        string
 	Budget      float64
 	Timeout     time.Duration
+	StartedAt   time.Time
 }
 
 // claudeResult is the subset of `claude -p --output-format json` we use.
 type claudeResult struct {
-	Result     string  `json:"result"`
-	IsError    bool    `json:"is_error"`
-	NumTurns   int     `json:"num_turns"`
-	CostUSD    float64 `json:"total_cost_usd"`
-	DurationMs int64   `json:"duration_ms"`
-	SessionID  string  `json:"session_id"`
+	Result     string   `json:"result"`
+	IsError    bool     `json:"is_error"`
+	NumTurns   int      `json:"num_turns"`
+	CostUSD    *float64 `json:"total_cost_usd"`
+	DurationMs int64    `json:"duration_ms"`
+	SessionID  string   `json:"session_id"`
 }
 
-func buildArgs(o RunOpts) []string {
+func buildArgs(o RunOpts, promptPath string) []string {
 	// Gateway, token and model reach the worker only through env (see childEnv), never argv.
 	args := []string{"-p", "--bare", "--output-format", "json", "--max-budget-usd", fmt.Sprint(o.Budget)}
 	if o.Resume != "" {
 		args = append(args, "--resume", o.Resume)
 	}
-	// --bare skips CLAUDE.md discovery; hand the worker the project's own instructions explicitly.
-	for _, f := range []string{"CLAUDE.md", "AGENTS.md"} {
-		if p := filepath.Join(o.Dir, f); fileExists(p) {
-			args = append(args, "--append-system-prompt-file", p)
-		}
-	}
-	sys := workerPrompt
+
 	if o.Write {
 		args = append(args, "--permission-mode", "acceptEdits", "--allowedTools", writeTools)
 	} else {
-		sys += "\nRead-only task: do not modify files."
 		args = append(args, "--allowedTools", readOnlyTools)
 	}
-	return append(args, "--append-system-prompt", sys, o.Task)
+	return append(args, "--append-system-prompt-file", promptPath, o.Task)
+}
+
+// writeWorkerPrompt combines explicit project instructions and delegated-task constraints.
+// Claude accepts only one append prompt mechanism; a private file keeps its contents out of argv.
+func writeWorkerPrompt(o RunOpts) (string, error) {
+	var prompt strings.Builder
+	// --bare skips project instruction discovery, so read the files explicitly.
+	for _, name := range []string{"CLAUDE.md", "AGENTS.md"} {
+		path := filepath.Join(o.Dir, name)
+		contents, err := os.ReadFile(path)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return "", fmt.Errorf("read project instructions %s: %w", path, err)
+		}
+		fmt.Fprintf(&prompt, "Project instructions from %s:\n%s\n\n", path, contents)
+	}
+	prompt.WriteString(workerPrompt)
+	if !o.Write {
+		prompt.WriteString("\nRead-only task: do not modify files.")
+	}
+	prompt.WriteByte('\n')
+
+	f, err := os.CreateTemp("", "offload-prompt-*.md") // CreateTemp uses mode 0600.
+	if err != nil {
+		return "", fmt.Errorf("create worker prompt: %w", err)
+	}
+	path := f.Name()
+	if _, err := f.WriteString(prompt.String()); err != nil {
+		f.Close()
+		os.Remove(path)
+		return "", fmt.Errorf("write worker prompt: %w", err)
+	}
+	if err := f.Close(); err != nil {
+		os.Remove(path)
+		return "", fmt.Errorf("close worker prompt: %w", err)
+	}
+	return path, nil
 }
 
 // childEnv makes the profile the worker's only gateway: every caller ANTHROPIC_* variable is
@@ -96,9 +129,31 @@ func claudeBin() (string, error) {
 }
 
 // run executes the worker and always returns a Record describing what happened.
-func run(ctx context.Context, o RunOpts) (Record, error) {
-	rec := Record{TS: time.Now().Format("2006-01-02 15:04:05"), Profile: o.ProfileName, Model: o.Model,
-		Dir: o.Dir, Task: o.Task, Status: "error"}
+func run(ctx context.Context, o RunOpts) (rec Record, err error) {
+	started := o.StartedAt
+	if started.IsZero() {
+		started = time.Now()
+	}
+	rec = Record{TS: started.Format("2006-01-02 15:04:05"), Profile: o.ProfileName, Model: o.Model,
+		Dir: o.Dir, Task: o.Task, Status: "error", CostIsEstimate: true}
+	defer func() {
+		elapsed := time.Since(started).Milliseconds()
+		rec.ElapsedMs = &elapsed
+		code := 1
+		if err != nil {
+			code, rec.Error, rec.Result = 2, err.Error(), err.Error()
+		} else if rec.Status == "ok" {
+			code = 0
+		} else if rec.Status == "timeout" {
+			code = 124
+		}
+		rec.ExitCode = &code
+	}()
+	promptPath, err := writeWorkerPrompt(o)
+	if err != nil {
+		return rec, err
+	}
+	defer os.Remove(promptPath)
 	token, err := o.Profile.token()
 	if err != nil {
 		return rec, err
@@ -112,29 +167,46 @@ func run(ctx context.Context, o RunOpts) (Record, error) {
 	}
 	ctx, cancel := context.WithTimeout(ctx, o.Timeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, bin, buildArgs(o)...)
+	cmd := exec.CommandContext(ctx, bin, buildArgs(o, promptPath)...)
 	cmd.Dir = o.Dir
 	cmd.Env = childEnv(os.Environ(), o, token)
-	var out bytes.Buffer
-	cmd.Stdout, cmd.Stderr = &out, os.Stderr
+	var out, workerErr bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &out, &workerErr
+	// Do not wait indefinitely for a worker descendant to close inherited pipes.
+	cmd.WaitDelay = 100 * time.Millisecond
 	runErr := cmd.Run()
 
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 		rec.Status, rec.Result = "timeout", fmt.Sprintf("timed out after %s", o.Timeout)
+		rec.Error = rec.Result
 		return rec, nil
 	}
 	var res claudeResult
 	if err := json.Unmarshal(out.Bytes(), &res); err != nil {
 		rec.Result = strings.TrimSpace(out.String())
+		if rec.Result == "" {
+			rec.Result = strings.TrimSpace(workerErr.String())
+		}
 		if rec.Result == "" && runErr != nil {
 			rec.Result = runErr.Error()
+		}
+		rec.Error = "worker returned invalid JSON"
+		if runErr != nil {
+			rec.Error += ": " + runErr.Error()
 		}
 		return rec, nil
 	}
 	rec.Session, rec.Turns, rec.CostUSD, rec.DurationMs, rec.Result =
 		res.SessionID, res.NumTurns, res.CostUSD, res.DurationMs, res.Result
+	if rec.CostUSD != nil && !validCost(*rec.CostUSD) {
+		rec.CostUSD = nil
+	}
 	if !res.IsError && runErr == nil {
 		rec.Status = "ok"
+	} else if runErr != nil {
+		rec.Error = runErr.Error()
+	} else {
+		rec.Error = "worker reported an error"
 	}
 	return rec, nil
 }

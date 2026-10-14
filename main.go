@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -26,6 +27,7 @@ usage:
   offload ls [n]                list the last n runs (default 10)
   offload show <session>        print every report of a session
   offload profiles              list profiles (* = the one a run would use)
+  offload install-agent [flags] install proactive instructions for a host agent
   offload version
 
 flags:
@@ -44,6 +46,8 @@ func realMain(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 			return cmdShow(args[1:], stdout, stderr)
 		case "profiles":
 			return cmdProfiles(stdout, stderr)
+		case "install-agent":
+			return cmdInstallAgent(args[1:], stdout, stderr)
 		case "version":
 			fmt.Fprintln(stdout, version)
 			return 0
@@ -53,6 +57,7 @@ func realMain(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 }
 
 func cmdRun(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
+	started := time.Now()
 	fs := flag.NewFlagSet("offload", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = func() { fmt.Fprint(stderr, usage); fs.PrintDefaults() }
@@ -63,6 +68,7 @@ func cmdRun(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	dir := fs.String("d", "", "working directory (default: cwd)")
 	timeout := fs.Duration("t", 15*time.Minute, "timeout")
 	budget := fs.Float64("budget", envFloat("OFFLOAD_BUDGET", 0.5), "max USD per run ($OFFLOAD_BUDGET)")
+	jsonOutput := fs.Bool("json", false, "print one structured run result instead of plain report")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -76,41 +82,83 @@ func cmdRun(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return 2
 	}
 
+	logPath := historyPath()
+	rec := Record{TS: started.Format("2006-01-02 15:04:05"), Status: "error", Profile: *profile,
+		Model: *model, Dir: *dir, Task: task, CostIsEstimate: true}
+	failRun := func(err error) int {
+		code := 2
+		rec.ExitCode, rec.Error, rec.Result = &code, err.Error(), err.Error()
+		elapsed := time.Since(started).Milliseconds()
+		rec.ElapsedMs = &elapsed
+		return printRun(rec, logPath, *jsonOutput, stdout, stderr)
+	}
 	cfg, err := loadConfig(configPath())
 	if err != nil {
-		return fail(stderr, err)
+		return failRun(err)
 	}
 	name, prof, err := cfg.profile(*profile)
+	rec.Profile, rec.Model = name, firstNonEmpty(*model, prof.Model)
 	if err != nil {
-		return fail(stderr, err)
+		return failRun(err)
 	}
-	logPath := historyPath()
 	wd, err := resolveDir(*dir, *resume, logPath)
 	if err != nil {
-		return fail(stderr, err)
+		return failRun(err)
 	}
 	o := RunOpts{ProfileName: name, Profile: prof, Model: firstNonEmpty(*model, prof.Model), Write: *write,
-		Resume: *resume, Dir: wd, Task: task, Budget: *budget, Timeout: *timeout}
+		Resume: *resume, Dir: wd, Task: task, Budget: *budget, Timeout: *timeout, StartedAt: started}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
-	rec, err := run(ctx, o)
-	if err != nil {
-		return fail(stderr, err)
-	}
+	rec, _ = run(ctx, o)
+	return printRun(rec, logPath, *jsonOutput, stdout, stderr)
+}
+
+func printRun(rec Record, logPath string, jsonOutput bool, stdout, stderr io.Writer) int {
+	warning := ""
 	if err := appendRecord(logPath, rec); err != nil {
-		fmt.Fprintln(stderr, "offload: warning: run log not written:", err)
+		warning = " warning=" + oneLine("run log not written: "+err.Error())
 	}
-	fmt.Fprintln(stdout, rec.Result)
-	fmt.Fprintf(stderr, "[offload] %s %s/%s turns=%d cost=$%.4f secs=%.0f session=%s\n",
-		rec.Status, rec.Profile, rec.Model, rec.Turns, rec.CostUSD, float64(rec.DurationMs)/1000, rec.Session)
-	switch rec.Status {
-	case "ok":
-		return 0
-	case "timeout":
-		return 124
+	if jsonOutput {
+		if err := json.NewEncoder(stdout).Encode(rec); err != nil {
+			fmt.Fprintln(stderr, "offload: write JSON result:", err)
+			return 2
+		}
+	} else {
+		fmt.Fprintln(stdout, rec.Result)
+	}
+	errText := ""
+	if rec.Error != "" {
+		errText = " error=" + oneLine(rec.Error)
+	}
+	fmt.Fprintf(stderr, "[offload] %s exit_code=%s %s/%s turns=%d estimated_cost=%s elapsed=%s session=%s%s%s\n",
+		rec.Status, exitText(rec), rec.Profile, rec.Model, rec.Turns, costText(rec), elapsedText(rec),
+		firstNonEmpty(rec.Session, "-"), errText, warning)
+	if rec.ExitCode != nil {
+		return *rec.ExitCode
 	}
 	return 1
+}
+
+func costText(rec Record) string {
+	if rec.CostUSD == nil {
+		return "unknown"
+	}
+	return fmt.Sprintf("$%.4f", *rec.CostUSD)
+}
+
+func elapsedText(rec Record) string {
+	if rec.ElapsedMs == nil {
+		return "unknown"
+	}
+	return fmt.Sprintf("%.3fs", float64(*rec.ElapsedMs)/1000)
+}
+
+func exitText(rec Record) string {
+	if rec.ExitCode == nil {
+		return "unknown"
+	}
+	return strconv.Itoa(*rec.ExitCode)
 }
 
 // resolveDir picks the worker's cwd. Claude stores sessions per directory, so a resume
@@ -155,7 +203,8 @@ func cmdList(args []string, stdout, stderr io.Writer) int {
 		rs = rs[len(rs)-n:]
 	}
 	for _, r := range rs {
-		fmt.Fprintf(stdout, "%s  %-7s %-10s $%-7.4f %-36s %s | %s\n", r.TS, r.Status, r.Profile, r.CostUSD,
+		fmt.Fprintf(stdout, "%s  %-7s exit_code=%s %s/%s turns=%d estimated_cost=%s elapsed=%s session=%s %s | %s\n",
+			r.TS, r.Status, exitText(r), r.Profile, r.Model, r.Turns, costText(r), elapsedText(r),
 			firstNonEmpty(r.Session, "-"), r.Dir, truncate(oneLine(r.Task), 60))
 	}
 	return 0
@@ -174,7 +223,8 @@ func cmdShow(args []string, stdout, stderr io.Writer) int {
 		return fail(stderr, fmt.Errorf("no run with session %s", args[0]))
 	}
 	for _, r := range hit {
-		fmt.Fprintf(stdout, "## %s %s %s/%s %s\n> %s\n\n%s\n\n", r.TS, r.Status, r.Profile, r.Model, r.Dir, r.Task, r.Result)
+		fmt.Fprintf(stdout, "## %s %s %s/%s %s\nexit_code=%s turns=%d estimated_cost=%s elapsed=%s session=%s\n> %s\n\n%s\n\n",
+			r.TS, r.Status, r.Profile, r.Model, r.Dir, exitText(r), r.Turns, costText(r), elapsedText(r), r.Session, r.Task, r.Result)
 	}
 	return 0
 }
