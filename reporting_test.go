@@ -140,6 +140,54 @@ func TestFailedWorkerAndTimeoutMetrics(t *testing.T) {
 	})
 }
 
+func TestStructuredWorkerErrorsAreRetained(t *testing.T) {
+	for _, tc := range []struct {
+		name, reply, wantResult, wantError string
+	}{
+		{
+			"budget exhausted without report",
+			`{"is_error":true,"subtype":"error_max_budget_usd","errors":["Reached maximum budget ($0.2)"],"session_id":"budget-session","num_turns":11,"total_cost_usd":0.2069}`,
+			"error_max_budget_usd: Reached maximum budget ($0.2)",
+			"error_max_budget_usd: Reached maximum budget ($0.2)",
+		},
+		{
+			"error with partial report",
+			`{"is_error":true,"result":"PARTIAL","subtype":"error_during_execution","errors":[" first error ","","second error"],"session_id":"budget-session"}`,
+			"PARTIAL", "error_during_execution: first error; second error",
+		},
+		{
+			"subtype without details",
+			`{"is_error":true,"subtype":"error_max_turns","session_id":"budget-session"}`,
+			"error_max_turns: worker reported an error", "error_max_turns: worker reported an error",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			work, _ := setup(t, tc.reply)
+			t.Setenv("FAKE_EXIT", "1")
+			code, out, errOut := runCLI("-json", "-d", work, "check")
+			rec := decodeRun(t, out)
+			if code != 1 || rec.Status != "error" || rec.Error != tc.wantError || rec.Result != tc.wantResult || !strings.Contains(errOut, tc.wantError) {
+				t.Fatalf("structured error lost: code=%d rec=%+v stderr=%q", code, rec, errOut)
+			}
+			if tc.name == "budget exhausted without report" && (rec.Turns != 11 || rec.CostUSD == nil || *rec.CostUSD != 0.2069) {
+				t.Fatalf("budget error lost metrics: %+v", rec)
+			}
+			rs, err := readRecords(historyPath())
+			if err != nil || len(rs) != 1 || rs[0].Error != tc.wantError {
+				t.Fatalf("history lost error: %+v err=%v", rs, err)
+			}
+			_, report, _ := runCLI("show", "budget-session")
+			if !strings.Contains(report, tc.wantResult) {
+				t.Fatalf("history report lost: %q", report)
+			}
+			_, report, _ = runCLI("-d", work, "check")
+			if strings.TrimSpace(report) != tc.wantResult {
+				t.Fatalf("plain report lost: %q", report)
+			}
+		})
+	}
+}
+
 func TestSetupErrorsHaveStructuredMetrics(t *testing.T) {
 	for _, tc := range []struct {
 		name   string

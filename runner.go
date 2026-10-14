@@ -44,6 +44,8 @@ type RunOpts struct {
 type claudeResult struct {
 	Result     string   `json:"result"`
 	IsError    bool     `json:"is_error"`
+	Subtype    string   `json:"subtype"`
+	Errors     []string `json:"errors"`
 	NumTurns   int      `json:"num_turns"`
 	CostUSD    *float64 `json:"total_cost_usd"`
 	DurationMs int64    `json:"duration_ms"`
@@ -52,7 +54,9 @@ type claudeResult struct {
 
 func buildArgs(o RunOpts, promptPath string) []string {
 	// Gateway, token and model reach the worker only through env (see childEnv), never argv.
-	args := []string{"-p", "--bare", "--output-format", "json", "--max-budget-usd", fmt.Sprint(o.Budget)}
+	// --bare still loads settings; disable user/project/local sources so their env cannot
+	// override the selected profile's gateway, credentials or model.
+	args := []string{"-p", "--bare", "--setting-sources", "", "--output-format", "json", "--max-budget-usd", fmt.Sprint(o.Budget)}
 	if o.Resume != "" {
 		args = append(args, "--resume", o.Resume)
 	}
@@ -105,8 +109,8 @@ func writeWorkerPrompt(o RunOpts) (string, error) {
 }
 
 // childEnv makes the profile the worker's only gateway: every caller ANTHROPIC_* variable is
-// dropped, then exactly base URL, token and model are set. --bare ignores ~/.claude/settings.json,
-// so nothing overrides these.
+// dropped, then exactly base URL, token and model are set. buildArgs disables settings sources
+// so user/project/local settings cannot override these.
 func childEnv(base []string, o RunOpts, token string) []string {
 	env := make([]string, 0, len(base)+3)
 	for _, kv := range base {
@@ -203,10 +207,28 @@ func run(ctx context.Context, o RunOpts) (rec Record, err error) {
 	}
 	if !res.IsError && runErr == nil {
 		rec.Status = "ok"
-	} else if runErr != nil {
-		rec.Error = runErr.Error()
 	} else {
-		rec.Error = "worker reported an error"
+		for _, message := range res.Errors {
+			if message = strings.TrimSpace(message); message != "" {
+				if rec.Error != "" {
+					rec.Error += "; "
+				}
+				rec.Error += message
+			}
+		}
+		if res.Subtype != "" && res.Subtype != "success" {
+			rec.Error = res.Subtype + ": " + firstNonEmpty(rec.Error, "worker reported an error")
+		}
+		if rec.Error == "" {
+			if runErr != nil {
+				rec.Error = runErr.Error()
+			} else {
+				rec.Error = "worker reported an error"
+			}
+		}
+		if rec.Result == "" {
+			rec.Result = rec.Error
+		}
 	}
 	return rec, nil
 }

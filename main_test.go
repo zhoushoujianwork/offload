@@ -83,7 +83,7 @@ func TestRunReadOnlyPrintsReportAndIsolatesCredentials(t *testing.T) {
 	}
 	rec, _ := os.ReadFile(record)
 	got := string(rec)
-	for _, want := range []string{"--bare", "find the bug",
+	for _, want := range []string{"--bare", "--setting-sources\n\n--output-format", "find the bug",
 		"token=tok-123 base=https://gw.example/anthropic model=m-1 key= hdr= pwd=" + work} {
 		if !strings.Contains(got, want) {
 			t.Errorf("argv/env missing %q in:\n%s", want, got)

@@ -57,7 +57,7 @@ A profile is just the three variables Claude Code reads. For each run, offload d
 | `token` / `token_cmd` | `ANTHROPIC_AUTH_TOKEN` (sent as `Authorization: Bearer`) |
 | `model` (or `-m` override) | `ANTHROPIC_MODEL` |
 
-`--bare` makes the worker ignore `~/.claude/settings.json`, so profile selection is controlled by these variables. Authentication is environment-only; no `apiKeyHelper` or `--settings` argument is used. Tokens never appear in argv.
+`--setting-sources ""` disables user, project, and local settings so their environment overrides cannot replace the profile's gateway, token, or model. `--bare` alone does not isolate settings. Authentication is environment-only; no `apiKeyHelper` or `--settings` argument is used. Tokens never appear in argv.
 
 ### Choosing a profile
 
@@ -167,7 +167,7 @@ Example JSON (illustrative):
 }
 ```
 
-Failures can also include an `error` field. For each external worker, supervisors should report status/exit code, profile/model, turns, estimated cost, elapsed time, and session ID.
+Failures can also include an `error` field. Worker error types and messages are retained, including `error_max_budget_usd: Reached maximum budget (...)`, and printed when the worker returns no report. For each external worker, supervisors should report status/exit code, profile/model, turns, estimated cost, elapsed time, and session ID.
 
 ### Permissions
 
