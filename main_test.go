@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"net"
 	"os"
 	"path/filepath"
 	"slices"
@@ -13,6 +14,9 @@ import (
 // answers with canned JSON (or sleeps when FAKE_SLEEP is set).
 func setup(t *testing.T, reply string) (work, record string) {
 	t.Helper()
+	orig := preflight
+	preflight = func(string) error { return nil }
+	t.Cleanup(func() { preflight = orig })
 	tmp := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(tmp, "cfg"))
 	t.Setenv("XDG_STATE_HOME", filepath.Join(tmp, "state"))
@@ -136,6 +140,29 @@ func TestErrorAndTimeoutStatus(t *testing.T) {
 	rs, _ := readRecords(historyPath())
 	if len(rs) != 2 || rs[0].Status != "error" || rs[1].Status != "timeout" {
 		t.Fatalf("records: %+v", rs)
+	}
+}
+
+func TestPreflightFailsFastOnUnreachableGateway(t *testing.T) {
+	for _, k := range []string{"HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy"} {
+		t.Setenv(k, "")
+	}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := ln.Addr().String()
+	if err := checkReachable("http://" + addr); err != nil {
+		t.Fatalf("open port reported unreachable: %v", err)
+	}
+	ln.Close()
+	err = checkReachable("http://" + addr)
+	if err == nil || !strings.Contains(err.Error(), "sandbox") {
+		t.Fatalf("closed port: err=%v, want sandbox hint", err)
+	}
+	t.Setenv("HTTPS_PROXY", "http://proxy:1")
+	if err := checkReachable("http://" + addr); err != nil {
+		t.Errorf("proxy set should skip direct dial: %v", err)
 	}
 }
 

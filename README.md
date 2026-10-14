@@ -65,7 +65,7 @@ offload version
 ```
 
 - **stdout**: the worker's final report only. **stderr**: one `[offload]` line with status, cost and session id.
-- **Exit codes**: 0 ok, 1 worker error, 2 usage/config error, 124 timeout.
+- **Exit codes**: 0 ok, 1 worker error, 2 usage/config error or unreachable gateway, 124 timeout.
 - **History**: every run is appended to `~/.local/state/offload/runs.jsonl` (task, dir, session, cost, full report), so a supervisor can follow up later with `-r` or re-read with `show`.
 
 ### Permissions
@@ -87,6 +87,17 @@ Install the bundled skill so the supervising agent knows when and how to offload
 git clone https://github.com/zhoushoujianwork/offload ~/src/offload
 ln -s ~/src/offload/skills/offload ~/.claude/skills/offload
 ```
+
+## Use from Codex
+
+Codex reads the same skill format, and `offload` must run outside its sandbox (it needs network and writes to `~/.claude` and `~/.local/state/offload`):
+
+```bash
+ln -s ~/src/offload/skills/offload ~/.codex/skills/offload
+echo 'prefix_rule(pattern=["offload"], decision="allow")' >> ~/.codex/rules/default.rules
+```
+
+Optionally add a line to `~/.codex/AGENTS.md` telling Codex when to prefer `offload`.
 
 ## Known limits
 

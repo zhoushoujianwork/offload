@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -112,6 +114,9 @@ func run(ctx context.Context, o RunOpts) (Record, error) {
 	if err != nil {
 		return rec, fmt.Errorf("claude CLI not found: %w", err)
 	}
+	if err := preflight(o.Profile.BaseURL); err != nil {
+		return rec, err
+	}
 	ctx, cancel := context.WithTimeout(ctx, o.Timeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, bin, buildArgs(o)...)
@@ -139,6 +144,35 @@ func run(ctx context.Context, o RunOpts) (Record, error) {
 		rec.Status = "ok"
 	}
 	return rec, nil
+}
+
+// preflight is swapped out in tests.
+var preflight = checkReachable
+
+// checkReachable fails fast when the gateway cannot be dialed. Without it, a worker inside a
+// network-less sandbox (e.g. Codex workspace-write) silently retries until the timeout.
+func checkReachable(baseURL string) error {
+	for _, k := range []string{"HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy"} {
+		if os.Getenv(k) != "" {
+			return nil // a proxy decides reachability; a direct dial would be a false negative
+		}
+	}
+	u, err := url.Parse(baseURL)
+	if err != nil || u.Hostname() == "" {
+		return fmt.Errorf("bad base_url %q", baseURL)
+	}
+	port := u.Port()
+	if port == "" {
+		port = map[string]string{"http": "80"}[u.Scheme]
+		if port == "" {
+			port = "443"
+		}
+	}
+	c, err := net.DialTimeout("tcp", net.JoinHostPort(u.Hostname(), port), 5*time.Second)
+	if err != nil {
+		return fmt.Errorf("cannot reach gateway %s (%v); if running inside a sandbox, allow network or run offload outside it", u.Host, err)
+	}
+	return c.Close()
 }
 
 func fileExists(p string) bool {
