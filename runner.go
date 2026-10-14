@@ -50,14 +50,8 @@ type claudeResult struct {
 }
 
 func buildArgs(o RunOpts) []string {
-	settings, _ := json.Marshal(map[string]any{
-		// The token reaches claude via env, never argv (visible in ps).
-		"apiKeyHelper": `printf %s "$OFFLOAD_TOKEN"`,
-		// --settings outranks ~/.claude/settings.json env, which would otherwise redirect the gateway.
-		"env": map[string]string{"ANTHROPIC_BASE_URL": o.Profile.BaseURL, "ANTHROPIC_MODEL": o.Model},
-	})
-	args := []string{"-p", "--bare", "--output-format", "json", "--model", o.Model,
-		"--max-budget-usd", fmt.Sprint(o.Budget), "--settings", string(settings)}
+	// Gateway, token and model reach the worker only through env (see childEnv), never argv.
+	args := []string{"-p", "--bare", "--output-format", "json", "--max-budget-usd", fmt.Sprint(o.Budget)}
 	if o.Resume != "" {
 		args = append(args, "--resume", o.Resume)
 	}
@@ -77,18 +71,17 @@ func buildArgs(o RunOpts) []string {
 	return append(args, "--append-system-prompt", sys, o.Task)
 }
 
-// childEnv drops the caller's gateway credentials so the worker only sees the profile's.
+// childEnv makes the profile the worker's only gateway: every caller ANTHROPIC_* variable is
+// dropped, then exactly base URL, token and model are set. --bare ignores ~/.claude/settings.json,
+// so nothing overrides these.
 func childEnv(base []string, o RunOpts, token string) []string {
-	env := make([]string, 0, len(base)+2)
+	env := make([]string, 0, len(base)+3)
 	for _, kv := range base {
-		k, _, _ := strings.Cut(kv, "=")
-		switch k {
-		case "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL", "ANTHROPIC_MODEL", "OFFLOAD_TOKEN":
-			continue
+		if !strings.HasPrefix(kv, "ANTHROPIC_") {
+			env = append(env, kv)
 		}
-		env = append(env, kv)
 	}
-	return append(env, "ANTHROPIC_BASE_URL="+o.Profile.BaseURL, "OFFLOAD_TOKEN="+token)
+	return append(env, "ANTHROPIC_BASE_URL="+o.Profile.BaseURL, "ANTHROPIC_AUTH_TOKEN="+token, "ANTHROPIC_MODEL="+o.Model)
 }
 
 func claudeBin() (string, error) {

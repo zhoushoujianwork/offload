@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -24,6 +25,7 @@ usage:
   offload [flags] "task"        run a task (task may also come on stdin)
   offload ls [n]                list the last n runs (default 10)
   offload show <session>        print every report of a session
+  offload profiles              list profiles (* = the one a run would use)
   offload version
 
 flags:
@@ -40,6 +42,8 @@ func realMain(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 			return cmdList(args[1:], stdout, stderr)
 		case "show":
 			return cmdShow(args[1:], stdout, stderr)
+		case "profiles":
+			return cmdProfiles(stdout, stderr)
 		case "version":
 			fmt.Fprintln(stdout, version)
 			return 0
@@ -171,6 +175,29 @@ func cmdShow(args []string, stdout, stderr io.Writer) int {
 	}
 	for _, r := range hit {
 		fmt.Fprintf(stdout, "## %s %s %s/%s %s\n> %s\n\n%s\n\n", r.TS, r.Status, r.Profile, r.Model, r.Dir, r.Task, r.Result)
+	}
+	return 0
+}
+
+// cmdProfiles never prints tokens.
+func cmdProfiles(stdout, stderr io.Writer) int {
+	cfg, err := loadConfig(configPath())
+	if err != nil {
+		return fail(stderr, err)
+	}
+	active, _, _ := cfg.profile("")
+	names := make([]string, 0, len(cfg.Profiles))
+	for n := range cfg.Profiles {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	for _, n := range names {
+		mark := " "
+		if n == active {
+			mark = "*"
+		}
+		p := cfg.Profiles[n]
+		fmt.Fprintf(stdout, "%s %-12s %-24s %s\n", mark, n, p.Model, p.BaseURL)
 	}
 	return 0
 }

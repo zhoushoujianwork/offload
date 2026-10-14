@@ -21,12 +21,14 @@ func setup(t *testing.T, reply string) (work, record string) {
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(tmp, "cfg"))
 	t.Setenv("XDG_STATE_HOME", filepath.Join(tmp, "state"))
 	t.Setenv("ANTHROPIC_AUTH_TOKEN", "caller-secret")
+	t.Setenv("ANTHROPIC_API_KEY", "caller-key")
+	t.Setenv("ANTHROPIC_CUSTOM_HEADERS", "X-Caller: 1")
 	t.Setenv("OFFLOAD_PROFILE", "")
 	t.Setenv("OFFLOAD_BUDGET", "")
 	record = filepath.Join(tmp, "record")
 	fake := filepath.Join(tmp, "claude")
 	script := "#!/bin/sh\n" +
-		"{ printf '%s\\n' \"$@\"; echo \"ENV token=$OFFLOAD_TOKEN base=$ANTHROPIC_BASE_URL caller=$ANTHROPIC_AUTH_TOKEN pwd=$(pwd -P)\"; } > " + record + "\n" +
+		"{ printf '%s\\n' \"$@\"; echo \"ENV token=$ANTHROPIC_AUTH_TOKEN base=$ANTHROPIC_BASE_URL model=$ANTHROPIC_MODEL key=$ANTHROPIC_API_KEY hdr=$ANTHROPIC_CUSTOM_HEADERS pwd=$(pwd -P)\"; } > " + record + "\n" +
 		"[ -n \"$FAKE_SLEEP\" ] && sleep \"$FAKE_SLEEP\"\n" +
 		"cat <<'EOF'\n" + reply + "\nEOF\n"
 	if err := os.WriteFile(fake, []byte(script), 0o755); err != nil {
@@ -67,13 +69,13 @@ func TestRunReadOnlyPrintsReportAndIsolatesCredentials(t *testing.T) {
 	}
 	rec, _ := os.ReadFile(record)
 	got := string(rec)
-	for _, want := range []string{"--bare", "--model\nm-1", "find the bug", "Read-only task",
-		"token=tok-123 base=https://gw.example/anthropic caller= pwd=" + work} {
+	for _, want := range []string{"--bare", "find the bug", "Read-only task",
+		"token=tok-123 base=https://gw.example/anthropic model=m-1 key= hdr= pwd=" + work} {
 		if !strings.Contains(got, want) {
 			t.Errorf("argv/env missing %q in:\n%s", want, got)
 		}
 	}
-	if strings.Contains(got, "tok-123\n") || strings.Contains(got, "caller-secret") {
+	if strings.Contains(got, "tok-123\n") || strings.Contains(got, "caller-") {
 		t.Errorf("token leaked into argv or caller credential reached worker:\n%s", got)
 	}
 	if strings.Contains(got, "acceptEdits") {
@@ -163,6 +165,20 @@ func TestPreflightFailsFastOnUnreachableGateway(t *testing.T) {
 	t.Setenv("HTTPS_PROXY", "http://proxy:1")
 	if err := checkReachable("http://" + addr); err != nil {
 		t.Errorf("proxy set should skip direct dial: %v", err)
+	}
+}
+
+func TestProfilesMarksActiveAndHidesToken(t *testing.T) {
+	setup(t, okReply)
+	cfg := `{"default":"a","profiles":{"a":{"base_url":"https://a","model":"ma","token":"secret-a"},"b":{"base_url":"https://b","model":"mb","token":"secret-b"}}}`
+	os.WriteFile(configPath(), []byte(cfg), 0o600)
+	_, out, _ := runCLI("profiles")
+	if !strings.Contains(out, "* a ") || strings.Contains(out, "secret") {
+		t.Fatalf("profiles: %q", out)
+	}
+	t.Setenv("OFFLOAD_PROFILE", "b")
+	if _, out, _ = runCLI("profiles"); !strings.Contains(out, "* b ") {
+		t.Fatalf("OFFLOAD_PROFILE not honored: %q", out)
 	}
 }
 

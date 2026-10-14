@@ -45,7 +45,21 @@ go install github.com/zhoushoujianwork/offload@latest
 
 `token_cmd` (preferred) prints the token on stdout, so secrets can live in the macOS Keychain, `pass`, 1Password CLI, etc. A literal `token` field also works.
 
-The token reaches the worker through an environment variable and `apiKeyHelper`, never through argv. The caller's own `ANTHROPIC_*` credentials are stripped from the worker's environment.
+### How switching works
+
+A profile is just the three variables Claude Code reads. For each run, offload drops every `ANTHROPIC_*` variable from the caller's environment and sets exactly:
+
+| profile field | worker env |
+|---|---|
+| `base_url` | `ANTHROPIC_BASE_URL` |
+| `token` / `token_cmd` | `ANTHROPIC_AUTH_TOKEN` (sent as `Authorization: Bearer`) |
+| `model` | `ANTHROPIC_MODEL` |
+
+`--bare` makes the worker ignore `~/.claude/settings.json`, so nothing there can override these. Secrets never appear in argv.
+
+### Choosing a profile
+
+Per run `-p name`, per shell `OFFLOAD_PROFILE=name`, otherwise `default` in the config. `offload profiles` shows them, `*` marking the one a run would use (tokens are never printed).
 
 ## Usage
 
@@ -53,6 +67,7 @@ The token reaches the worker through an environment variable and `apiKeyHelper`,
 offload [flags] "task"        run a task (task may also come on stdin)
 offload ls [n]                list the last n runs (default 10)
 offload show <session>        print every report of a session
+offload profiles              list profiles (* = the one a run would use)
 offload version
 
   -p profile   profile name (default: $OFFLOAD_PROFILE, then config default)
@@ -101,7 +116,6 @@ Optionally add a line to `~/.codex/AGENTS.md` telling Codex when to prefer `offl
 
 ## Known limits
 
-- Some gateways reject requests carrying Claude Code's `anthropic-beta: claude-code-*` header; such gateways cannot be used as workers.
 - When launched from inside the Claude desktop app, the nested worker inherits host restrictions that disable file writes; `-w` works from a normal terminal.
 
 ## License
