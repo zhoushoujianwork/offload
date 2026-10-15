@@ -29,12 +29,20 @@ To install from a source checkout, run `go install .` in that checkout. If an ol
 
 ## Configuration
 
+https://github.com/user-attachments/assets/e178209b-4760-42e4-9788-acb26b5ca0c7
+
+
+
 `~/.config/offload/config.json` (chmod 600):
 
 ```json
 {
   "default": "minimax",
   "profiles": {
+
+https://github.com/user-attachments/assets/952e889b-edf5-4847-9878-b7af648f25a8
+
+
     "minimax": {
       "base_url": "https://api.minimaxi.com/anthropic",
       "model": "MiniMax-M3",
