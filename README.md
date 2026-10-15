@@ -13,9 +13,9 @@ internal/http/client.go:42  doWithRetry — exponential backoff, 3 attempts
 
 把读文件、翻日志、代码检索、机械性修改这类耗 token 的工作交给便宜模型，主 Agent 保留规划、核验和最终判断。
 
-[![offload demo video](https://github.com/zhoushoujianwork/offload/releases/download/demo-video/offload-demo-poster.png)](https://github.com/zhoushoujianwork/offload/releases/download/demo-video/offload-demo.mp4)
+https://github.com/user-attachments/assets/e178209b-4760-42e4-9788-acb26b5ca0c7
 
-<sub>63 秒演示视频（点击封面播放或下载）。示例输出摘自本文档，成本为 worker 估算值，不是实际账单。</sub>
+<sub>63 秒演示视频（MP4，1080p，中文字幕，合成配乐，无旁白）。示例输出摘自本文档，成本为 worker 估算值，不是实际账单。</sub>
 
 ## Install
 
@@ -29,20 +29,12 @@ To install from a source checkout, run `go install .` in that checkout. If an ol
 
 ## Configuration
 
-https://github.com/user-attachments/assets/e178209b-4760-42e4-9788-acb26b5ca0c7
-
-
-
 `~/.config/offload/config.json` (chmod 600):
 
 ```json
 {
   "default": "minimax",
   "profiles": {
-
-https://github.com/user-attachments/assets/952e889b-edf5-4847-9878-b7af648f25a8
-
-
     "minimax": {
       "base_url": "https://api.minimaxi.com/anthropic",
       "model": "MiniMax-M3",
