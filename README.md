@@ -13,6 +13,10 @@ internal/http/client.go:42  doWithRetry — exponential backoff, 3 attempts
 
 把读文件、翻日志、代码检索、机械性修改这类耗 token 的工作交给便宜模型，主 Agent 保留规划、核验和最终判断。
 
+[![offload demo video](https://github.com/zhoushoujianwork/offload/releases/download/demo-video/offload-demo-poster.png)](https://github.com/zhoushoujianwork/offload/releases/download/demo-video/offload-demo.mp4)
+
+<sub>63 秒演示视频（点击封面播放或下载）。示例输出摘自本文档，成本为 worker 估算值，不是实际账单。</sub>
+
 ## Install
 
 Requires [Claude Code](https://docs.anthropic.com/en/docs/claude-code) (`claude` on PATH or at `~/.claude/local/claude`) and Go 1.24+.
