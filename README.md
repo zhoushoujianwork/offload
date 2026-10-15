@@ -132,7 +132,7 @@ offload version
   -r session   resume a session; reuses its original dir unless -d is given
   -d dir       working directory (default: cwd)
   -t 15m       worker timeout
-  -budget 0.5  max USD per run ($OFFLOAD_BUDGET), passed to Claude CLI
+  -budget 0    max USD per run, 0 = no cap ($OFFLOAD_BUDGET), passed to Claude CLI
   -json        emit one JSON run record instead of report-only stdout
 ```
 

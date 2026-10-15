@@ -67,7 +67,7 @@ func cmdRun(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	resume := fs.String("r", "", "resume a session id; reuses its original dir unless -d is given")
 	dir := fs.String("d", "", "working directory (default: cwd)")
 	timeout := fs.Duration("t", 15*time.Minute, "timeout")
-	budget := fs.Float64("budget", envFloat("OFFLOAD_BUDGET", 0.5), "max USD per run ($OFFLOAD_BUDGET)")
+	budget := fs.Float64("budget", envFloat("OFFLOAD_BUDGET", 0), "max USD per run, 0 = no cap ($OFFLOAD_BUDGET)")
 	jsonOutput := fs.Bool("json", false, "print one structured run result instead of plain report")
 	if err := fs.Parse(args); err != nil {
 		return 2

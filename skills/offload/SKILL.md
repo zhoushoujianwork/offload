@@ -5,7 +5,7 @@ description: Proactively delegate token-heavy file reading, log analysis, code s
 
 # offload
 
-`offload [-p profile] [-m model] [-w] [-r session] [-d dir] [-t 15m] [-budget 0.5] [-json] "task"`
+`offload [-p profile] [-m model] [-w] [-r session] [-d dir] [-t 15m] [-budget 0] [-json] "task"`
 
 The CLI starts an external `claude -p --bare` worker on the configured Anthropic-compatible gateway, such as MiniMax. It does not replace a native Codex subagent's model provider. Profiles live in `~/.config/offload/config.json`; select with `-p`, `OFFLOAD_PROFILE`, or config `default`. `offload profiles` lists them. Each run drops the caller's `ANTHROPIC_*` variables and sets the chosen `ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN` (Bearer), and `ANTHROPIC_MODEL` (`-m` can override). It also passes `--setting-sources ""` so user/project/local settings cannot override the profile; `--bare` alone does not isolate settings. Auth is environment-only, without `apiKeyHelper` or `--settings`.
 
@@ -19,7 +19,7 @@ Keep short conversations, trivial lookups, architecture decisions, sensitive cha
 
 ## Assign a bounded task
 
-Give each worker an absolute `-d` directory, a clear goal, scope constraints, an acceptance check, and a concise output format. Ask it to inspect source files rather than answer from memory. Set an appropriate timeout and USD budget; default to read-only.
+Give each worker an absolute `-d` directory, a clear goal, scope constraints, an acceptance check, and a concise output format. Ask it to inspect source files rather than answer from memory. Set an appropriate timeout; there is no USD cap by default (`-budget` opts in). Default to read-only.
 
 ```bash
 offload -json -d /absolute/path/app -t 90s -budget 0.15 "Find HTTP retry entry points and related tests. Read-only; no shell commands. Return file:line | purpose, max 10 rows; mark uncertainty."

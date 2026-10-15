@@ -56,7 +56,10 @@ func buildArgs(o RunOpts, promptPath string) []string {
 	// Gateway, token and model reach the worker only through env (see childEnv), never argv.
 	// --bare still loads settings; disable user/project/local sources so their env cannot
 	// override the selected profile's gateway, credentials or model.
-	args := []string{"-p", "--bare", "--setting-sources", "", "--output-format", "json", "--max-budget-usd", fmt.Sprint(o.Budget)}
+	args := []string{"-p", "--bare", "--setting-sources", "", "--output-format", "json"}
+	if o.Budget > 0 {
+		args = append(args, "--max-budget-usd", fmt.Sprint(o.Budget))
+	}
 	if o.Resume != "" {
 		args = append(args, "--resume", o.Resume)
 	}
