@@ -5,7 +5,7 @@ description: Proactively delegate token-heavy file reading, log analysis, code s
 
 # offload
 
-`offload [-p profile] [-m model] [-w] [-r session] [-d dir] [-t 15m] [-json] "task"`
+`offload [-p profile] [-m model] [-w] [-r session] [-d dir] [-t 30m] [-json] "task"`
 
 The CLI starts an external `claude -p --bare` worker on the configured Anthropic-compatible gateway, such as MiniMax. It does not replace a native Codex subagent's model provider. Profiles live in `~/.config/offload/config.json`; select with `-p`, `OFFLOAD_PROFILE`, or config `default`. `offload profiles` lists them. Each run drops the caller's `ANTHROPIC_*` variables and sets the chosen `ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN` (Bearer), and `ANTHROPIC_MODEL` (`-m` can override). It also passes `--setting-sources ""` so user/project/local settings cannot override the profile; `--bare` alone does not isolate settings. Auth is environment-only, without `apiKeyHelper` or `--settings`.
 
@@ -37,7 +37,7 @@ Worker errors retain their type and message, such as `error_max_turns`. An empty
 
 ## Know the limits
 
-The worker runs headless: nobody can approve a permission prompt. Compound shell commands (pipes, `&&`, `;`, heredocs, `python -c`) are refused and each refusal burns a turn, so tell the worker to use Read, Grep and Glob. The summary line shows `permission_denials=N`; a high N means the task was shaped badly, not that the gateway is down. Large tasks run slowly (20-40s per turn is normal); split a broad audit into narrow ones instead of raising the timeout. `turns` of an interrupted run counts tool calls, not model turns.
+The worker runs headless: nobody can approve a permission prompt. Compound shell commands (pipes, `&&`, `;`, heredocs, `python -c`) are refused and each refusal burns a turn, so tell the worker to use Read, Grep and Glob. Read-only `rtk` forms (`rtk ls`, `rtk read`, `rtk grep`, `rtk git log`) are allowed in both modes; `rtk run`, `proxy`, `err`, `summary`, `pipe`, `test` and `find` are not, because they can run arbitrary commands. The summary line shows `permission_denials=N`; a high N means the task was shaped badly, not that the gateway is down. Large tasks run slowly (20-40s per turn is normal); split a broad audit into narrow ones instead of raising the timeout. A worker silent for 10 minutes is stopped without waiting for `-t`. `turns` of an interrupted run counts tool calls, not model turns.
 
 ## Verify and report
 

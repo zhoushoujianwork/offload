@@ -1,4 +1,4 @@
-package main
+package cli
 
 import (
 	"encoding/json"
@@ -9,12 +9,16 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/zhoushoujianwork/offload/internal/config"
+	"github.com/zhoushoujianwork/offload/internal/history"
+	"github.com/zhoushoujianwork/offload/internal/worker"
 )
 
-func decodeRun(t *testing.T, out string) Record {
+func decodeRun(t *testing.T, out string) history.Record {
 	t.Helper()
 	dec := json.NewDecoder(strings.NewReader(out))
-	var rec Record
+	var rec history.Record
 	if err := dec.Decode(&rec); err != nil {
 		t.Fatalf("decode result: %v; out=%q", err, out)
 	}
@@ -27,7 +31,7 @@ func decodeRun(t *testing.T, out string) Record {
 
 func TestJSONRunReportsMeasuredElapsedAndEstimatedCost(t *testing.T) {
 	work, _ := setup(t, okReply)
-	cfg, err := loadConfig(configPath())
+	cfg, err := config.Load(config.Path())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -35,7 +39,7 @@ func TestJSONRunReportsMeasuredElapsedAndEstimatedCost(t *testing.T) {
 	prof.TokenCmd = "sleep 0.06; printf tok-123"
 	cfg.Profiles["cheap"] = prof
 	data, _ := json.Marshal(cfg)
-	if err := os.WriteFile(configPath(), data, 0o600); err != nil {
+	if err := os.WriteFile(config.Path(), data, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("FAKE_STDERR", "worker diagnostic")
@@ -58,7 +62,7 @@ func TestJSONRunReportsMeasuredElapsedAndEstimatedCost(t *testing.T) {
 		!strings.Contains(errOut, "estimated_cost=$0.0100") || !strings.Contains(errOut, "elapsed=") || !strings.Contains(errOut, "exit_code=0") {
 		t.Fatalf("expected one metric summary: %q", errOut)
 	}
-	rs, err := readRecords(historyPath())
+	rs, err := history.Read(history.Path())
 	if err != nil || len(rs) != 1 || rs[0].ElapsedMs == nil || *rs[0].ElapsedMs != *rec.ElapsedMs {
 		t.Fatalf("history: %+v, %v", rs, err)
 	}
@@ -93,7 +97,7 @@ func TestWorkerCostAvailability(t *testing.T) {
 				t.Fatalf("cost=%v want=%v", rec.CostUSD, tc.want)
 			}
 			if tc.name == "reported zero" {
-				rs, err := readRecords(historyPath())
+				rs, err := history.Read(history.Path())
 				if err != nil || len(rs) != 1 || rs[0].CostUSD == nil || *rs[0].CostUSD != 0 {
 					t.Fatalf("explicit zero must survive history: %+v err=%v", rs, err)
 				}
@@ -125,7 +129,7 @@ func TestFailedWorkerAndTimeoutMetrics(t *testing.T) {
 		if time.Since(started) > 900*time.Millisecond {
 			t.Fatal("timeout waited for a descendant's inherited output pipe")
 		}
-		rs, err := readRecords(historyPath())
+		rs, err := history.Read(history.Path())
 		if err != nil || len(rs) != 1 || rs[0].ElapsedMs == nil || *rs[0].ExitCode != 124 {
 			t.Fatalf("timeout history: %+v err=%v", rs, err)
 		}
@@ -165,12 +169,31 @@ func TestTimeoutKeepsProgressAndResumeHint(t *testing.T) {
 	if !strings.Contains(errOut, "session=s-killed") || !strings.Contains(errOut, "permission_denials=1") {
 		t.Errorf("summary line: %q", errOut)
 	}
-	rs, err := readRecords(historyPath())
+	rs, err := history.Read(history.Path())
 	if err != nil || len(rs) != 1 || rs[0].Session != "s-killed" {
 		t.Fatalf("history must be resumable: %+v err=%v", rs, err)
 	}
 	if code, _, _ := runCLI("show", "s-killed"); code != 0 {
 		t.Fatal("offload show cannot find the interrupted session")
+	}
+}
+
+// A worker hung on a single request makes no more output; it must not hold the run until -t.
+func TestIdleWorkerIsStoppedBeforeTimeout(t *testing.T) {
+	work, _ := setup(t, okReply)
+	orig := worker.IdleLimit
+	worker.IdleLimit = 1500 * time.Millisecond
+	t.Cleanup(func() { worker.IdleLimit = orig })
+	t.Setenv("FAKE_PREFIX", `{"type":"system","subtype":"init","session_id":"s-idle"}`)
+	t.Setenv("FAKE_SLEEP", "30")
+	started := time.Now()
+	code, out, _ := runCLI("-json", "-d", work, "-t", "20s", "hang")
+	rec := decodeRun(t, out)
+	if code != 124 || rec.Status != "timeout" || rec.Session != "s-idle" || !strings.Contains(rec.Error, "no output") || !strings.Contains(rec.Error, "offload -r s-idle") {
+		t.Fatalf("idle worker not reported: code=%d rec=%+v", code, rec)
+	}
+	if time.Since(started) > 8*time.Second {
+		t.Fatalf("idle worker held the run for %s", time.Since(started))
 	}
 }
 
@@ -217,7 +240,7 @@ func TestStructuredWorkerErrorsAreRetained(t *testing.T) {
 			if tc.name == "budget exhausted without report" && (rec.Turns != 11 || rec.CostUSD == nil || *rec.CostUSD != 0.2069) {
 				t.Fatalf("budget error lost metrics: %+v", rec)
 			}
-			rs, err := readRecords(historyPath())
+			rs, err := history.Read(history.Path())
 			if err != nil || len(rs) != 1 || rs[0].Error != tc.wantError {
 				t.Fatalf("history lost error: %+v err=%v", rs, err)
 			}
@@ -240,14 +263,14 @@ func TestSetupErrorsHaveStructuredMetrics(t *testing.T) {
 		args   []string
 	}{
 		{"profile", func(t *testing.T) {}, []string{"-p", "missing"}},
-		{"preflight", func(t *testing.T) {
-			preflight = func(string) error {
+		{"worker.Preflight", func(t *testing.T) {
+			worker.Preflight = func(string) error {
 				time.Sleep(20 * time.Millisecond)
 				return errors.New("gateway unreachable in test")
 			}
 		}, nil},
 		{"token", func(t *testing.T) {
-			cfg, err := loadConfig(configPath())
+			cfg, err := config.Load(config.Path())
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -255,7 +278,7 @@ func TestSetupErrorsHaveStructuredMetrics(t *testing.T) {
 			prof.TokenCmd = "sleep 0.02; exit 1"
 			cfg.Profiles["cheap"] = prof
 			data, _ := json.Marshal(cfg)
-			if err := os.WriteFile(configPath(), data, 0o600); err != nil {
+			if err := os.WriteFile(config.Path(), data, 0o600); err != nil {
 				t.Fatal(err)
 			}
 		}, nil},
@@ -270,10 +293,10 @@ func TestSetupErrorsHaveStructuredMetrics(t *testing.T) {
 			if code != 2 || rec.ExitCode == nil || *rec.ExitCode != 2 || rec.ElapsedMs == nil || rec.CostUSD != nil || rec.Error == "" || strings.Count(errOut, "\n") != 1 {
 				t.Fatalf("setup error: code=%d rec=%+v err=%q", code, rec, errOut)
 			}
-			if (tc.name == "token" || tc.name == "preflight") && *rec.ElapsedMs < 15 {
+			if (tc.name == "token" || tc.name == "worker.Preflight") && *rec.ElapsedMs < 15 {
 				t.Fatalf("setup step omitted from elapsed: %+v", rec)
 			}
-			rs, err := readRecords(historyPath())
+			rs, err := history.Read(history.Path())
 			if err != nil || len(rs) != 1 || *rs[0].ExitCode != 2 {
 				t.Fatalf("setup history: %+v err=%v", rs, err)
 			}
@@ -286,13 +309,13 @@ func TestLegacyHistoryMetricsAreNotFabricated(t *testing.T) {
 	old := `{"ts":"old","status":"ok","profile":"cheap","model":"m-1","session":"old-cost","cost_usd":0.5,"duration_ms":4200,"result":"OLD","dir":"/tmp","task":"old"}` + "\n" +
 		`{"ts":"old","status":"error","session":"old-zero","cost_usd":0,"duration_ms":0,"result":"FAILED"}` + "\n" +
 		`{"ts":"old","status":"error","session":"old-missing","result":"FAILED"}` + "\n"
-	if err := os.MkdirAll(filepath.Dir(historyPath()), 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Dir(history.Path()), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(historyPath(), []byte(old), 0o600); err != nil {
+	if err := os.WriteFile(history.Path(), []byte(old), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	rs, err := readRecords(historyPath())
+	rs, err := history.Read(history.Path())
 	if err != nil || len(rs) != 3 {
 		t.Fatalf("legacy records: %+v err=%v", rs, err)
 	}

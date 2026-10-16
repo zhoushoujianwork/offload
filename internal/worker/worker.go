@@ -1,4 +1,5 @@
-package main
+// Package worker runs one task through `claude -p` and reports what the worker did.
+package worker
 
 import (
 	"bytes"
@@ -11,25 +12,73 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"time"
+
+	"github.com/zhoushoujianwork/offload/internal/config"
+	"github.com/zhoushoujianwork/offload/internal/history"
 )
 
-const workerPrompt = `You are a worker agent delegated a task by a supervising agent. Work autonomously; never ask questions.
+// Prompt is appended to the worker's system prompt.
+const Prompt = `You are a worker agent delegated a task by a supervising agent. Work autonomously; never ask questions.
 Finish with a concise report: what you did or found, exact file:line references, commands run with their results, and anything unverified. No preamble.
-Nobody can approve permission prompts. Shell is limited to single simple commands: pipes, &&, ;, redirects, heredocs and python -c are refused and waste a turn. Prefer Read, Grep and Glob. When a command is refused, switch tools instead of retrying it.`
+Nobody can approve permission prompts. Shell is limited to single simple commands: pipes, &&, ;, redirects, heredocs and python -c are refused and waste a turn. Prefer Read, Grep and Glob. When a command is refused, switch tools instead of retrying it.
+rtk-prefixed read commands (rtk ls, rtk read, rtk grep, rtk git log) are allowed when the task asks for them; rtk run, proxy, err, summary and pipe are not.`
 
-var (
-	readOnlyTools = "Read Grep Glob Bash(git log:*) Bash(git diff:*) Bash(git show:*) Bash(ls:*) Bash(rg:*)"
+// rtk compresses command output to save tokens. Only its read-only subcommands are allowed:
+// rtk run, proxy, err, summary, pipe and test execute arbitrary commands and would bypass the
+// tool lists below, and rtk find accepts find's -exec.
+const (
+	readOnlyTools = "Read Grep Glob Bash(git log:*) Bash(git diff:*) Bash(git show:*) Bash(ls:*) Bash(rg:*) " +
+		"Bash(rtk ls:*) Bash(rtk tree:*) Bash(rtk read:*) Bash(rtk grep:*) Bash(rtk rg:*) Bash(rtk wc:*) " +
+		"Bash(rtk git log:*) Bash(rtk git diff:*) Bash(rtk git show:*) Bash(rtk git status:*) Bash(rtk diff:*) Bash(rtk recall:*)"
 	// Write mode: edits stay inside the working dir (acceptEdits); shell is limited to build/test/inspect.
 	// Deliberately no commit, push, rm, or network tools.
 	writeTools = "Read Grep Glob Edit Write Bash(go build:*) Bash(go test:*) Bash(go vet:*) Bash(gofmt:*) " +
 		"Bash(make:*) Bash(npm test:*) Bash(npm run:*) Bash(pytest:*) Bash(cargo build:*) Bash(cargo test:*) " +
-		"Bash(idf.py build:*) Bash(git status:*) Bash(git diff:*) Bash(ls:*) Bash(rg:*)"
+		"Bash(idf.py build:*) Bash(git status:*) Bash(git diff:*) Bash(ls:*) Bash(rg:*) " +
+		"Bash(rtk ls:*) Bash(rtk read:*) Bash(rtk grep:*) Bash(rtk rg:*) Bash(rtk wc:*) Bash(rtk git status:*) Bash(rtk git diff:*) " +
+		"Bash(rtk go build:*) Bash(rtk go test:*) Bash(rtk go vet:*) Bash(rtk cargo build:*) Bash(rtk cargo test:*) Bash(rtk pytest:*)"
 )
 
-type RunOpts struct {
+// IdleLimit stops a worker that has produced no output for this long. A hung model request
+// otherwise holds the run until the full timeout. It is a variable only so tests can shorten it.
+var IdleLimit = 10 * time.Minute
+
+var errIdle = errors.New("worker idle")
+
+// activityWriter collects the worker's stdout and remembers when it last wrote.
+type activityWriter struct {
+	bytes.Buffer
+	last atomic.Int64 // unix nanoseconds of the latest write
+}
+
+func (w *activityWriter) Write(p []byte) (int, error) {
+	w.last.Store(time.Now().UnixNano())
+	return w.Buffer.Write(p)
+}
+
+// watchIdle cancels ctx with errIdle once nothing was written for limit.
+func watchIdle(ctx context.Context, cancel context.CancelCauseFunc, last *atomic.Int64, limit time.Duration) {
+	t := time.NewTicker(limit / 10)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			if time.Since(time.Unix(0, last.Load())) > limit {
+				cancel(errIdle)
+				return
+			}
+		}
+	}
+}
+
+// Opts is one worker run.
+type Opts struct {
 	ProfileName string
-	Profile     Profile
+	Profile     config.Profile
 	Model       string
 	Write       bool
 	Resume      string
@@ -51,7 +100,7 @@ type claudeResult struct {
 	SessionID  string   `json:"session_id"`
 }
 
-func buildArgs(o RunOpts, promptPath string) []string {
+func buildArgs(o Opts, promptPath string) []string {
 	// Gateway, token and model reach the worker only through env (see childEnv), never argv.
 	// --bare still loads settings; disable user/project/local sources so their env cannot
 	// override the selected profile's gateway, credentials or model.
@@ -70,7 +119,7 @@ func buildArgs(o RunOpts, promptPath string) []string {
 
 // writeWorkerPrompt combines explicit project instructions and delegated-task constraints.
 // Claude accepts only one append prompt mechanism; a private file keeps its contents out of argv.
-func writeWorkerPrompt(o RunOpts) (string, error) {
+func writeWorkerPrompt(o Opts) (string, error) {
 	var prompt strings.Builder
 	// --bare skips project instruction discovery, so read the files explicitly.
 	for _, name := range []string{"CLAUDE.md", "AGENTS.md"} {
@@ -84,7 +133,7 @@ func writeWorkerPrompt(o RunOpts) (string, error) {
 		}
 		fmt.Fprintf(&prompt, "Project instructions from %s:\n%s\n\n", path, contents)
 	}
-	prompt.WriteString(workerPrompt)
+	prompt.WriteString(Prompt)
 	if !o.Write {
 		prompt.WriteString("\nRead-only task: do not modify files.")
 	}
@@ -110,7 +159,7 @@ func writeWorkerPrompt(o RunOpts) (string, error) {
 // childEnv makes the profile the worker's only gateway: every caller ANTHROPIC_* variable is
 // dropped, then exactly base URL, token and model are set. buildArgs disables settings sources
 // so user/project/local settings cannot override these.
-func childEnv(base []string, o RunOpts, token string) []string {
+func childEnv(base []string, o Opts, token string) []string {
 	env := make([]string, 0, len(base)+3)
 	for _, kv := range base {
 		if !strings.HasPrefix(kv, "ANTHROPIC_") {
@@ -131,13 +180,13 @@ func claudeBin() (string, error) {
 	return exec.LookPath("claude")
 }
 
-// run executes the worker and always returns a Record describing what happened.
-func run(ctx context.Context, o RunOpts) (rec Record, err error) {
+// Run executes the worker and always returns a Record describing what happened.
+func Run(ctx context.Context, o Opts) (rec history.Record, err error) {
 	started := o.StartedAt
 	if started.IsZero() {
 		started = time.Now()
 	}
-	rec = Record{TS: started.Format("2006-01-02 15:04:05"), Profile: o.ProfileName, Model: o.Model,
+	rec = history.Record{TS: started.Format("2006-01-02 15:04:05"), Profile: o.ProfileName, Model: o.Model,
 		Dir: o.Dir, Task: o.Task, Status: "error", CostIsEstimate: true}
 	defer func() {
 		elapsed := time.Since(started).Milliseconds()
@@ -157,7 +206,7 @@ func run(ctx context.Context, o RunOpts) (rec Record, err error) {
 		return rec, err
 	}
 	defer os.Remove(promptPath)
-	token, err := o.Profile.token()
+	token, err := o.Profile.ResolveToken()
 	if err != nil {
 		return rec, err
 	}
@@ -165,25 +214,35 @@ func run(ctx context.Context, o RunOpts) (rec Record, err error) {
 	if err != nil {
 		return rec, fmt.Errorf("claude CLI not found: %w", err)
 	}
-	if err := preflight(o.Profile.BaseURL); err != nil {
+	if err := Preflight(o.Profile.BaseURL); err != nil {
 		return rec, err
 	}
 	ctx, cancel := context.WithTimeout(ctx, o.Timeout)
 	defer cancel()
+	ctx, cancelCause := context.WithCancelCause(ctx)
+	defer cancelCause(nil)
 	cmd := exec.CommandContext(ctx, bin, buildArgs(o, promptPath)...)
 	cmd.Dir = o.Dir
 	cmd.Env = childEnv(os.Environ(), o, token)
-	var out, workerErr bytes.Buffer
-	cmd.Stdout, cmd.Stderr = &out, &workerErr
+	out := &activityWriter{}
+	out.last.Store(time.Now().UnixNano())
+	var workerErr bytes.Buffer
+	cmd.Stdout, cmd.Stderr = out, &workerErr
+	go watchIdle(ctx, cancelCause, &out.last, IdleLimit)
 	// Do not wait indefinitely for a worker descendant to close inherited pipes.
 	cmd.WaitDelay = 100 * time.Millisecond
 	runErr := cmd.Run()
 
 	s := parseStream(out.Bytes())
 	rec.Session, rec.Turns, rec.Denials = s.Session, s.ToolCalls, s.Denials
-	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+	cause := context.Cause(ctx)
+	if errors.Is(cause, errIdle) || errors.Is(cause, context.DeadlineExceeded) {
 		rec.Status = "timeout"
-		rec.Error = "timed out after " + o.Timeout.String() + s.resumeHint()
+		rec.Error = "timed out after " + o.Timeout.String()
+		if errors.Is(cause, errIdle) {
+			rec.Error = "worker produced no output for " + IdleLimit.String()
+		}
+		rec.Error += s.resumeHint()
 		rec.Result = rec.Error + s.progress()
 		return rec, nil
 	}
@@ -213,7 +272,7 @@ func run(ctx context.Context, o RunOpts) (rec Record, err error) {
 	res := *s.Result
 	rec.Session, rec.Turns, rec.CostUSD, rec.DurationMs, rec.Result =
 		firstNonEmpty(res.SessionID, s.Session), res.NumTurns, res.CostUSD, res.DurationMs, res.Result
-	if rec.CostUSD != nil && !validCost(*rec.CostUSD) {
+	if rec.CostUSD != nil && !history.ValidCost(*rec.CostUSD) {
 		rec.CostUSD = nil
 	}
 	if !res.IsError && runErr == nil {
@@ -244,12 +303,12 @@ func run(ctx context.Context, o RunOpts) (rec Record, err error) {
 	return rec, nil
 }
 
-// preflight is swapped out in tests.
-var preflight = checkReachable
+// Preflight is swapped out in tests.
+var Preflight = CheckReachable
 
-// checkReachable fails fast when the gateway cannot be dialed. Without it, a worker inside a
+// CheckReachable fails fast when the gateway cannot be dialed. Without it, a worker inside a
 // network-less sandbox (e.g. Codex workspace-write) silently retries until the timeout.
-func checkReachable(baseURL string) error {
+func CheckReachable(baseURL string) error {
 	for _, k := range []string{"HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy"} {
 		if os.Getenv(k) != "" {
 			return nil // a proxy decides reachability; a direct dial would be a false negative
@@ -276,4 +335,11 @@ func checkReachable(baseURL string) error {
 func fileExists(p string) bool {
 	st, err := os.Stat(p)
 	return err == nil && !st.IsDir()
+}
+
+func firstNonEmpty(a, b string) string {
+	if a != "" {
+		return a
+	}
+	return b
 }

@@ -1,4 +1,4 @@
-package main
+package cli
 
 import (
 	"bytes"
@@ -8,15 +8,19 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/zhoushoujianwork/offload/internal/config"
+	"github.com/zhoushoujianwork/offload/internal/history"
+	"github.com/zhoushoujianwork/offload/internal/worker"
 )
 
 // setup isolates config/state dirs and installs a fake claude that records argv/env and
 // answers with canned JSON (or sleeps when FAKE_SLEEP is set).
 func setup(t *testing.T, reply string) (work, record string) {
 	t.Helper()
-	orig := preflight
-	preflight = func(string) error { return nil }
-	t.Cleanup(func() { preflight = orig })
+	orig := worker.Preflight
+	worker.Preflight = func(string) error { return nil }
+	t.Cleanup(func() { worker.Preflight = orig })
 	tmp := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(tmp, "cfg"))
 	t.Setenv("XDG_STATE_HOME", filepath.Join(tmp, "state"))
@@ -50,10 +54,10 @@ func setup(t *testing.T, reply string) (work, record string) {
 	}
 	t.Setenv("OFFLOAD_CLAUDE", fake)
 	cfg := `{"default":"cheap","profiles":{"cheap":{"base_url":"https://gw.example/anthropic","model":"m-1","token_cmd":"echo tok-123"}}}`
-	if err := os.MkdirAll(configDir(), 0o700); err != nil {
+	if err := os.MkdirAll(config.Dir(), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(configPath(), []byte(cfg), 0o600); err != nil {
+	if err := os.WriteFile(config.Path(), []byte(cfg), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	work = filepath.Join(tmp, "work")
@@ -66,7 +70,7 @@ func setup(t *testing.T, reply string) (work, record string) {
 
 func runCLI(args ...string) (int, string, string) {
 	var out, errb bytes.Buffer
-	code := realMain(args, strings.NewReader(""), &out, &errb)
+	code := Run("test", args, strings.NewReader(""), &out, &errb)
 	return code, out.String(), errb.String()
 }
 
@@ -98,6 +102,30 @@ func TestRunReadOnlyPrintsReportAndIsolatesCredentials(t *testing.T) {
 	}
 	if strings.Contains(got, "acceptEdits") {
 		t.Error("read-only run must not get acceptEdits")
+	}
+}
+
+// rtk saves tokens, so its read-only forms must be allowed; its command runners must not be,
+// since they would bypass the tool lists.
+func TestRtkReadFormsAllowedRunnersNot(t *testing.T) {
+	for _, write := range []bool{false, true} {
+		work, record := setup(t, okReply)
+		args := []string{"-d", work, "x"}
+		if write {
+			args = []string{"-w", "-d", work, "x"}
+		}
+		runCLI(args...)
+		rec, _ := os.ReadFile(record)
+		for _, want := range []string{"Bash(rtk ls:*)", "Bash(rtk read:*)", "Bash(rtk grep:*)"} {
+			if !strings.Contains(string(rec), want) {
+				t.Errorf("write=%v: missing %q", write, want)
+			}
+		}
+		for _, bad := range []string{"Bash(rtk run", "Bash(rtk proxy", "Bash(rtk err", "Bash(rtk summary", "Bash(rtk pipe", "Bash(rtk test", "Bash(rtk find"} {
+			if strings.Contains(string(rec), bad) {
+				t.Errorf("write=%v: %q would let the worker run arbitrary commands", write, bad)
+			}
+		}
 	}
 }
 
@@ -161,7 +189,7 @@ func TestErrorAndTimeoutStatus(t *testing.T) {
 	if code != 124 {
 		t.Fatalf("timeout exit = %d, want 124", code)
 	}
-	rs, _ := readRecords(historyPath())
+	rs, _ := history.Read(history.Path())
 	if len(rs) != 2 || rs[0].Status != "error" || rs[1].Status != "timeout" {
 		t.Fatalf("records: %+v", rs)
 	}
@@ -176,16 +204,16 @@ func TestPreflightFailsFastOnUnreachableGateway(t *testing.T) {
 		t.Fatal(err)
 	}
 	addr := ln.Addr().String()
-	if err := checkReachable("http://" + addr); err != nil {
+	if err := worker.CheckReachable("http://" + addr); err != nil {
 		t.Fatalf("open port reported unreachable: %v", err)
 	}
 	ln.Close()
-	err = checkReachable("http://" + addr)
+	err = worker.CheckReachable("http://" + addr)
 	if err == nil || !strings.Contains(err.Error(), "sandbox") {
 		t.Fatalf("closed port: err=%v, want sandbox hint", err)
 	}
 	t.Setenv("HTTPS_PROXY", "http://proxy:1")
-	if err := checkReachable("http://" + addr); err != nil {
+	if err := worker.CheckReachable("http://" + addr); err != nil {
 		t.Errorf("proxy set should skip direct dial: %v", err)
 	}
 }
@@ -193,7 +221,7 @@ func TestPreflightFailsFastOnUnreachableGateway(t *testing.T) {
 func TestProfilesMarksActiveAndHidesToken(t *testing.T) {
 	setup(t, okReply)
 	cfg := `{"default":"a","profiles":{"a":{"base_url":"https://a","model":"ma","token":"secret-a"},"b":{"base_url":"https://b","model":"mb","token":"secret-b"}}}`
-	os.WriteFile(configPath(), []byte(cfg), 0o600)
+	os.WriteFile(config.Path(), []byte(cfg), 0o600)
 	_, out, _ := runCLI("profiles")
 	if !strings.Contains(out, "* a ") || strings.Contains(out, "secret") {
 		t.Fatalf("profiles: %q", out)
@@ -209,7 +237,7 @@ func TestConfigErrors(t *testing.T) {
 	if code, _, e := runCLI("-p", "missing", "-d", work, "x"); code != 2 || !strings.Contains(e, "unknown profile") {
 		t.Errorf("code=%d err=%q", code, e)
 	}
-	if _, err := (Profile{TokenCmd: "true"}).token(); err == nil {
+	if _, err := (config.Profile{TokenCmd: "true"}).ResolveToken(); err == nil {
 		t.Error("empty token_cmd output should error")
 	}
 }

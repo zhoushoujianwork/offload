@@ -1,4 +1,5 @@
-package main
+// Package history stores one record per run so reports survive the supervising session.
+package history
 
 import (
 	"bufio"
@@ -29,7 +30,8 @@ type Record struct {
 	Error          string   `json:"error,omitempty"`
 }
 
-func historyPath() string {
+// Path is the run log location.
+func Path() string {
 	if d := os.Getenv("XDG_STATE_HOME"); d != "" {
 		return filepath.Join(d, "offload", "runs.jsonl")
 	}
@@ -37,7 +39,8 @@ func historyPath() string {
 	return filepath.Join(home, ".local", "state", "offload", "runs.jsonl")
 }
 
-func appendRecord(path string, r Record) error {
+// Append adds one record to the log.
+func Append(path string, r Record) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
@@ -54,8 +57,8 @@ func appendRecord(path string, r Record) error {
 	return err
 }
 
-// readRecords returns all records in file order; a missing log is empty, not an error.
-func readRecords(path string) ([]Record, error) {
+// Read returns all records in file order; a missing log is empty, not an error.
+func Read(path string) ([]Record, error) {
 	f, err := os.Open(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
@@ -72,7 +75,7 @@ func readRecords(path string) ([]Record, error) {
 		if json.Unmarshal(sc.Bytes(), &r) == nil {
 			// Old versions serialized missing costs as zero. Without the new marker,
 			// an old zero is ambiguous and must not be presented as a known estimate.
-			if r.CostUSD != nil && (!validCost(*r.CostUSD) || (!r.CostIsEstimate && *r.CostUSD == 0)) {
+			if r.CostUSD != nil && (!ValidCost(*r.CostUSD) || (!r.CostIsEstimate && *r.CostUSD == 0)) {
 				r.CostUSD = nil
 			}
 			r.CostIsEstimate = true
@@ -82,7 +85,8 @@ func readRecords(path string) ([]Record, error) {
 	return rs, sc.Err()
 }
 
-func bySession(rs []Record, session string) []Record {
+// BySession filters records to one worker session.
+func BySession(rs []Record, session string) []Record {
 	var out []Record
 	for _, r := range rs {
 		if r.Session == session {
@@ -92,6 +96,7 @@ func bySession(rs []Record, session string) []Record {
 	return out
 }
 
-func validCost(cost float64) bool {
+// ValidCost reports whether a worker-reported cost can be trusted as a number.
+func ValidCost(cost float64) bool {
 	return cost >= 0 && !math.IsNaN(cost) && !math.IsInf(cost, 0)
 }

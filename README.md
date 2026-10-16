@@ -131,7 +131,7 @@ offload version
   -w           write mode (default: read-only)
   -r session   resume a session; reuses its original dir unless -d is given
   -d dir       working directory (default: cwd)
-  -t 15m       worker timeout
+  -t 30m       worker timeout; a worker silent for 10 minutes is stopped earlier
   -json        emit one JSON run record instead of report-only stdout
 ```
 
@@ -191,12 +191,27 @@ Before launching Claude, a reachability preflight attempts a TCP connection to t
 
 ## Known limits
 
-- The worker is headless, so permission prompts cannot be approved. Compound shell commands (pipes, `&&`, heredocs, `python -c`) are refused and burn a turn; `permission_denials=N` in the summary line counts them.
+- The worker is headless, so permission prompts cannot be approved. Compound shell commands (pipes, `&&`, heredocs, `python -c`) are refused and burn a turn. Read-only `rtk` forms (`rtk ls`, `rtk read`, `rtk grep`, `rtk git log`, ...) are allowed; `rtk run`, `proxy`, `err`, `summary`, `pipe`, `test` and `find` are not; `permission_denials=N` in the summary line counts them.
 - A worker killed by `-t` or ending without a result still reports its progress (tool calls, denials, last text and tool calls) plus an `offload -r <session>` command to resume it. For such runs `turns` counts tool calls.
-- Large tasks are slow (20-40s per turn). Split broad audits instead of raising `-t`; keep `-t` at its default unless the task needs more.
+- A worker that prints nothing for 10 minutes (a hung model request) is stopped without waiting for `-t`; the idle limit is fixed. Large tasks are slow (20-40s per turn). Split broad audits instead of raising `-t`; keep `-t` at its default unless the task needs more.
 - Requires network access and writes state outside the project (`~/.claude` and the offload history directory). Use host-approved permissions; when offloading is unavailable, report the failure and continue with local tools or native subagents.
 - Some gateways reject Claude Code's `anthropic-beta: claude-code-*` header and cannot be used as workers.
 - Nested workers inherit host restrictions. For example, the Claude desktop app may prevent file writes; verify the host supports the requested mode.
+
+## Development
+
+```text
+main.go                    entry point; only wires the version into cli.Run
+internal/cli/              flags, subcommands (ls, show, profiles), run summary line
+internal/worker/           one claude -p run: args, env, prompt, stream-json parsing, timeout progress
+internal/config/           gateway profiles and token lookup
+internal/history/          the run log (runs.jsonl) and its Record type
+internal/agentinstall/     install-agent: skill copy and the managed policy block
+internal/text/             small string helpers
+skills/                    the embedded SKILL.md (skills/embed.go exposes it)
+```
+
+Run `gofmt -l .`, `go vet ./...` and `go test -race ./...` before pushing; CI runs the same. The worker prompt and the installed policy live in `internal/worker/worker.go` and `internal/agentinstall/install.go`; change them there, then run `offload install-agent` to refresh installed copies. `skills/offload/SKILL.md` is embedded into the binary, so edit it and rebuild.
 
 ## License
 

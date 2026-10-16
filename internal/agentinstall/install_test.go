@@ -1,4 +1,4 @@
-package main
+package agentinstall
 
 import (
 	"bytes"
@@ -7,11 +7,13 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/zhoushoujianwork/offload/skills"
 )
 
 func installAgentCLI(args ...string) (int, string, string) {
 	var out, errOut bytes.Buffer
-	code := cmdInstallAgent(args, &out, &errOut)
+	code := Run(args, &out, &errOut)
 	return code, out.String(), errOut.String()
 }
 
@@ -47,7 +49,7 @@ func TestInstallAgentUserDefaultsEmbedSkillWithoutCheckout(t *testing.T) {
 	for _, agent := range []struct{ policyRoot, skillRoot, policy string }{{".codex", ".agents", "AGENTS.md"}, {".claude", ".claude", "CLAUDE.md"}} {
 		root := filepath.Join(home, agent.policyRoot)
 		skill := filepath.Join(home, agent.skillRoot, "skills", "offload", "SKILL.md")
-		if got := installTestRead(t, skill); !bytes.Equal(got, bundledOffloadSkill) {
+		if got := installTestRead(t, skill); !bytes.Equal(got, skills.Offload) {
 			t.Fatalf("installed skill differs from bundled skill: %s", skill)
 		}
 		policy := string(installTestRead(t, filepath.Join(root, agent.policy)))
@@ -265,7 +267,7 @@ func TestPlanAgentInstallUpdatesOwnedSkillPreservingMode(t *testing.T) {
 	if err := os.Chmod(skillPath, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	updatedSkill := append(bytes.Clone(bundledOffloadSkill), []byte("\nUpdated bundled guidance.\n")...)
+	updatedSkill := append(bytes.Clone(skills.Offload), []byte("\nUpdated bundled guidance.\n")...)
 	targets := []agentInstallTarget{{skillDir, filepath.Join(project, "AGENTS.md")}}
 	files, err := planAgentInstall(targets, updatedSkill)
 	if err != nil {

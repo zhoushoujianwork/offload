@@ -1,4 +1,5 @@
-package main
+// Package config loads the gateway profiles a worker can run against.
+package config
 
 import (
 	"encoding/json"
@@ -25,7 +26,8 @@ type Config struct {
 	Profiles map[string]Profile `json:"profiles"`
 }
 
-func configDir() string {
+// Dir is the directory holding offload's config.
+func Dir() string {
 	if d := os.Getenv("XDG_CONFIG_HOME"); d != "" {
 		return filepath.Join(d, "offload")
 	}
@@ -33,9 +35,11 @@ func configDir() string {
 	return filepath.Join(home, ".config", "offload")
 }
 
-func configPath() string { return filepath.Join(configDir(), "config.json") }
+// Path is the config file location.
+func Path() string { return filepath.Join(Dir(), "config.json") }
 
-func loadConfig(path string) (*Config, error) {
+// Load reads and parses the config file.
+func Load(path string) (*Config, error) {
 	b, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, fmt.Errorf("no config at %s (see README: Configuration)", path)
@@ -50,8 +54,8 @@ func loadConfig(path string) (*Config, error) {
 	return &c, nil
 }
 
-// profile resolves name ("" means OFFLOAD_PROFILE, then config default).
-func (c *Config) profile(name string) (string, Profile, error) {
+// Resolve picks a profile by name ("" means OFFLOAD_PROFILE, then config default).
+func (c *Config) Resolve(name string) (string, Profile, error) {
 	if name == "" {
 		name = os.Getenv("OFFLOAD_PROFILE")
 	}
@@ -68,7 +72,8 @@ func (c *Config) profile(name string) (string, Profile, error) {
 	return name, p, nil
 }
 
-func (p Profile) token() (string, error) {
+// ResolveToken returns the profile's token, running token_cmd when set.
+func (p Profile) ResolveToken() (string, error) {
 	if p.TokenCmd == "" {
 		if p.Token == "" {
 			return "", errors.New("profile has neither token_cmd nor token")

@@ -1,4 +1,4 @@
-package main
+package cli
 
 import (
 	"encoding/json"
@@ -9,6 +9,9 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/zhoushoujianwork/offload/internal/config"
+	"github.com/zhoushoujianwork/offload/internal/worker"
 )
 
 func TestMergedWorkerPromptIsPrivateAndCleanedUp(t *testing.T) {
@@ -57,7 +60,7 @@ func TestMergedWorkerPromptIsPrivateAndCleanedUp(t *testing.T) {
 			if slices.Contains(lines, "--append-system-prompt") || strings.Count(string(argv), "--append-system-prompt-file\n") != 1 {
 				t.Fatalf("must pass exactly one file prompt flag: %q", argv)
 			}
-			for _, text := range []string{"CLAUDE_PROJECT_MARKER", "AGENTS_PROJECT_MARKER", workerPrompt} {
+			for _, text := range []string{"CLAUDE_PROJECT_MARKER", "AGENTS_PROJECT_MARKER", worker.Prompt} {
 				if strings.Contains(string(argv), text) {
 					t.Fatalf("prompt contents exposed in argv: %q", argv)
 				}
@@ -67,7 +70,7 @@ func TestMergedWorkerPromptIsPrivateAndCleanedUp(t *testing.T) {
 				t.Fatal(err)
 			}
 			merged := string(prompt)
-			ci, ai, wi := strings.Index(merged, "CLAUDE_PROJECT_MARKER"), strings.Index(merged, "AGENTS_PROJECT_MARKER"), strings.Index(merged, workerPrompt)
+			ci, ai, wi := strings.Index(merged, "CLAUDE_PROJECT_MARKER"), strings.Index(merged, "AGENTS_PROJECT_MARKER"), strings.Index(merged, worker.Prompt)
 			if ci < 0 || ai <= ci || wi <= ai || !strings.Contains(merged, filepath.Join(work, "CLAUDE.md")) || !strings.Contains(merged, filepath.Join(work, "AGENTS.md")) {
 				t.Fatalf("merged prompt must preserve sources and append worker constraints last: %q", merged)
 			}
@@ -118,7 +121,7 @@ func TestPromptSetupErrorsHaveMetricsAndLeaveNoTemporaryFiles(t *testing.T) {
 			t.Setenv("TMPDIR", filepath.Join(os.TempDir(), "missing-directory"))
 		}},
 		{"credential resolution", "token_cmd failed", func(t *testing.T, work string) {
-			cfg, err := loadConfig(configPath())
+			cfg, err := config.Load(config.Path())
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -129,7 +132,7 @@ func TestPromptSetupErrorsHaveMetricsAndLeaveNoTemporaryFiles(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err := os.WriteFile(configPath(), contents, 0o600); err != nil {
+			if err := os.WriteFile(config.Path(), contents, 0o600); err != nil {
 				t.Fatal(err)
 			}
 		}},
