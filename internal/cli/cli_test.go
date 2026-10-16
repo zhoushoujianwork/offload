@@ -45,6 +45,7 @@ func setup(t *testing.T, reply string) (work, record string) {
 		"  ls -l \"$prompt_file\" > '" + record + ".prompt-mode'\n" +
 		"fi\n" +
 		"[ -n \"$FAKE_PREFIX\" ] && printf '%s\\n' \"$FAKE_PREFIX\"\n" +
+		"[ -n \"$FAKE_TICKS\" ] && for i in $(seq 1 \"$FAKE_TICKS\"); do printf '%s\\n' '{\"type\":\"system\",\"subtype\":\"thinking_tokens\"}'; sleep 0.4; done\n" +
 		"[ -n \"$FAKE_SLEEP\" ] && sleep \"$FAKE_SLEEP\"\n" +
 		"[ -n \"$FAKE_STDERR\" ] && printf '%s\\n' \"$FAKE_STDERR\" >&2\n" +
 		"cat <<'EOF'\n" + reply + "\nEOF\n" +

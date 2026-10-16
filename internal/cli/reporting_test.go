@@ -197,6 +197,21 @@ func TestIdleWorkerIsStoppedBeforeTimeout(t *testing.T) {
 	}
 }
 
+// A worker that keeps emitting events is working, however long it takes. The idle limit must
+// only count silence.
+func TestIdleLimitDoesNotKillAWorkerThatKeepsWriting(t *testing.T) {
+	work, _ := setup(t, okReply)
+	orig := worker.IdleLimit
+	worker.IdleLimit = time.Second
+	t.Cleanup(func() { worker.IdleLimit = orig })
+	t.Setenv("FAKE_TICKS", "8") // 8 x 0.4s = 3.2s of steady output, well past the 1s limit
+	code, out, errOut := runCLI("-json", "-d", work, "-t", "20s", "busy")
+	rec := decodeRun(t, out)
+	if code != 0 || rec.Status != "ok" {
+		t.Fatalf("active worker was stopped: code=%d rec=%+v stderr=%q", code, rec, errOut)
+	}
+}
+
 func TestWorkerEndingWithoutResultIsAnError(t *testing.T) {
 	work, _ := setup(t, "")
 	t.Setenv("FAKE_PREFIX", `{"type":"system","subtype":"init","session_id":"s-cut"}`)
