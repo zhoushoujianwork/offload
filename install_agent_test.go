@@ -51,7 +51,7 @@ func TestInstallAgentUserDefaultsEmbedSkillWithoutCheckout(t *testing.T) {
 			t.Fatalf("installed skill differs from bundled skill: %s", skill)
 		}
 		policy := string(installTestRead(t, filepath.Join(root, agent.policy)))
-		for _, want := range []string{offloadPolicyBegin, offloadPolicyEnd, "main agent and native subagents", "must not launch another offload", "-t", "-budget", "read-only", "ESTIMATED", "measured elapsed time", "profile/model", "session ID", "status/exit code"} {
+		for _, want := range []string{offloadPolicyBegin, offloadPolicyEnd, "main agent and native subagents", "must not launch another offload", "-t", "no USD cap", "read-only", "ESTIMATED", "measured elapsed time", "profile/model", "session ID", "status/exit code"} {
 			if !strings.Contains(policy, want) {
 				t.Errorf("policy missing %q: %s", want, policy)
 			}

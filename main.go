@@ -67,7 +67,6 @@ func cmdRun(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	resume := fs.String("r", "", "resume a session id; reuses its original dir unless -d is given")
 	dir := fs.String("d", "", "working directory (default: cwd)")
 	timeout := fs.Duration("t", 15*time.Minute, "timeout")
-	budget := fs.Float64("budget", envFloat("OFFLOAD_BUDGET", 0), "max USD per run, 0 = no cap ($OFFLOAD_BUDGET)")
 	jsonOutput := fs.Bool("json", false, "print one structured run result instead of plain report")
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -106,7 +105,7 @@ func cmdRun(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return failRun(err)
 	}
 	o := RunOpts{ProfileName: name, Profile: prof, Model: firstNonEmpty(*model, prof.Model), Write: *write,
-		Resume: *resume, Dir: wd, Task: task, Budget: *budget, Timeout: *timeout, StartedAt: started}
+		Resume: *resume, Dir: wd, Task: task, Timeout: *timeout, StartedAt: started}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
@@ -264,13 +263,6 @@ func isTerminal(r io.Reader) bool {
 	}
 	st, err := f.Stat()
 	return err == nil && st.Mode()&os.ModeCharDevice != 0
-}
-
-func envFloat(k string, def float64) float64 {
-	if v, err := strconv.ParseFloat(os.Getenv(k), 64); err == nil {
-		return v
-	}
-	return def
 }
 
 func firstNonEmpty(a, b string) string {
