@@ -47,16 +47,21 @@ var IdleLimit = 10 * time.Minute
 
 var errIdle = errors.New("worker idle")
 
-// activityWriter collects the worker's stdout and remembers when it last wrote.
+// activityWriter collects the worker's stdout and remembers when it last wrote. The buffer is a
+// named field, not embedded: an embedded bytes.Buffer would promote ReadFrom, io.Copy would call
+// that directly, and Write (hence the timestamp) would never run.
 type activityWriter struct {
-	bytes.Buffer
+	buf  bytes.Buffer
 	last atomic.Int64 // unix nanoseconds of the latest write
 }
 
 func (w *activityWriter) Write(p []byte) (int, error) {
 	w.last.Store(time.Now().UnixNano())
-	return w.Buffer.Write(p)
+	return w.buf.Write(p)
 }
+
+func (w *activityWriter) Bytes() []byte  { return w.buf.Bytes() }
+func (w *activityWriter) String() string { return w.buf.String() }
 
 // watchIdle cancels ctx with errIdle once nothing was written for limit.
 func watchIdle(ctx context.Context, cancel context.CancelCauseFunc, last *atomic.Int64, limit time.Duration) {
