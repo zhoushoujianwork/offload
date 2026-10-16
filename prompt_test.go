@@ -20,7 +20,7 @@ func TestMergedWorkerPromptIsPrivateAndCleanedUp(t *testing.T) {
 	}{
 		{"read-only", false, okReply, "", "", 0},
 		{"write", true, okReply, "", "", 0},
-		{"worker error", false, `{"result":"failed","is_error":true}`, "", "", 1},
+		{"worker error", false, `{"type":"result","result":"failed","is_error":true}`, "", "", 1},
 		{"process error", false, okReply, "7", "", 1},
 		{"timeout", false, okReply, "", "5", 124},
 	} {

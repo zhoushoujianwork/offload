@@ -19,10 +19,10 @@ Keep short conversations, trivial lookups, architecture decisions, sensitive cha
 
 ## Assign a bounded task
 
-Give each worker an absolute `-d` directory, a clear goal, scope constraints, an acceptance check, and a concise output format. Ask it to inspect source files rather than answer from memory. Set an appropriate timeout. Offload has no USD cap option; do not impose one. Default to read-only.
+Give each worker an absolute `-d` directory, a clear goal, scope constraints, an acceptance check, and a concise output format. Ask it to inspect source files rather than answer from memory. Leave `-t` at its default unless the task clearly needs longer; a short `-t` kills a slow worker and loses its report. Offload has no USD cap option; do not impose one. Default to read-only.
 
 ```bash
-offload -json -d /absolute/path/app -t 90s "Find HTTP retry entry points and related tests. Read-only; no shell commands. Return file:line | purpose, max 10 rows; mark uncertainty."
+offload -json -d /absolute/path/app "Find HTTP retry entry points and related tests. Read-only; no shell commands. Return file:line | purpose, max 10 rows; mark uncertainty."
 ```
 
 Default stdout contains the final report only. `-json` emits a run record containing `status`, `exit_code`, `profile`, `model`, `session`, `turns`, `cost_usd`, `cost_is_estimate`, `duration_ms`, `elapsed_ms`, `result`, and optional `error` (plus task/directory/time). Stderr provides one summary line:
@@ -31,9 +31,13 @@ Default stdout contains the final report only. `-json` emits a run record contai
 [offload] ok exit_code=0 minimax/MiniMax-M3 turns=6 estimated_cost=$0.0753 elapsed=20.104s session=07bcaf2c-…
 ```
 
-Exit codes: 0 ok, 1 worker error, 2 usage/config/unreachable gateway error, 124 timeout. Wait for completion and preserve failures; do not silently replace a failed worker report with an answer of your own.
+Exit codes: 0 ok, 1 worker error, 2 usage/config/unreachable gateway error, 124 timeout. Wait for completion and preserve failures. A timeout (124) or a worker that ends without a result still returns what it did (tool-call count, permission denials, last text, last tool calls) and a ready `offload -r <session> "..."` command; resume it rather than starting over or doing the work yourself; do not silently replace a failed worker report with an answer of your own.
 
 Worker errors retain their type and message, such as `error_max_turns`. An empty worker report prints this error instead. Correct profile routing does not guarantee that every task fits within its timeout.
+
+## Know the limits
+
+The worker runs headless: nobody can approve a permission prompt. Compound shell commands (pipes, `&&`, `;`, heredocs, `python -c`) are refused and each refusal burns a turn, so tell the worker to use Read, Grep and Glob. The summary line shows `permission_denials=N`; a high N means the task was shaped badly, not that the gateway is down. Large tasks run slowly (20-40s per turn is normal); split a broad audit into narrow ones instead of raising the timeout. `turns` of an interrupted run counts tool calls, not model turns.
 
 ## Verify and report
 

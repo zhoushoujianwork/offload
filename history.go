@@ -19,8 +19,9 @@ type Record struct {
 	Dir            string   `json:"dir"`
 	Task           string   `json:"task"`
 	Session        string   `json:"session"`
-	Turns          int      `json:"turns"`
-	CostUSD        *float64 `json:"cost_usd"` // worker estimate, never verified billing; nil means unavailable
+	Turns          int      `json:"turns"`                        // for an interrupted run: tool calls made
+	Denials        int      `json:"permission_denials,omitempty"` // tool calls the worker was refused
+	CostUSD        *float64 `json:"cost_usd"`                     // worker estimate, never verified billing; nil means unavailable
 	CostIsEstimate bool     `json:"cost_is_estimate"`
 	DurationMs     int64    `json:"duration_ms"` // duration reported by the worker (legacy field)
 	ElapsedMs      *int64   `json:"elapsed_ms"`  // measured end-to-end, including setup; nil for older records
