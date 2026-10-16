@@ -5,7 +5,7 @@ description: Proactively delegate token-heavy file reading, log analysis, code s
 
 # offload
 
-`offload [-p profile] [-m model] [-w] [-r session] [-d dir] [-t 15m] [-budget 0] [-json] "task"`
+`offload [-p profile] [-m model] [-w] [-r session] [-d dir] [-t 15m] [-json] "task"`
 
 The CLI starts an external `claude -p --bare` worker on the configured Anthropic-compatible gateway, such as MiniMax. It does not replace a native Codex subagent's model provider. Profiles live in `~/.config/offload/config.json`; select with `-p`, `OFFLOAD_PROFILE`, or config `default`. `offload profiles` lists them. Each run drops the caller's `ANTHROPIC_*` variables and sets the chosen `ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN` (Bearer), and `ANTHROPIC_MODEL` (`-m` can override). It also passes `--setting-sources ""` so user/project/local settings cannot override the profile; `--bare` alone does not isolate settings. Auth is environment-only, without `apiKeyHelper` or `--settings`.
 
@@ -19,10 +19,10 @@ Keep short conversations, trivial lookups, architecture decisions, sensitive cha
 
 ## Assign a bounded task
 
-Give each worker an absolute `-d` directory, a clear goal, scope constraints, an acceptance check, and a concise output format. Ask it to inspect source files rather than answer from memory. Set an appropriate timeout; there is no USD cap by default (`-budget` opts in). Default to read-only.
+Give each worker an absolute `-d` directory, a clear goal, scope constraints, an acceptance check, and a concise output format. Ask it to inspect source files rather than answer from memory. Set an appropriate timeout. Offload has no USD cap option; do not impose one. Default to read-only.
 
 ```bash
-offload -json -d /absolute/path/app -t 90s -budget 0.15 "Find HTTP retry entry points and related tests. Read-only; no shell commands. Return file:line | purpose, max 10 rows; mark uncertainty."
+offload -json -d /absolute/path/app -t 90s "Find HTTP retry entry points and related tests. Read-only; no shell commands. Return file:line | purpose, max 10 rows; mark uncertainty."
 ```
 
 Default stdout contains the final report only. `-json` emits a run record containing `status`, `exit_code`, `profile`, `model`, `session`, `turns`, `cost_usd`, `cost_is_estimate`, `duration_ms`, `elapsed_ms`, `result`, and optional `error` (plus task/directory/time). Stderr provides one summary line:
@@ -33,7 +33,7 @@ Default stdout contains the final report only. `-json` emits a run record contai
 
 Exit codes: 0 ok, 1 worker error, 2 usage/config/unreachable gateway error, 124 timeout. Wait for completion and preserve failures; do not silently replace a failed worker report with an answer of your own.
 
-Worker errors retain their type and message, such as `error_max_budget_usd: Reached maximum budget (...)`. An empty worker report prints this error instead. Correct profile routing does not guarantee that every task fits its configured budget or timeout.
+Worker errors retain their type and message, such as `error_max_turns`. An empty worker report prints this error instead. Correct profile routing does not guarantee that every task fits within its timeout.
 
 ## Verify and report
 

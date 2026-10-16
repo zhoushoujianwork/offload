@@ -35,7 +35,6 @@ type RunOpts struct {
 	Resume      string
 	Dir         string
 	Task        string
-	Budget      float64
 	Timeout     time.Duration
 	StartedAt   time.Time
 }
@@ -57,9 +56,6 @@ func buildArgs(o RunOpts, promptPath string) []string {
 	// --bare still loads settings; disable user/project/local sources so their env cannot
 	// override the selected profile's gateway, credentials or model.
 	args := []string{"-p", "--bare", "--setting-sources", "", "--output-format", "json"}
-	if o.Budget > 0 {
-		args = append(args, "--max-budget-usd", fmt.Sprint(o.Budget))
-	}
 	if o.Resume != "" {
 		args = append(args, "--resume", o.Resume)
 	}

@@ -5,7 +5,7 @@ Hand token-heavy grunt work from a supervising agent, such as Codex or Claude Co
 `offload` runs `claude -p --bare` against an Anthropic-compatible gateway (MiniMax, DeepSeek, Kimi, GLM, a LiteLLM proxy, …). Use it for reading many files, code searches, log analysis, document summaries, and bounded mechanical edits. The supervisor plans the work and verifies the result.
 
 ```text
-$ offload -d /absolute/path/app -t 90s -budget 0.15 "Find HTTP retry logic; return file:line references, max 10 rows. Do not edit files."
+$ offload -d /absolute/path/app -t 90s "Find HTTP retry logic; return file:line references, max 10 rows. Do not edit files."
 internal/http/client.go:42  doWithRetry — exponential backoff, 3 attempts
 ...
 [offload] ok exit_code=0 minimax/MiniMax-M3 turns=6 estimated_cost=$0.0753 elapsed=20.104s session=07bcaf2c-…
@@ -112,7 +112,7 @@ Codex main agent → native Codex subagent → offload → Claude CLI / MiniMax
 
 This uses an external worker process; it does not change Codex's native subagent model provider. Give a suitable subagent this instruction:
 
-> Use offload for the bulk reading in /absolute/path/app, read-only, with a 90s timeout and $0.15 budget. Find retry entry points and tests; return at most 10 file:line rows. Verify two key references and report the model, session, estimated worker cost, and elapsed time.
+> Use offload for the bulk reading in /absolute/path/app, read-only, with a 90s timeout. Find retry entry points and tests; return at most 10 file:line rows. Verify two key references and report the model, session, estimated worker cost, and elapsed time.
 
 Keep short conversations, trivial lookups, architecture choices, sensitive changes, and final review with the supervisor. Workers already launched by offload should finish their assigned task directly instead of delegating again. Spot-check reports; after authorized `-w` work, inspect the diff and independently run relevant checks.
 
@@ -132,7 +132,6 @@ offload version
   -r session   resume a session; reuses its original dir unless -d is given
   -d dir       working directory (default: cwd)
   -t 15m       worker timeout
-  -budget 0    max USD per run, 0 = no cap ($OFFLOAD_BUDGET), passed to Claude CLI
   -json        emit one JSON run record instead of report-only stdout
 ```
 
@@ -147,7 +146,7 @@ offload version
 `elapsed_ms` measures wall-clock time from CLI entry, including setup and credential retrieval. `duration_ms` preserves the worker-reported duration. The `-t` timeout begins after prompt setup, credential/executable resolution, and the reachability preflight, so elapsed time can exceed it.
 
 ```bash
-offload -json -d /absolute/path/app -t 90s -budget 0.15 "Read README.md and summarize setup, max 5 bullets. Do not edit files."
+offload -json -d /absolute/path/app -t 90s "Read README.md and summarize setup, max 5 bullets. Do not edit files."
 ```
 
 Example JSON (illustrative):
@@ -171,7 +170,7 @@ Example JSON (illustrative):
 }
 ```
 
-Failures can also include an `error` field. Worker error types and messages are retained, including `error_max_budget_usd: Reached maximum budget (...)`, and printed when the worker returns no report. For each external worker, supervisors should report status/exit code, profile/model, turns, estimated cost, elapsed time, and session ID.
+Failures can also include an `error` field. Worker error types and messages are retained, such as `error_max_turns`, and printed when the worker returns no report. For each external worker, supervisors should report status/exit code, profile/model, turns, estimated cost, elapsed time, and session ID.
 
 ### Permissions
 

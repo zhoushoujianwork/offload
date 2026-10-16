@@ -24,7 +24,6 @@ func setup(t *testing.T, reply string) (work, record string) {
 	t.Setenv("ANTHROPIC_API_KEY", "caller-key")
 	t.Setenv("ANTHROPIC_CUSTOM_HEADERS", "X-Caller: 1")
 	t.Setenv("OFFLOAD_PROFILE", "")
-	t.Setenv("OFFLOAD_BUDGET", "")
 	record = filepath.Join(tmp, "record")
 	fake := filepath.Join(tmp, "claude")
 	script := "#!/bin/sh\n" +
