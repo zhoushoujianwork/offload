@@ -1,9 +1,9 @@
-package main
+// Package agentinstall installs the offload skill and its managed policy block into agent homes.
+package agentinstall
 
 import (
 	"bytes"
 	"crypto/sha256"
-	_ "embed"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -13,10 +13,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-)
 
-//go:embed skills/offload/SKILL.md
-var bundledOffloadSkill []byte
+	"github.com/zhoushoujianwork/offload/skills"
+)
 
 const (
 	offloadPolicyBegin = "<!-- offload:begin -->"
@@ -53,7 +52,8 @@ type agentInstallFile struct {
 	status string
 }
 
-func cmdInstallAgent(args []string, stdout, stderr io.Writer) int {
+// Run implements `offload install-agent` and returns the process exit code.
+func Run(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("offload install-agent", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	agent := fs.String("agent", "all", "agent to install: codex, claude, or all")
@@ -72,7 +72,7 @@ func cmdInstallAgent(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return fail(stderr, err)
 	}
-	files, err := planAgentInstall(targets, bundledOffloadSkill)
+	files, err := planAgentInstall(targets, skills.Offload)
 	if err != nil {
 		return fail(stderr, err)
 	}
@@ -109,7 +109,7 @@ func agentInstallTargets(agent, scope, dir string) ([]agentInstallTarget, error)
 	}
 	var codex, claude agentInstallTarget
 	if scope == "project" {
-		root, err := resolveDir(dir, "", "")
+		root, err := projectRoot(dir)
 		if err != nil {
 			return nil, err
 		}
@@ -315,4 +315,31 @@ func writeAgentInstallFile(f agentInstallFile) error {
 		return err
 	}
 	return os.Rename(tmp.Name(), f.path)
+}
+
+func fail(w io.Writer, err error) int {
+	fmt.Fprintln(w, "offload:", err)
+	return 2
+}
+
+func firstNonEmpty(a, b string) string {
+	if a != "" {
+		return a
+	}
+	return b
+}
+
+// projectRoot is -d, or the current directory, and must exist.
+func projectRoot(dir string) (string, error) {
+	if dir == "" {
+		return os.Getwd()
+	}
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		return "", err
+	}
+	if st, err := os.Stat(abs); err != nil || !st.IsDir() {
+		return "", fmt.Errorf("not a directory: %s", abs)
+	}
+	return abs, nil
 }

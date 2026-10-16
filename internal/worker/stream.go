@@ -1,10 +1,12 @@
-package main
+package worker
 
 import (
 	"bytes"
 	"encoding/json"
 	"fmt"
 	"strings"
+
+	"github.com/zhoushoujianwork/offload/internal/text"
 )
 
 // streamSummary is what survives of a `claude -p --output-format stream-json` run. The final
@@ -82,7 +84,7 @@ func (s *streamSummary) addAssistant(message json.RawMessage) {
 			}
 		case "tool_use":
 			s.ToolCalls++
-			s.LastTools = append(s.LastTools, b.Name+" "+truncate(oneLine(string(b.Input)), 100))
+			s.LastTools = append(s.LastTools, b.Name+" "+text.Truncate(text.OneLine(string(b.Input)), 100))
 			if len(s.LastTools) > lastToolsKept {
 				s.LastTools = s.LastTools[1:]
 			}
@@ -106,7 +108,7 @@ func (s streamSummary) progress() string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "\nBefore stopping the worker made %d tool calls and had %d permission denials.", s.ToolCalls, s.Denials)
 	if s.LastText != "" {
-		fmt.Fprintf(&b, "\nLast worker text:\n%s", truncate(s.LastText, 2000))
+		fmt.Fprintf(&b, "\nLast worker text:\n%s", text.Truncate(s.LastText, 2000))
 	}
 	if len(s.LastTools) > 0 {
 		b.WriteString("\nLast tool calls:")
