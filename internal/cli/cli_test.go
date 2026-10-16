@@ -44,6 +44,12 @@ func setup(t *testing.T, reply string) (work, record string) {
 		"  cat \"$prompt_file\" > '" + record + ".prompt'\n" +
 		"  ls -l \"$prompt_file\" > '" + record + ".prompt-mode'\n" +
 		"fi\n" +
+		"if [ -n \"$FAKE_SALVAGE\" ] && printf '%s\\n' \"$@\" | grep -qx -- '--tools'; then\n" +
+		"  [ -n \"$FAKE_SALVAGE_SLEEP\" ] && sleep \"$FAKE_SALVAGE_SLEEP\"\n" +
+		"  printf '%s\\n' '{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result\":\"'\"$FAKE_SALVAGE\"'\",\"session_id\":\"s-killed\",\"total_cost_usd\":0.02}'\n" +
+		"  echo \"$@\" > '" + record + ".salvage-args'\n" +
+		"  exit 0\n" +
+		"fi\n" +
 		"[ -n \"$FAKE_PREFIX\" ] && printf '%s\\n' \"$FAKE_PREFIX\"\n" +
 		"[ -n \"$FAKE_TICKS\" ] && for i in $(seq 1 \"$FAKE_TICKS\"); do printf '%s\\n' '{\"type\":\"system\",\"subtype\":\"thinking_tokens\"}'; sleep 0.4; done\n" +
 		"[ -n \"$FAKE_SLEEP\" ] && sleep \"$FAKE_SLEEP\"\n" +

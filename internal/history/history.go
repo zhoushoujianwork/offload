@@ -28,6 +28,7 @@ type Record struct {
 	ElapsedMs      *int64   `json:"elapsed_ms"`  // measured end-to-end, including setup; nil for older records
 	Result         string   `json:"result"`
 	Error          string   `json:"error,omitempty"`
+	Salvaged       bool     `json:"salvaged,omitempty"` // Result is a report written after the worker was stopped
 }
 
 // Path is the run log location.

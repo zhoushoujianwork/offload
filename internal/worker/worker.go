@@ -12,11 +12,14 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/zhoushoujianwork/offload/internal/config"
 	"github.com/zhoushoujianwork/offload/internal/history"
+	"github.com/zhoushoujianwork/offload/internal/live"
+	"github.com/zhoushoujianwork/offload/internal/text"
 )
 
 // Prompt is appended to the worker's system prompt.
@@ -51,17 +54,26 @@ var errIdle = errors.New("worker idle")
 // named field, not embedded: an embedded bytes.Buffer would promote ReadFrom, io.Copy would call
 // that directly, and Write (hence the timestamp) would never run.
 type activityWriter struct {
+	mu   sync.Mutex
 	buf  bytes.Buffer
 	last atomic.Int64 // unix nanoseconds of the latest write
 }
 
 func (w *activityWriter) Write(p []byte) (int, error) {
 	w.last.Store(time.Now().UnixNano())
+	w.mu.Lock()
+	defer w.mu.Unlock()
 	return w.buf.Write(p)
 }
 
-func (w *activityWriter) Bytes() []byte  { return w.buf.Bytes() }
-func (w *activityWriter) String() string { return w.buf.String() }
+// Bytes returns a copy, because the live publisher reads while the worker is still writing.
+func (w *activityWriter) Bytes() []byte {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return bytes.Clone(w.buf.Bytes())
+}
+
+func (w *activityWriter) String() string { return string(w.Bytes()) }
 
 // watchIdle cancels ctx with errIdle once nothing was written for limit.
 func watchIdle(ctx context.Context, cancel context.CancelCauseFunc, last *atomic.Int64, limit time.Duration) {
@@ -91,6 +103,8 @@ type Opts struct {
 	Task        string
 	Timeout     time.Duration
 	StartedAt   time.Time
+	NoSalvage   bool // do not ask a stopped worker for a report from what it already read
+	Salvage     bool // internal: this run is the tool-less report of a stopped worker
 }
 
 // claudeResult is the subset of `claude -p --output-format json` we use.
@@ -105,6 +119,14 @@ type claudeResult struct {
 	SessionID  string   `json:"session_id"`
 }
 
+// salvageTask makes a stopped worker write its report from what it already read.
+const salvageTask = "You were stopped before finishing. You have no tools now. Do not ask to read or run anything. " +
+	"Write the report the task asked for, using only what you already read. Mark anything you did not verify as unverified, " +
+	"and say plainly which parts of the task you did not get to."
+
+// SalvageTimeout bounds the tool-less report; it needs no tools, so it is fast (7-134s measured).
+var SalvageTimeout = 4 * time.Minute
+
 func buildArgs(o Opts, promptPath string) []string {
 	// Gateway, token and model reach the worker only through env (see childEnv), never argv.
 	// --bare still loads settings; disable user/project/local sources so their env cannot
@@ -114,7 +136,9 @@ func buildArgs(o Opts, promptPath string) []string {
 		args = append(args, "--resume", o.Resume)
 	}
 
-	if o.Write {
+	if o.Salvage {
+		args = append(args, "--tools", "")
+	} else if o.Write {
 		args = append(args, "--permission-mode", "acceptEdits", "--allowedTools", writeTools)
 	} else {
 		args = append(args, "--allowedTools", readOnlyTools)
@@ -222,56 +246,51 @@ func Run(ctx context.Context, o Opts) (rec history.Record, err error) {
 	if err := Preflight(o.Profile.BaseURL); err != nil {
 		return rec, err
 	}
-	ctx, cancel := context.WithTimeout(ctx, o.Timeout)
-	defer cancel()
-	ctx, cancelCause := context.WithCancelCause(ctx)
-	defer cancelCause(nil)
-	cmd := exec.CommandContext(ctx, bin, buildArgs(o, promptPath)...)
-	cmd.Dir = o.Dir
-	cmd.Env = childEnv(os.Environ(), o, token)
-	out := &activityWriter{}
-	out.last.Store(time.Now().UnixNano())
-	var workerErr bytes.Buffer
-	cmd.Stdout, cmd.Stderr = out, &workerErr
-	go watchIdle(ctx, cancelCause, &out.last, IdleLimit)
-	// Do not wait indefinitely for a worker descendant to close inherited pipes.
-	cmd.WaitDelay = 100 * time.Millisecond
-	runErr := cmd.Run()
-
-	s := parseStream(out.Bytes())
+	pub := newPublisher(o, started)
+	defer func() { pub.finish(rec) }()
+	a := runClaude(ctx, bin, o, promptPath, token, o.Timeout, pub.update)
+	s := a.s
 	rec.Session, rec.Turns, rec.Denials = s.Session, s.ToolCalls, s.Denials
-	cause := context.Cause(ctx)
-	if errors.Is(cause, errIdle) || errors.Is(cause, context.DeadlineExceeded) {
+	stopped := errors.Is(a.cause, errIdle) || errors.Is(a.cause, context.DeadlineExceeded)
+	if stopped {
 		rec.Status = "timeout"
 		rec.Error = "timed out after " + o.Timeout.String()
-		if errors.Is(cause, errIdle) {
+		if errors.Is(a.cause, errIdle) {
 			rec.Error = "worker produced no output for " + IdleLimit.String()
 		}
-		rec.Error += s.resumeHint()
-		rec.Result = rec.Error + s.progress()
-		return rec, nil
-	}
-	if s.Result == nil {
+	} else if s.Result == nil {
 		if s.Events == 0 {
-			rec.Result = strings.TrimSpace(out.String())
+			rec.Result = strings.TrimSpace(a.stdout)
 			if rec.Result == "" {
-				rec.Result = strings.TrimSpace(workerErr.String())
+				rec.Result = strings.TrimSpace(a.stderr)
 			}
-			if rec.Result == "" && runErr != nil {
-				rec.Result = runErr.Error()
+			if rec.Result == "" && a.runErr != nil {
+				rec.Result = a.runErr.Error()
 			}
 			rec.Error = "worker returned invalid JSON"
-			if runErr != nil {
-				rec.Error += ": " + runErr.Error()
+			if a.runErr != nil {
+				rec.Error += ": " + a.runErr.Error()
 			}
 			return rec, nil
 		}
 		rec.Error = "worker ended without a result"
-		if runErr != nil {
-			rec.Error += ": " + runErr.Error()
+		if a.runErr != nil {
+			rec.Error += ": " + a.runErr.Error()
 		}
+	}
+	if stopped || s.Result == nil {
 		rec.Error += s.resumeHint()
 		rec.Result = rec.Error + s.progress()
+		// A stopped worker has usually read plenty. Ask it for the report without tools instead
+		// of leaving the supervisor with a progress sketch. Not after the user pressed Ctrl-C.
+		if !o.NoSalvage && s.Session != "" && ctx.Err() == nil {
+			pub.phase(live.Salvaging)
+			if report, cost, ok := salvage(ctx, bin, o, promptPath, token, s.Session, pub.keepAlive); ok {
+				rec.Salvaged, rec.CostUSD = true, cost
+				rec.Error += "; the report is salvaged from what the worker read before it stopped, not a finished run (cost covers only that step)"
+				rec.Result = "[SALVAGED REPORT: " + rec.Error + "]\n\n" + report
+			}
+		}
 		return rec, nil
 	}
 	res := *s.Result
@@ -280,7 +299,7 @@ func Run(ctx context.Context, o Opts) (rec history.Record, err error) {
 	if rec.CostUSD != nil && !history.ValidCost(*rec.CostUSD) {
 		rec.CostUSD = nil
 	}
-	if !res.IsError && runErr == nil {
+	if !res.IsError && a.runErr == nil {
 		rec.Status = "ok"
 	} else {
 		for _, message := range res.Errors {
@@ -295,8 +314,8 @@ func Run(ctx context.Context, o Opts) (rec history.Record, err error) {
 			rec.Error = res.Subtype + ": " + firstNonEmpty(rec.Error, "worker reported an error")
 		}
 		if rec.Error == "" {
-			if runErr != nil {
-				rec.Error = runErr.Error()
+			if a.runErr != nil {
+				rec.Error = a.runErr.Error()
 			} else {
 				rec.Error = "worker reported an error"
 			}
@@ -306,6 +325,119 @@ func Run(ctx context.Context, o Opts) (rec history.Record, err error) {
 		}
 	}
 	return rec, nil
+}
+
+// attempt is the outcome of one claude process.
+type attempt struct {
+	s              streamSummary
+	cause          error
+	runErr         error
+	stdout, stderr string
+}
+
+// runClaude starts one claude process and waits for it. It stops early on the timeout or when the
+// worker goes silent, and calls tick every publishEvery with what the worker has done so far.
+func runClaude(ctx context.Context, bin string, o Opts, promptPath, token string, timeout time.Duration,
+	tick func(streamSummary, time.Time)) attempt {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	ctx, cancelCause := context.WithCancelCause(ctx)
+	defer cancelCause(nil)
+	cmd := exec.CommandContext(ctx, bin, buildArgs(o, promptPath)...)
+	cmd.Dir = o.Dir
+	cmd.Env = childEnv(os.Environ(), o, token)
+	out := &activityWriter{}
+	out.last.Store(time.Now().UnixNano())
+	var workerErr bytes.Buffer
+	cmd.Stdout, cmd.Stderr = out, &workerErr
+	go watchIdle(ctx, cancelCause, &out.last, IdleLimit)
+	if tick != nil {
+		go func() {
+			t := time.NewTicker(publishEvery)
+			defer t.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-t.C:
+					tick(parseStream(out.Bytes()), time.Unix(0, out.last.Load()))
+				}
+			}
+		}()
+	}
+	// Do not wait indefinitely for a worker descendant to close inherited pipes.
+	cmd.WaitDelay = 100 * time.Millisecond
+	runErr := cmd.Run()
+	return attempt{s: parseStream(out.Bytes()), cause: context.Cause(ctx), runErr: runErr,
+		stdout: out.String(), stderr: workerErr.String()}
+}
+
+// salvage resumes a stopped session with no tools and returns the report it writes.
+func salvage(ctx context.Context, bin string, o Opts, promptPath, token, session string, tick func(streamSummary, time.Time)) (string, *float64, bool) {
+	so := o
+	so.Resume, so.Salvage, so.Write, so.Task = session, true, false, salvageTask
+	a := runClaude(ctx, bin, so, promptPath, token, SalvageTimeout, tick)
+	r := a.s.Result
+	if r == nil || r.IsError || strings.TrimSpace(r.Result) == "" {
+		return "", nil, false
+	}
+	cost := r.CostUSD
+	if cost != nil && !history.ValidCost(*cost) {
+		cost = nil
+	}
+	return r.Result, cost, true
+}
+
+// publishEvery is how often a running worker refreshes its live state.
+const publishEvery = 2 * time.Second
+
+// publisher keeps this process's live state current. It is advisory; failures are ignored.
+type publisher struct {
+	mu sync.Mutex
+	st live.State
+}
+
+func newPublisher(o Opts, started time.Time) *publisher {
+	p := &publisher{st: live.State{PID: os.Getpid(), Phase: live.Running, Dir: o.Dir,
+		Task: text.Truncate(text.OneLine(o.Task), 200), Profile: o.ProfileName, Model: o.Model,
+		StartedAt: started, LastEventAt: started}}
+	live.Publish(p.st)
+	return p
+}
+
+func (p *publisher) update(s streamSummary, last time.Time) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.st.Session, p.st.ToolCalls, p.st.Denials, p.st.LastEventAt = s.Session, s.ToolCalls, s.Denials, last
+	if n := len(s.LastTools); n > 0 {
+		p.st.LastTool = s.LastTools[n-1]
+	}
+	live.Publish(p.st)
+}
+
+// keepAlive refreshes the state without touching the first run's counters. The tool-less report
+// takes a minute or more, and a state nobody refreshes is reported as lost.
+func (p *publisher) keepAlive(_ streamSummary, _ time.Time) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	live.Publish(p.st)
+}
+
+func (p *publisher) phase(phase string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.st.Phase = phase
+	live.Publish(p.st)
+}
+
+func (p *publisher) finish(rec history.Record) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.st.Phase, p.st.Status, p.st.Session, p.st.ToolCalls, p.st.Denials = live.Done, rec.Status, rec.Session, rec.Turns, rec.Denials
+	if rec.ExitCode != nil {
+		p.st.ExitCode = *rec.ExitCode
+	}
+	live.Publish(p.st)
 }
 
 // Preflight is swapped out in tests.

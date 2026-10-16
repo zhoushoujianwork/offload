@@ -17,6 +17,10 @@ Call offload directly when an extra coordination layer adds no value. Use a nati
 
 Keep short conversations, trivial lookups, architecture decisions, sensitive changes, and final review with the supervisor. Use `-w` only for edits already authorized by the user's task.
 
+## Pick tasks that fit
+
+Offload works best on tasks with a clear boundary: name the files or directories to read, say it is read-only and needs no shell commands, and fix the output shape (for example `file:line | purpose`, max 10 rows). Workers do worst on open-ended jobs: a review that must discover what to read through `git show` or `git log` keeps reading and can run past the timeout, and `-w` implementation runs have been the least reliable. Keep open-ended review, history digging and non-trivial implementation with the supervisor or a native subagent, or have the worker do only the bounded reading and make the judgment yourself.
+
 ## Assign a bounded task
 
 Give each worker an absolute `-d` directory, a clear goal, scope constraints, an acceptance check, and a concise output format. Ask it to inspect source files rather than answer from memory. Leave `-t` at its default unless the task clearly needs longer; a short `-t` kills a slow worker and loses its report. Offload has no USD cap option; do not impose one. Default to read-only.
@@ -31,9 +35,13 @@ Default stdout contains the final report only. `-json` emits a run record contai
 [offload] ok exit_code=0 minimax/MiniMax-M3 turns=6 estimated_cost=$0.0753 elapsed=20.104s session=07bcaf2c-…
 ```
 
-Exit codes: 0 ok, 1 worker error, 2 usage/config/unreachable gateway error, 124 timeout. Wait for completion and preserve failures. A timeout (124) or a worker that ends without a result still returns what it did (tool-call count, permission denials, last text, last tool calls) and a ready `offload -r <session> "..."` command; resume it rather than starting over or doing the work yourself; do not silently replace a failed worker report with an answer of your own.
+Exit codes: 0 ok, 1 worker error, 2 usage/config/unreachable gateway error, 124 timeout. Wait for completion and preserve failures. A worker that is stopped (timeout 124, 10 minutes of silence) or ends without a result is asked once, with all tools off, to write its report from what it already read. That report is marked `[SALVAGED REPORT ...]`, `salvaged=true` in the summary line and `"salvaged": true` in `-json`. It is partial and unverified: read which parts the worker says it did not get to, and check key claims. Pass `-no-salvage` to skip this step. If no report could be salvaged you still get the progress sketch and an `offload -r <session> "..."` command; resume it rather than starting over; do not silently replace a failed worker report with an answer of your own.
 
 Worker errors retain their type and message, such as `error_max_turns`. An empty worker report prints this error instead. Correct profile routing does not guarantee that every task fits within its timeout.
+
+## Follow a running worker
+
+Do not wait blind. While a worker runs, `offload status` prints one line per worker (tool calls, permission denials, idle time, last tool call). `offload watch` prints one line per event until every worker has finished: `started`, `progress` (at most once a minute), `STALLED` (no event for 60s), `resumed`, `stopped, asking the worker for a report`, `LOST` (the offload process died), `finished`. Start the worker in the background and run `offload watch` with the host's background or monitor facility, so you are told when something needs a decision instead of polling. On `STALLED`, check `offload status`; the worker stops itself after 10 minutes of silence.
 
 ## Know the limits
 
