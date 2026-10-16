@@ -40,6 +40,7 @@ func setup(t *testing.T, reply string) (work, record string) {
 		"  cat \"$prompt_file\" > '" + record + ".prompt'\n" +
 		"  ls -l \"$prompt_file\" > '" + record + ".prompt-mode'\n" +
 		"fi\n" +
+		"[ -n \"$FAKE_PREFIX\" ] && printf '%s\\n' \"$FAKE_PREFIX\"\n" +
 		"[ -n \"$FAKE_SLEEP\" ] && sleep \"$FAKE_SLEEP\"\n" +
 		"[ -n \"$FAKE_STDERR\" ] && printf '%s\\n' \"$FAKE_STDERR\" >&2\n" +
 		"cat <<'EOF'\n" + reply + "\nEOF\n" +
@@ -69,7 +70,7 @@ func runCLI(args ...string) (int, string, string) {
 	return code, out.String(), errb.String()
 }
 
-const okReply = `{"result":"REPORT","is_error":false,"num_turns":3,"total_cost_usd":0.01,"duration_ms":1200,"session_id":"s-1"}`
+const okReply = `{"type":"result","result":"REPORT","is_error":false,"num_turns":3,"total_cost_usd":0.01,"duration_ms":1200,"session_id":"s-1"}`
 
 func TestRunReadOnlyPrintsReportAndIsolatesCredentials(t *testing.T) {
 	work, record := setup(t, okReply)
@@ -150,7 +151,7 @@ func TestHistoryListShowAndResumeDir(t *testing.T) {
 }
 
 func TestErrorAndTimeoutStatus(t *testing.T) {
-	work, _ := setup(t, `{"result":"API Error: 401","is_error":true,"session_id":"s-e"}`)
+	work, _ := setup(t, `{"type":"result","result":"API Error: 401","is_error":true,"session_id":"s-e"}`)
 	code, out, _ := runCLI("-d", work, "x")
 	if code != 1 || !strings.Contains(out, "401") {
 		t.Fatalf("error run: code=%d out=%q", code, out)

@@ -3,7 +3,6 @@ package main
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -16,7 +15,8 @@ import (
 )
 
 const workerPrompt = `You are a worker agent delegated a task by a supervising agent. Work autonomously; never ask questions.
-Finish with a concise report: what you did or found, exact file:line references, commands run with their results, and anything unverified. No preamble.`
+Finish with a concise report: what you did or found, exact file:line references, commands run with their results, and anything unverified. No preamble.
+Nobody can approve permission prompts. Shell is limited to single simple commands: pipes, &&, ;, redirects, heredocs and python -c are refused and waste a turn. Prefer Read, Grep and Glob. When a command is refused, switch tools instead of retrying it.`
 
 var (
 	readOnlyTools = "Read Grep Glob Bash(git log:*) Bash(git diff:*) Bash(git show:*) Bash(ls:*) Bash(rg:*)"
@@ -55,7 +55,7 @@ func buildArgs(o RunOpts, promptPath string) []string {
 	// Gateway, token and model reach the worker only through env (see childEnv), never argv.
 	// --bare still loads settings; disable user/project/local sources so their env cannot
 	// override the selected profile's gateway, credentials or model.
-	args := []string{"-p", "--bare", "--setting-sources", "", "--output-format", "json"}
+	args := []string{"-p", "--bare", "--setting-sources", "", "--output-format", "stream-json", "--verbose"}
 	if o.Resume != "" {
 		args = append(args, "--resume", o.Resume)
 	}
@@ -179,28 +179,40 @@ func run(ctx context.Context, o RunOpts) (rec Record, err error) {
 	cmd.WaitDelay = 100 * time.Millisecond
 	runErr := cmd.Run()
 
+	s := parseStream(out.Bytes())
+	rec.Session, rec.Turns, rec.Denials = s.Session, s.ToolCalls, s.Denials
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-		rec.Status, rec.Result = "timeout", fmt.Sprintf("timed out after %s", o.Timeout)
-		rec.Error = rec.Result
+		rec.Status = "timeout"
+		rec.Error = "timed out after " + o.Timeout.String() + s.resumeHint()
+		rec.Result = rec.Error + s.progress()
 		return rec, nil
 	}
-	var res claudeResult
-	if err := json.Unmarshal(out.Bytes(), &res); err != nil {
-		rec.Result = strings.TrimSpace(out.String())
-		if rec.Result == "" {
-			rec.Result = strings.TrimSpace(workerErr.String())
+	if s.Result == nil {
+		if s.Events == 0 {
+			rec.Result = strings.TrimSpace(out.String())
+			if rec.Result == "" {
+				rec.Result = strings.TrimSpace(workerErr.String())
+			}
+			if rec.Result == "" && runErr != nil {
+				rec.Result = runErr.Error()
+			}
+			rec.Error = "worker returned invalid JSON"
+			if runErr != nil {
+				rec.Error += ": " + runErr.Error()
+			}
+			return rec, nil
 		}
-		if rec.Result == "" && runErr != nil {
-			rec.Result = runErr.Error()
-		}
-		rec.Error = "worker returned invalid JSON"
+		rec.Error = "worker ended without a result"
 		if runErr != nil {
 			rec.Error += ": " + runErr.Error()
 		}
+		rec.Error += s.resumeHint()
+		rec.Result = rec.Error + s.progress()
 		return rec, nil
 	}
+	res := *s.Result
 	rec.Session, rec.Turns, rec.CostUSD, rec.DurationMs, rec.Result =
-		res.SessionID, res.NumTurns, res.CostUSD, res.DurationMs, res.Result
+		firstNonEmpty(res.SessionID, s.Session), res.NumTurns, res.CostUSD, res.DurationMs, res.Result
 	if rec.CostUSD != nil && !validCost(*rec.CostUSD) {
 		rec.CostUSD = nil
 	}

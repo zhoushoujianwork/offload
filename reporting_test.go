@@ -79,7 +79,7 @@ func TestWorkerCostAvailability(t *testing.T) {
 		{"reported zero", `,"total_cost_usd":0`, floatPtr(0)}, {"reported estimate", `,"total_cost_usd":0.125`, floatPtr(0.125)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			work, _ := setup(t, `{"result":"REPORT","session_id":"cost-session"`+tc.cost+`}`)
+			work, _ := setup(t, `{"type":"result","result":"REPORT","session_id":"cost-session"`+tc.cost+`}`)
 			code, out, errOut := runCLI("-json", "-d", work, "check")
 			rec := decodeRun(t, out)
 			if code != 0 || !rec.CostIsEstimate {
@@ -140,24 +140,69 @@ func TestFailedWorkerAndTimeoutMetrics(t *testing.T) {
 	})
 }
 
+// A worker killed by the timeout never prints its result event. What it already did must still
+// reach the supervisor, with a way to resume the session.
+func TestTimeoutKeepsProgressAndResumeHint(t *testing.T) {
+	work, _ := setup(t, okReply)
+	t.Setenv("FAKE_PREFIX", strings.Join([]string{
+		`{"type":"system","subtype":"init","session_id":"s-killed"}`,
+		`{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Read","input":{"file_path":"/a/b.go"}}]}}`,
+		`{"type":"system","subtype":"permission_denied"}`,
+		`{"type":"assistant","message":{"content":[{"type":"text","text":"found the retry loop in b.go"},{"type":"tool_use","name":"Grep","input":{"pattern":"retry"}}]}}`,
+		`{"type":"assistant","message":{"content":[{"type":"text","text":"trunc`,
+	}, "\n"))
+	t.Setenv("FAKE_SLEEP", "5")
+	code, out, errOut := runCLI("-json", "-d", work, "-t", "1500ms", "slow")
+	rec := decodeRun(t, out)
+	if code != 124 || rec.Status != "timeout" || rec.Session != "s-killed" || rec.Turns != 2 || rec.Denials != 1 {
+		t.Fatalf("progress lost: code=%d rec=%+v", code, rec)
+	}
+	for _, want := range []string{"offload -r s-killed", "found the retry loop in b.go", "Read ", "Grep "} {
+		if !strings.Contains(rec.Result, want) {
+			t.Errorf("result missing %q:\n%s", want, rec.Result)
+		}
+	}
+	if !strings.Contains(errOut, "session=s-killed") || !strings.Contains(errOut, "permission_denials=1") {
+		t.Errorf("summary line: %q", errOut)
+	}
+	rs, err := readRecords(historyPath())
+	if err != nil || len(rs) != 1 || rs[0].Session != "s-killed" {
+		t.Fatalf("history must be resumable: %+v err=%v", rs, err)
+	}
+	if code, _, _ := runCLI("show", "s-killed"); code != 0 {
+		t.Fatal("offload show cannot find the interrupted session")
+	}
+}
+
+func TestWorkerEndingWithoutResultIsAnError(t *testing.T) {
+	work, _ := setup(t, "")
+	t.Setenv("FAKE_PREFIX", `{"type":"system","subtype":"init","session_id":"s-cut"}`)
+	t.Setenv("FAKE_EXIT", "1")
+	code, out, _ := runCLI("-json", "-d", work, "x")
+	rec := decodeRun(t, out)
+	if code != 1 || rec.Status != "error" || rec.Session != "s-cut" || !strings.Contains(rec.Error, "without a result") || !strings.Contains(rec.Error, "offload -r s-cut") {
+		t.Fatalf("missing result not reported: code=%d rec=%+v", code, rec)
+	}
+}
+
 func TestStructuredWorkerErrorsAreRetained(t *testing.T) {
 	for _, tc := range []struct {
 		name, reply, wantResult, wantError string
 	}{
 		{
 			"budget exhausted without report",
-			`{"is_error":true,"subtype":"error_max_budget_usd","errors":["Reached maximum budget ($0.2)"],"session_id":"budget-session","num_turns":11,"total_cost_usd":0.2069}`,
+			`{"type":"result","is_error":true,"subtype":"error_max_budget_usd","errors":["Reached maximum budget ($0.2)"],"session_id":"budget-session","num_turns":11,"total_cost_usd":0.2069}`,
 			"error_max_budget_usd: Reached maximum budget ($0.2)",
 			"error_max_budget_usd: Reached maximum budget ($0.2)",
 		},
 		{
 			"error with partial report",
-			`{"is_error":true,"result":"PARTIAL","subtype":"error_during_execution","errors":[" first error ","","second error"],"session_id":"budget-session"}`,
+			`{"type":"result","is_error":true,"result":"PARTIAL","subtype":"error_during_execution","errors":[" first error ","","second error"],"session_id":"budget-session"}`,
 			"PARTIAL", "error_during_execution: first error; second error",
 		},
 		{
 			"subtype without details",
-			`{"is_error":true,"subtype":"error_max_turns","session_id":"budget-session"}`,
+			`{"type":"result","is_error":true,"subtype":"error_max_turns","session_id":"budget-session"}`,
 			"error_max_turns: worker reported an error", "error_max_turns: worker reported an error",
 		},
 	} {

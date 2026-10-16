@@ -5,7 +5,7 @@ Hand token-heavy grunt work from a supervising agent, such as Codex or Claude Co
 `offload` runs `claude -p --bare` against an Anthropic-compatible gateway (MiniMax, DeepSeek, Kimi, GLM, a LiteLLM proxy, …). Use it for reading many files, code searches, log analysis, document summaries, and bounded mechanical edits. The supervisor plans the work and verifies the result.
 
 ```text
-$ offload -d /absolute/path/app -t 90s "Find HTTP retry logic; return file:line references, max 10 rows. Do not edit files."
+$ offload -d /absolute/path/app "Find retry logic; return file:line references, max 10 rows. Do not edit files."
 internal/http/client.go:42  doWithRetry — exponential backoff, 3 attempts
 ...
 [offload] ok exit_code=0 minimax/MiniMax-M3 turns=6 estimated_cost=$0.0753 elapsed=20.104s session=07bcaf2c-…
@@ -112,7 +112,7 @@ Codex main agent → native Codex subagent → offload → Claude CLI / MiniMax
 
 This uses an external worker process; it does not change Codex's native subagent model provider. Give a suitable subagent this instruction:
 
-> Use offload for the bulk reading in /absolute/path/app, read-only, with a 90s timeout. Find retry entry points and tests; return at most 10 file:line rows. Verify two key references and report the model, session, estimated worker cost, and elapsed time.
+> Use offload for the bulk reading in /absolute/path/app, read-only. Find retry entry points and tests; return at most 10 file:line rows. Verify two key references and report the model, session, estimated worker cost, and elapsed time.
 
 Keep short conversations, trivial lookups, architecture choices, sensitive changes, and final review with the supervisor. Workers already launched by offload should finish their assigned task directly instead of delegating again. Spot-check reports; after authorized `-w` work, inspect the diff and independently run relevant checks.
 
@@ -146,7 +146,7 @@ offload version
 `elapsed_ms` measures wall-clock time from CLI entry, including setup and credential retrieval. `duration_ms` preserves the worker-reported duration. The `-t` timeout begins after prompt setup, credential/executable resolution, and the reachability preflight, so elapsed time can exceed it.
 
 ```bash
-offload -json -d /absolute/path/app -t 90s "Read README.md and summarize setup, max 5 bullets. Do not edit files."
+offload -json -d /absolute/path/app "Read README.md and summarize setup, max 5 bullets. Do not edit files."
 ```
 
 Example JSON (illustrative):
@@ -191,6 +191,9 @@ Before launching Claude, a reachability preflight attempts a TCP connection to t
 
 ## Known limits
 
+- The worker is headless, so permission prompts cannot be approved. Compound shell commands (pipes, `&&`, heredocs, `python -c`) are refused and burn a turn; `permission_denials=N` in the summary line counts them.
+- A worker killed by `-t` or ending without a result still reports its progress (tool calls, denials, last text and tool calls) plus an `offload -r <session>` command to resume it. For such runs `turns` counts tool calls.
+- Large tasks are slow (20-40s per turn). Split broad audits instead of raising `-t`; keep `-t` at its default unless the task needs more.
 - Requires network access and writes state outside the project (`~/.claude` and the offload history directory). Use host-approved permissions; when offloading is unavailable, report the failure and continue with local tools or native subagents.
 - Some gateways reject Claude Code's `anthropic-beta: claude-code-*` header and cannot be used as workers.
 - Nested workers inherit host restrictions. For example, the Claude desktop app may prevent file writes; verify the host supports the requested mode.

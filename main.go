@@ -130,6 +130,9 @@ func printRun(rec Record, logPath string, jsonOutput bool, stdout, stderr io.Wri
 	if rec.Error != "" {
 		errText = " error=" + oneLine(rec.Error)
 	}
+	if rec.Denials > 0 {
+		errText = fmt.Sprintf(" permission_denials=%d", rec.Denials) + errText
+	}
 	fmt.Fprintf(stderr, "[offload] %s exit_code=%s %s/%s turns=%d estimated_cost=%s elapsed=%s session=%s%s%s\n",
 		rec.Status, exitText(rec), rec.Profile, rec.Model, rec.Turns, costText(rec), elapsedText(rec),
 		firstNonEmpty(rec.Session, "-"), errText, warning)
