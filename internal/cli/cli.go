@@ -29,6 +29,8 @@ usage:
   offload [flags] "task"        run a task (task may also come on stdin)
   offload ls [n]                list the last n runs (default 10)
   offload show <session>        print every report of a session
+  offload status                what each worker is doing right now
+  offload watch                 one line per event (start, progress, STALLED, finish) until all workers end
   offload profiles              list profiles (* = the one a run would use)
   offload install-agent [flags] install proactive instructions for a host agent
   offload version
@@ -44,6 +46,12 @@ func Run(version string, args []string, stdin io.Reader, stdout, stderr io.Write
 			return cmdList(args[1:], stdout, stderr)
 		case "show":
 			return cmdShow(args[1:], stdout, stderr)
+		case "status":
+			return cmdStatus(stdout, stderr)
+		case "watch":
+			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+			defer stop()
+			return cmdWatch(ctx, stdout, stderr)
 		case "profiles":
 			return cmdProfiles(stdout, stderr)
 		case "install-agent":
@@ -67,6 +75,7 @@ func cmdRun(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	resume := fs.String("r", "", "resume a session id; reuses its original dir unless -d is given")
 	dir := fs.String("d", "", "working directory (default: cwd)")
 	timeout := fs.Duration("t", 30*time.Minute, "timeout")
+	noSalvage := fs.Bool("no-salvage", false, "do not ask a stopped worker for a report from what it already read")
 	jsonOutput := fs.Bool("json", false, "print one structured run result instead of plain report")
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -105,7 +114,7 @@ func cmdRun(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return failRun(err)
 	}
 	o := worker.Opts{ProfileName: name, Profile: prof, Model: firstNonEmpty(*model, prof.Model), Write: *write,
-		Resume: *resume, Dir: wd, Task: task, Timeout: *timeout, StartedAt: started}
+		Resume: *resume, Dir: wd, Task: task, Timeout: *timeout, StartedAt: started, NoSalvage: *noSalvage}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
@@ -129,6 +138,9 @@ func printRun(rec history.Record, logPath string, jsonOutput bool, stdout, stder
 	errText := ""
 	if rec.Error != "" {
 		errText = " error=" + text.OneLine(rec.Error)
+	}
+	if rec.Salvaged {
+		errText = " salvaged=true" + errText
 	}
 	if rec.Denials > 0 {
 		errText = fmt.Sprintf(" permission_denials=%d", rec.Denials) + errText

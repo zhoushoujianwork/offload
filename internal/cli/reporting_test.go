@@ -155,8 +155,8 @@ func TestTimeoutKeepsProgressAndResumeHint(t *testing.T) {
 		`{"type":"assistant","message":{"content":[{"type":"text","text":"found the retry loop in b.go"},{"type":"tool_use","name":"Grep","input":{"pattern":"retry"}}]}}`,
 		`{"type":"assistant","message":{"content":[{"type":"text","text":"trunc`,
 	}, "\n"))
-	t.Setenv("FAKE_SLEEP", "5")
-	code, out, errOut := runCLI("-json", "-d", work, "-t", "1500ms", "slow")
+	t.Setenv("FAKE_SLEEP", "15")
+	code, out, errOut := runCLI("-json", "-d", work, "-t", "4s", "slow")
 	rec := decodeRun(t, out)
 	if code != 124 || rec.Status != "timeout" || rec.Session != "s-killed" || rec.Turns != 2 || rec.Denials != 1 {
 		t.Fatalf("progress lost: code=%d rec=%+v", code, rec)
@@ -209,6 +209,45 @@ func TestIdleLimitDoesNotKillAWorkerThatKeepsWriting(t *testing.T) {
 	rec := decodeRun(t, out)
 	if code != 0 || rec.Status != "ok" {
 		t.Fatalf("active worker was stopped: code=%d rec=%+v stderr=%q", code, rec, errOut)
+	}
+}
+
+// When the worker is stopped, offload asks it for the report with no tools, so the supervisor gets
+// findings instead of a progress sketch. The result must say it is salvaged.
+func TestStoppedWorkerIsSalvagedIntoAReport(t *testing.T) {
+	work, record := setup(t, okReply)
+	t.Setenv("FAKE_PREFIX", `{"type":"system","subtype":"init","session_id":"s-killed"}`)
+	t.Setenv("FAKE_SLEEP", "15")
+	t.Setenv("FAKE_SALVAGE", "FINDING one at a.go:3")
+	code, out, errOut := runCLI("-json", "-d", work, "-t", "4s", "slow")
+	rec := decodeRun(t, out)
+	if code != 124 || rec.Status != "timeout" || !rec.Salvaged || rec.Session != "s-killed" {
+		t.Fatalf("salvage not applied: code=%d rec=%+v", code, rec)
+	}
+	for _, want := range []string{"SALVAGED REPORT", "FINDING one at a.go:3", "not a finished run"} {
+		if !strings.Contains(rec.Result, want) {
+			t.Errorf("result missing %q:\n%s", want, rec.Result)
+		}
+	}
+	if rec.CostUSD == nil || *rec.CostUSD != 0.02 || !strings.Contains(errOut, "salvaged") {
+		t.Errorf("cost/summary: cost=%v stderr=%q", rec.CostUSD, errOut)
+	}
+	args, _ := os.ReadFile(record + ".salvage-args")
+	if !strings.Contains(string(args), "--resume s-killed") || !strings.Contains(string(args), "--tools") || strings.Contains(string(args), "--allowedTools") {
+		t.Errorf("salvage must resume the session with all tools off: %q", args)
+	}
+}
+
+// -no-salvage keeps the old behaviour: progress and a resume command only.
+func TestNoSalvageFlag(t *testing.T) {
+	work, _ := setup(t, okReply)
+	t.Setenv("FAKE_PREFIX", `{"type":"system","subtype":"init","session_id":"s-killed"}`)
+	t.Setenv("FAKE_SLEEP", "15")
+	t.Setenv("FAKE_SALVAGE", "SHOULD NOT APPEAR")
+	_, out, _ := runCLI("-json", "-no-salvage", "-d", work, "-t", "4s", "slow")
+	rec := decodeRun(t, out)
+	if rec.Salvaged || strings.Contains(rec.Result, "SHOULD NOT APPEAR") || !strings.Contains(rec.Result, "offload -r s-killed") {
+		t.Fatalf("-no-salvage ignored: %+v", rec)
 	}
 }
 
