@@ -176,6 +176,8 @@ offload -w -json -d /absolute/path/app "Design decided: expose the existing 3-at
 
 In **basic** mode, keep whole-feature implementation in the main agent; `-w` is still available for mechanical edits or work the user's task explicitly authorizes, such as a scoped rename across a package.
 
+Check uncertain API assumptions before handing off a large implementation: use a scoped read-only probe of the installed API or a minimal reproduction, then delegate one coherent slice with known entry points and acceptance checks. Both worker backends are instructed to return a **BLOCKED** report after an inconclusive focused feasibility check, including evidence, edits made, checks run, and the decision needed from the supervisor. This is a model instruction, not a hard tool-call limit; timeout and cancellation behavior are unchanged. Avoid killing a still-active worker solely because it has not edited yet and then duplicating its investigation locally. Refine the task using its findings and resume the existing session; deliberate cancellation skips automatic salvage, so recover a report with a report-only resume if needed.
+
 Keep short conversations, trivial lookups, architecture choices, sensitive changes, and final review with the supervisor, and keep trivial tasks in the main agent when delegation overhead would exceed the work saved. Workers already launched by offload should finish their assigned task directly instead of delegating again. Default to read-only for inspection; use `-w` explicitly for authorized implementation rather than silently falling back to read-only. Spot-check reports; after authorized `-w` work, inspect the actual diff and independently run relevant checks yourself.
 
 ## Usage

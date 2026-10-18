@@ -37,6 +37,10 @@ Offload works best on tasks with a clear boundary: name the files or directories
 
 Give each worker an absolute `-d` directory, the objective, the design/plan to follow, the allowed files or directories, scope constraints, relevant checks, and a concise completion report format. Ask it to inspect source files rather than answer from memory. Leave `-t` at its default unless the task clearly needs longer; a short `-t` kills a slow worker and loses its report. Offload has no USD cap option; do not impose one. Default to read-only for inspection.
 
+Separate unknown API feasibility from implementation. If a design depends on an unverified API, first assign a read-only probe of the relevant installed declarations or a minimal reproduction, with one concrete question and a stopping condition. Use the evidence to settle the design, then hand off one coherent implementation slice with known entry points and acceptance checks; split independent deliverables instead of bundling all integration work into the first task.
+
+Workers receive the same stopping rule on both backends: make a focused feasibility check, then return a **BLOCKED** report if a critical assumption remains unresolved. The report states the failed assumption, evidence/file:line references, edits already made, checks run, and the supervisor decision needed. Workers must not substitute filesystem-wide searches, repeated inconclusive reads, or permission-denial retries for progress. Reporting a blocker is completion of the investigation, not permission to redesign the feature.
+
 ```bash
 offload -json -d /absolute/path/app "Find HTTP retry entry points and related tests. Read-only; no shell commands. Return file:line | purpose, max 10 rows; mark uncertainty."
 ```
@@ -66,6 +70,8 @@ Worker errors retain their type and message, such as `error_max_turns`. An empty
 ## Follow a running worker
 
 Do not wait blind. While a worker runs, `offload status` prints one line per worker (tool calls, permission denials, idle time, last tool call). `offload watch` prints one line per event until every worker has finished: `started`, `progress` (at most once a minute), `STALLED` (no event for 60s), `resumed`, `stopped, asking the worker for a report`, `LOST` (the offload process died), `finished`. Start the worker in the background and run `offload watch` with the host's background or monitor facility, so you are told when something needs a decision instead of polling. On `STALLED`, check `offload status`; the worker stops itself after 10 minutes of silence.
+
+Tool-call activity alone does not prove useful progress, and no edits yet does not prove a worker is stuck. Do not kill a still-active worker merely for elapsed time or call count and then duplicate its work locally. Read its blocker/findings, settle the decision, and resume the existing session with a narrower task. If cancellation is necessary, preserve its progress and resume hint: deliberate cancellation skips automatic salvage, so recover its findings in a report-only resume before restarting the investigation.
 
 ## Know the limits
 

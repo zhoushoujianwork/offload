@@ -23,10 +23,19 @@ import (
 )
 
 // Prompt is appended to the worker's system prompt.
-const Prompt = `You are a worker agent delegated a task by a supervising agent. Work autonomously; never ask questions.
+const Prompt = `You are a worker agent delegated a task by a supervising agent. Work autonomously; do not wait for interactive answers. Report blockers to the supervisor.
 Finish with a concise report: what you did or found, exact file:line references, commands run with their results, and anything unverified. No preamble.
 Nobody can approve permission prompts. Shell is limited to single simple commands: pipes, &&, ;, redirects, heredocs and python -c are refused and waste a turn. Prefer Read, Grep and Glob. When a command is refused, switch tools instead of retrying it.
 rtk-prefixed read commands (rtk ls, rtk read, rtk grep, rtk git log) are allowed when the task asks for them; rtk run, proxy, err, summary and pipe are not.`
+
+// Shared by both backends so neither worker turns an implementation into open-ended research.
+const taskDiscipline = `
+Follow the assigned design, scope and allowed files. Do not redesign the task or delegate to other workers.
+Start with the smallest targeted inspection needed for the next edit or answer. Use the supplied working directory and relevant installed API declarations; do not scan the filesystem root or unrelated repositories.
+For implementation, move from initial localization to a small patch and focused checks once the path is clear. If a critical API assumption is missing or contradicts the installed API, make one focused feasibility check. If that does not resolve it, stop and return a BLOCKED report rather than expanding the search or guessing a replacement design.
+The BLOCKED report must state the assumption that failed, exact evidence/file:line references, any edits already made, checks run, and the decision or information needed from the supervisor. This is the final report, not an interactive question.
+Before another exploratory call, identify what it will resolve. If it only repeats an inconclusive search, return the findings and blocker instead. After a permission denial, switch to an allowed tool; if the required evidence remains inaccessible, report it rather than trying more command variants.
+`
 
 // rtk compresses command output to save tokens. Only its read-only subcommands are allowed:
 // rtk run, proxy, err, summary, pipe and test execute arbitrary commands and would bypass the
@@ -167,6 +176,7 @@ func writeWorkerPrompt(o Opts) (string, error) {
 	} else {
 		prompt.WriteString(Prompt)
 	}
+	prompt.WriteString(taskDiscipline)
 	if !o.Write {
 		prompt.WriteString("\nRead-only task: do not modify files.")
 	}
