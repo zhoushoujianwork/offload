@@ -92,18 +92,38 @@ OFFLOAD_PROFILE=deepseek offload -d /absolute/path/app "Find retry entry points,
 
 `-m` overrides the selected profile's model for that run.
 
-## Set up Codex and Claude Code
+## Delegation mode
 
-Install the bundled skill and proactive instructions into each supervising agent's main instruction file:
+Delegation mode controls how proactively the installed policy tells a supervising agent to hand work to offload. It is independent of the provider `profile`/model selection above and does not change worker permissions (`-w` still opts in to edits).
+
+| Mode | Behavior |
+|---|---|
+| `basic` | Mainly delegates research, code localization, summaries, and bounded mechanical edits. Whole-feature implementation stays with the main agent unless the user explicitly requests delegation. |
+| `proactive` (default) | Also proactively delegates bounded feature/bugfix implementation, its tests, and docs, once the main agent has decided the design and acceptance criteria. |
+
+Both modes keep architecture/design decisions, important tradeoffs, and final independent review with the supervising agent, and keep the existing permission, monitoring, resume, and no-recursive-worker rules.
 
 ```bash
-offload install-agent                         # both agents, user scope
+offload mode              # print the saved mode (unset config defaults to proactive)
+offload mode basic        # switch both installed agents (user scope) to basic
+offload mode proactive    # switch back to proactive
+```
+
+`offload mode` with no argument only reads the saved mode and does not create a config file or touch installed instructions. Setting it validates the mode first, then updates the installed policy/skill for both Codex and Claude Code (user scope) using the same install logic as `install-agent`, and finally saves `delegation_mode` in the config, preserving every other field (profiles, default, credentials). If persisting the choice fails after the instructions were already updated, the command reports that explicitly so you know the files and the saved mode are out of sync. Repeating the same mode leaves already matching files unchanged. **Start a new agent session after changing the mode** so it picks up the updated instructions; a session already running keeps its previously loaded copy.
+
+## Set up Codex and Claude Code
+
+Install the bundled skill and delegation policy into each supervising agent's main instruction file:
+
+```bash
+offload install-agent                         # both agents, user scope, saved mode (default proactive)
 offload install-agent -agent codex            # Codex only
 offload install-agent -agent claude           # Claude Code only
 offload install-agent -scope project -d /absolute/path/app
+offload install-agent -mode basic             # install basic mode for this run only; does not change the saved mode
 ```
 
-`-agent` accepts `codex`, `claude`, or `all` (default). `-scope` accepts `user` (default) or `project`. Project scope defaults to the current directory; `-d` is only valid with project scope. This installs instructions and skills; configure gateway credentials separately above.
+`-agent` accepts `codex`, `claude`, or `all` (default). `-scope` accepts `user` (default) or `project`. Project scope defaults to the current directory; `-d` is only valid with project scope. `-mode` accepts `basic` or `proactive` and overrides the mode for that install only; without it, `install-agent` uses the saved mode from `offload mode` (absent config defaults to `proactive`). This installs instructions and skills; configure gateway credentials separately above.
 
 | Agent / scope | Skill directory | Main instruction file |
 |---|---|---|
@@ -120,7 +140,7 @@ Codex's current skill locations are documented in [Build skills](https://learn.c
 
 ### Main agent and subagent workflow
 
-The installed policy asks main agents and native subagents to proactively consider offload before doing substantial work themselves, throughout execution. The main agent owns requirements, architecture/design, tradeoffs, task decomposition, and final review/acceptance; once it has a clear design/plan and acceptance criteria, it should proactively offload the bounded implementation too, including code localization, tests, regression checks, and docs, not only research or mechanical edits. Complexity alone is not a reason to keep implementation in the main agent. If a worker finds the design, scope, or architecture needs to change, it reports findings/options back instead of redesigning on its own. Call the CLI directly when another coordination layer adds no value. For parallel work or independent review, a native Codex subagent can launch the external worker:
+The installed policy asks main agents and native subagents to consider offload before doing substantial work themselves, throughout execution, according to the active delegation mode. In **proactive** mode this includes bounded implementation once the design is decided; in **basic** mode it mainly covers research, localization, summaries, and bounded mechanical edits, without proactively handing off a whole feature's implementation. In both modes, the main agent owns requirements, architecture/design, tradeoffs, task decomposition, and final review/acceptance. If a worker finds the design, scope, or architecture needs to change, it reports findings/options back instead of redesigning on its own. Call the CLI directly when another coordination layer adds no value. For parallel work or independent review, a native Codex subagent can launch the external worker:
 
 ```text
 Main agent → optional native subagent → offload → selected Claude/Codex profile
@@ -131,11 +151,13 @@ This uses an external worker process; it does not change Codex's native subagent
 
 > Use offload for the bulk reading in /absolute/path/app, read-only. Find retry entry points and tests; return at most 10 file:line rows. Verify two key references and report the model, session, estimated worker cost, and elapsed time.
 
-Once the design is decided, hand off bounded implementation the same way, explicitly with `-w`:
+In **proactive** mode, once the design is decided, hand off bounded implementation the same way, explicitly with `-w`:
 
 ```bash
 offload -w -json -d /absolute/path/app "Design decided: expose the existing 3-attempt retry limit as maxAttempts (default 3); preserve backoff and error behavior. Only edit internal/http/client.go and internal/http/client_test.go. Update the API comment, test default and explicit limits, and run go test ./internal/http. No commit, push, or unrelated changes. Report changes, check results, and any design questions."
 ```
+
+In **basic** mode, keep whole-feature implementation in the main agent; `-w` is still available for mechanical edits or work the user's task explicitly authorizes, such as a scoped rename across a package.
 
 Keep short conversations, trivial lookups, architecture choices, sensitive changes, and final review with the supervisor, and keep trivial tasks in the main agent when delegation overhead would exceed the work saved. Workers already launched by offload should finish their assigned task directly instead of delegating again. Default to read-only for inspection; use `-w` explicitly for authorized implementation rather than silently falling back to read-only. Spot-check reports; after authorized `-w` work, inspect the actual diff and independently run relevant checks yourself.
 
@@ -149,7 +171,8 @@ offload status                what each worker is doing right now
 offload watch                 one line per event (started, progress, STALLED, finished) until all workers end
 offload profiles              list profiles (* = the one a run would use)
 offload default [profile]     show or set the saved default profile
-offload install-agent [flags] install skills and proactive agent instructions
+offload mode [basic|proactive] show or set the saved delegation mode
+offload install-agent [flags] install skills and delegation agent instructions
 offload version
 
   -p profile   profile name (default: $OFFLOAD_PROFILE, then config default)

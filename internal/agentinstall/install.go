@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/zhoushoujianwork/offload/internal/config"
 	"github.com/zhoushoujianwork/offload/skills"
 )
 
@@ -26,6 +27,7 @@ const (
 const offloadAgentPolicy = offloadPolicyBegin + `
 ## Token offloading
 
+- Delegation mode: proactive.
 - Proactively consider offload throughout investigation, code localization, implementation, regression testing, validation, and documentation. Use it as a routine execution assistant, not just for bulk reading or mechanical edits; decide before doing substantial work yourself or ingesting large outputs. This applies to the main agent and native subagents.
 - This policy is for supervising agents and their native subagents. An external offload worker must complete its assigned task directly and must not launch another offload worker.
 - The main agent owns requirements, architecture/design, important tradeoffs, task decomposition, and final review/acceptance. Once it has a clear design/implementation plan and acceptance criteria, delegate bounded feature/bugfix implementation with -w, including relevant tests and docs; complexity alone must not exclude implementation from being delegated. If a worker finds that the task needs a different design, scope, or architecture, it must report findings/options to the supervisor instead of redesigning on its own.
@@ -60,6 +62,7 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	agent := fs.String("agent", "all", "agent to install: codex, claude, or all")
 	scope := fs.String("scope", "user", "instruction scope: user or project")
 	dir := fs.String("d", "", "project root (project scope only; default: cwd)")
+	mode := fs.String("mode", "", "delegation mode: basic or proactive (default: saved mode, then proactive)")
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return 0
@@ -69,11 +72,21 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	if len(fs.Args()) != 0 {
 		return fail(stderr, errors.New("install-agent: unexpected positional arguments"))
 	}
+	if *mode == "" {
+		selected, err := config.LoadMode(config.Path())
+		if err != nil {
+			return fail(stderr, err)
+		}
+		*mode = selected
+	}
+	if !config.ValidMode(*mode) {
+		return fail(stderr, fmt.Errorf("unknown delegation mode %q (want basic or proactive)", *mode))
+	}
 	targets, err := agentInstallTargets(*agent, *scope, *dir)
 	if err != nil {
 		return fail(stderr, err)
 	}
-	files, err := planAgentInstall(targets, skills.Offload)
+	files, err := planAgentInstallMode(targets, skills.Offload, *mode)
 	if err != nil {
 		return fail(stderr, err)
 	}
@@ -147,6 +160,11 @@ func agentInstallTargets(agent, scope, dir string) ([]agentInstallTarget, error)
 }
 
 func planAgentInstall(targets []agentInstallTarget, skill []byte) ([]agentInstallFile, error) {
+	return planAgentInstallMode(targets, skill, config.ModeProactive)
+}
+
+func planAgentInstallMode(targets []agentInstallTarget, skill []byte, delegationMode string) ([]agentInstallFile, error) {
+	skill = skillForMode(skill, delegationMode)
 	owner, err := json.MarshalIndent(skillOwnership{Format: 1, SkillSHA256: skillHash(skill)}, "", "  ")
 	if err != nil {
 		return nil, err
@@ -161,7 +179,7 @@ func planAgentInstall(targets []agentInstallTarget, skill []byte) ([]agentInstal
 		if err != nil {
 			return nil, err
 		}
-		updated, err := updateOffloadPolicy(policy)
+		updated, err := updateOffloadPolicyMode(policy, delegationMode)
 		if err != nil {
 			return nil, fmt.Errorf("install-agent: %s: %w", target.policyPath, err)
 		}
@@ -229,6 +247,10 @@ func skillHash(data []byte) string {
 }
 
 func updateOffloadPolicy(existing []byte) ([]byte, error) {
+	return updateOffloadPolicyMode(existing, config.ModeProactive)
+}
+
+func updateOffloadPolicyMode(existing []byte, mode string) ([]byte, error) {
 	text := string(existing)
 	begins, ends := strings.Count(text, offloadPolicyBegin), strings.Count(text, offloadPolicyEnd)
 	if begins != ends || begins > 1 || strings.Count(text, "<!-- offload:") != begins+ends {
@@ -238,7 +260,7 @@ func updateOffloadPolicy(existing []byte) ([]byte, error) {
 	if strings.Contains(text, "\r\n") {
 		newline = "\r\n"
 	}
-	block := strings.ReplaceAll(offloadAgentPolicy, "\n", newline)
+	block := strings.ReplaceAll(policyForMode(mode), "\n", newline)
 	if begins == 0 {
 		if len(text) == 0 {
 			return []byte(block + newline), nil

@@ -1,9 +1,13 @@
 ---
 name: offload
-description: Proactively delegate investigation, code localization, implementation, tests, validation, and documentation through the offload CLI. Use throughout execution once work can be scoped; keep design decisions and final acceptance with the supervising agent.
+description: Delegate work through the offload CLI according to the active delegation mode (basic or proactive). Both modes keep design decisions and final acceptance with the supervising agent; proactive mode additionally delegates bounded feature/bugfix implementation once the design is decided.
 ---
 
 # offload
+
+Delegation mode: proactive
+
+Follow the active mode above. `offload mode` shows the saved user default; a project installation may override it.
 
 `offload [-p profile] [-m model] [-w] [-r session] [-d dir] [-t 30m] [-json] "task"`
 
@@ -15,17 +19,19 @@ For Claude profiles, the CLI starts an external `claude -p --bare` worker on the
 
 ## Choose the worker early
 
-Proactively consider offload throughout investigation, code localization, implementation, regression testing, validation, and documentation. Use it as a routine execution assistant, not just for bulk reading or mechanical edits. Decide before doing substantial work yourself or ingesting large outputs. During investigation, delegate evidence gathering and localization; after the main agent decides the design and acceptance criteria, delegate bounded implementation with `-w`. This applies to main agents and native subagents.
+In **basic** mode, mainly delegate research, code localization, log/output summarization, and bounded mechanical edits (renames, formatting, boilerplate). Do not proactively hand off an entire feature's implementation; delegate whole-feature implementation only when the user explicitly asks for it. Authorized mechanical edits may use `-w`.
 
-Call offload directly when an extra coordination layer adds no value. Use a native subagent when parallel work or independent review helps; explicitly instruct it to call offload for the bulk or implementation task and verify the report. If already running as an external offload worker, complete the assigned task directly without recursive delegation.
+In **proactive** mode, proactively consider offload throughout investigation, code localization, implementation, regression testing, validation, and documentation. Use it as a routine execution assistant, not just for bulk reading or mechanical edits. Decide before doing substantial work yourself or ingesting large outputs. During investigation, delegate evidence gathering and localization; after the main agent decides the design and acceptance criteria, delegate bounded implementation with `-w`.
 
-The main agent owns requirements, architecture/design, important tradeoffs, task decomposition, and final review/acceptance. It must supply a clear design/implementation plan and acceptance criteria before delegating a feature/bugfix; complexity alone is not a reason to keep implementation in the main agent. If a worker determines mid-task that the design, scope, or architecture needs to change, it should report findings/options back rather than redesigning on its own.
+Both modes apply to main agents and native subagents. Call offload directly when an extra coordination layer adds no value. Use a native subagent when parallel work or independent review helps; explicitly instruct it to call offload for the task and verify the report. If already running as an external offload worker, complete the assigned task directly without recursive delegation.
+
+In both modes, the main agent owns requirements, architecture/design, important tradeoffs, task decomposition, and final review/acceptance. It must supply a clear design/implementation plan and acceptance criteria before delegating a feature/bugfix. In proactive mode, complexity alone is not a reason to keep implementation in the main agent. If a worker determines mid-task that the design, scope, or architecture needs to change, it should report findings/options back rather than redesigning on its own.
 
 Keep short conversations, trivial lookups, architecture decisions, sensitive changes, and final review with the supervisor. Keep trivial tasks in the main agent when delegation overhead would exceed the work saved. Use `-w` only for edits already authorized by the user's task, and use it explicitly for authorized implementation rather than silently falling back to read-only.
 
 ## Pick tasks that fit
 
-Offload works best on tasks with a clear boundary: name the files or directories involved, state whether it is read-only or `-w`, and fix the output shape (for example `file:line | purpose`, max 10 rows, or a completion report). Workers do worst on genuinely open-ended jobs where the goal itself is undefined, such as a review that must discover what to read through `git show` or `git log` with no stated scope; those can keep reading and run past the timeout. Keep that kind of undirected exploration and all architecture/design decisions with the supervisor or a native subagent. Once the main agent has done that design work, bounded `-w` implementation (including its tests and docs) is a good fit for delegation.
+Offload works best on tasks with a clear boundary: name the files or directories involved, state whether it is read-only or `-w`, and fix the output shape (for example `file:line | purpose`, max 10 rows, or a completion report). Workers do worst on genuinely open-ended jobs where the goal itself is undefined, such as a review that must discover what to read through `git show` or `git log` with no stated scope; those can keep reading and run past the timeout. Keep that kind of undirected exploration and all architecture/design decisions with the supervisor or a native subagent. In proactive mode, once the main agent has done that design work, bounded `-w` implementation (including its tests and docs) is a good fit for delegation. In basic mode, keep whole-feature implementation with the main agent; offload still fits bounded mechanical edits and explicitly authorized `-w` work.
 
 ## Assign a bounded task
 
@@ -35,10 +41,16 @@ Give each worker an absolute `-d` directory, the objective, the design/plan to f
 offload -json -d /absolute/path/app "Find HTTP retry entry points and related tests. Read-only; no shell commands. Return file:line | purpose, max 10 rows; mark uncertainty."
 ```
 
-For implementation, hand off after the main agent has decided the design:
+In proactive mode, hand off bounded feature/bugfix implementation after the main agent has decided the design:
 
 ```bash
 offload -w -json -d /absolute/path/app "Design decided: expose the existing 3-attempt retry limit as maxAttempts (default 3); preserve backoff and error behavior. Only edit internal/http/client.go and internal/http/client_test.go. Update the API comment, test default and explicit limits, and run go test ./internal/http. No commit, push, or unrelated changes. Report changes, check results, and any design questions."
+```
+
+In basic mode, use `-w` only when the user's task explicitly authorizes the edit (bounded mechanical change), not for proactively delegating a whole feature:
+
+```bash
+offload -w -json -d /absolute/path/app "User explicitly authorized this edit: rename getUserName to getUsername across the package and update callers. Only mechanical renames; no behavior change. Run go build ./... and go test ./... Report changed files and check results."
 ```
 
 Default stdout contains the final report only. `-json` emits a run record containing `status`, `exit_code`, `profile`, `model`, `session`, `turns`, `cost_usd`, `cost_is_estimate`, `duration_ms`, `elapsed_ms`, `result`, and optional `error` (plus task/directory/time). Stderr provides one summary line:
@@ -73,7 +85,8 @@ Report each external worker's status/exit code, profile/model, session, turns, e
 - `offload ls [n]` — recent runs with estimated cost and elapsed time; unavailable legacy metrics show `unknown`.
 - `offload show <session>` — session reports and metrics.
 - `offload -r <session> "..."` — continue with the worker's context; reuses its original directory unless `-d` is given.
-- `offload install-agent [-agent codex|claude|all] [-scope user|project] [-d dir]` — install this skill and proactive instructions; defaults to both agents, user scope. `-d` is project-only. Existing unmanaged/modified/symlinked skill targets are preserved; inspect and back up before migration.
+- `offload install-agent [-agent codex|claude|all] [-scope user|project] [-d dir] [-mode basic|proactive]` — install this skill and the delegation policy; defaults to both agents, user scope, and the saved mode (absent config defaults to proactive). `-mode` overrides the mode for that install only and does not change the saved default. `-d` is project-only. Existing unmanaged/modified/symlinked skill targets are preserved; inspect and back up before migration. Start a new agent session to load changed instructions.
+- `offload mode [basic|proactive]` — show the saved delegation mode (defaults to `proactive` if unset), or set it. Setting it updates the policy/skill installed for both agents (user scope) and persists `delegation_mode` in the config, independent of model/profile selection. Start a new agent session to load the change.
 
 For long tasks, use the host's supported background execution and later collect the actual exit/result; avoid fire-and-forget work.
 

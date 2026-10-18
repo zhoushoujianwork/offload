@@ -25,6 +25,30 @@ type Profile struct {
 type Config struct {
 	Default  string             `json:"default"`
 	Profiles map[string]Profile `json:"profiles"`
+	// DelegationMode controls how proactively a supervising agent is instructed to
+	// delegate work via offload: "basic" or "proactive". Empty means unset.
+	DelegationMode string `json:"delegation_mode,omitempty"`
+}
+
+// Delegation modes understood by `offload mode` and `install-agent -mode`.
+const (
+	ModeBasic     = "basic"
+	ModeProactive = "proactive"
+)
+
+// ValidMode reports whether m is a supported delegation mode.
+func ValidMode(m string) bool {
+	return m == ModeBasic || m == ModeProactive
+}
+
+// EffectiveMode returns the configured delegation mode, defaulting to ModeProactive
+// when unset. c may be nil (no config loaded), which also defaults to ModeProactive
+// for backward compatibility.
+func (c *Config) EffectiveMode() string {
+	if c == nil || c.DelegationMode == "" {
+		return ModeProactive
+	}
+	return c.DelegationMode
 }
 
 // Dir is the directory holding offload's config.

@@ -11,6 +11,18 @@ import (
 	"github.com/zhoushoujianwork/offload/skills"
 )
 
+// Installer tests must not inherit a developer's saved delegation mode or config.
+func TestMain(m *testing.M) {
+	dir, err := os.MkdirTemp("", "offload-install-test-config-")
+	if err != nil {
+		panic(err)
+	}
+	os.Setenv("XDG_CONFIG_HOME", dir)
+	code := m.Run()
+	os.RemoveAll(dir)
+	os.Exit(code)
+}
+
 func installAgentCLI(args ...string) (int, string, string) {
 	var out, errOut bytes.Buffer
 	code := Run(args, &out, &errOut)

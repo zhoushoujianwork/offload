@@ -33,7 +33,8 @@ usage:
   offload watch                 one line per event (start, progress, STALLED, finish) until all workers end
   offload profiles              list profiles (* = the one a run would use)
   offload default [profile]     show or set the saved default profile
-  offload install-agent [flags] install proactive instructions for a host agent
+  offload mode [basic|proactive] show or switch delegation mode and agent rules
+  offload install-agent [flags] install delegation instructions for a host agent
   offload version
 
 flags:
@@ -57,6 +58,8 @@ func Run(version string, args []string, stdin io.Reader, stdout, stderr io.Write
 			return cmdProfiles(stdout, stderr)
 		case "default":
 			return cmdDefault(args[1:], stdout, stderr)
+		case "mode":
+			return agentinstall.RunMode(args[1:], stdout, stderr)
 		case "install-agent":
 			return agentinstall.Run(args[1:], stdout, stderr)
 		case "version":
