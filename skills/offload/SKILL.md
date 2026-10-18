@@ -7,7 +7,11 @@ description: Proactively delegate token-heavy file reading, log analysis, code s
 
 `offload [-p profile] [-m model] [-w] [-r session] [-d dir] [-t 30m] [-json] "task"`
 
-The CLI starts an external `claude -p --bare` worker on the configured Anthropic-compatible gateway, such as MiniMax. It does not replace a native Codex subagent's model provider. Profiles live in `~/.config/offload/config.json`; select with `-p`, `OFFLOAD_PROFILE`, or config `default`. `offload profiles` lists them. Each run drops the caller's `ANTHROPIC_*` variables and sets the chosen `ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN` (Bearer), and `ANTHROPIC_MODEL` (`-m` can override). It also passes `--setting-sources ""` so user/project/local settings cannot override the profile; `--bare` alone does not isolate settings. Auth is environment-only, without `apiKeyHelper` or `--settings`.
+The CLI supports `claude` (default) and `codex` profile backends. Set `"backend": "codex"` in a profile to use `codex exec --json` with native Codex authentication/configuration; model is optional. Run `offload default <profile>` to save either backend as the default, or `offload default` to show the saved choice. `-p` and `OFFLOAD_PROFILE` override it for new runs. Known session resumes retain their original profile unless `-p` is given.
+
+Codex workers use approval policy `never`, sandbox `read-only` (or `workspace-write` with `-w`), and stdin for instructions/tasks. `OFFLOAD_CODEX` overrides the executable. Claude gateway/token fields do not apply to Codex. Codex cost is unavailable (`null`/`unknown`), and `turns` counts tool calls. Interrupted Codex runs preserve progress and a resume hint, without automatic tool-less salvage.
+
+For Claude profiles, the CLI starts an external `claude -p --bare` worker on the configured Anthropic-compatible gateway, such as MiniMax. It does not replace a native Codex subagent's model provider. Profiles live in `~/.config/offload/config.json`; select with `-p`, `OFFLOAD_PROFILE`, or config `default`. `offload profiles` lists them. Each run drops the caller's `ANTHROPIC_*` variables and sets the chosen `ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN` (Bearer), and `ANTHROPIC_MODEL` (`-m` can override). It also passes `--setting-sources ""` so user/project/local settings cannot override the profile; `--bare` alone does not isolate settings. Auth is environment-only, without `apiKeyHelper` or `--settings`.
 
 ## Choose the worker early
 
@@ -35,7 +39,7 @@ Default stdout contains the final report only. `-json` emits a run record contai
 [offload] ok exit_code=0 minimax/MiniMax-M3 turns=6 estimated_cost=$0.0753 elapsed=20.104s session=07bcaf2c-…
 ```
 
-Exit codes: 0 ok, 1 worker error, 2 usage/config/unreachable gateway error, 124 timeout. Wait for completion and preserve failures. A worker that is stopped (timeout 124, 10 minutes of silence) or ends without a result is asked once, with all tools off, to write its report from what it already read. That report is marked `[SALVAGED REPORT ...]`, `salvaged=true` in the summary line and `"salvaged": true` in `-json`. It is partial and unverified: read which parts the worker says it did not get to, and check key claims. Pass `-no-salvage` to skip this step. If no report could be salvaged you still get the progress sketch and an `offload -r <session> "..."` command; resume it rather than starting over; do not silently replace a failed worker report with an answer of your own.
+Exit codes: 0 ok, 1 worker error, 2 usage/config/unreachable gateway error, 124 timeout. Wait for completion and preserve failures. A Claude worker that is stopped (timeout 124, 10 minutes of silence) or ends without a result is asked once, with all tools off, to write its report from what it already read. That report is marked `[SALVAGED REPORT ...]`, `salvaged=true` in the summary line and `"salvaged": true` in `-json`. It is partial and unverified: read which parts the worker says it did not get to, and check key claims. Pass `-no-salvage` to skip this step. If no report could be salvaged you still get the progress sketch and an `offload -r <session> "..."` command; resume it rather than starting over; do not silently replace a failed worker report with an answer of your own.
 
 Worker errors retain their type and message, such as `error_max_turns`. An empty worker report prints this error instead. Correct profile routing does not guarantee that every task fits within its timeout.
 
@@ -69,9 +73,9 @@ For long tasks, use the host's supported background execution and later collect 
 
 Project AGENTS.md/CLAUDE.md instructions and worker constraints are combined in one private temporary file passed with `--append-system-prompt-file`, then cleaned up. Instruction contents and tokens stay out of argv.
 
-Read-only/write modes configure Claude tool approvals, not an operating-system sandbox. Allowed build scripts can have side effects beyond the named task. Constrain the task, inspect relevant scripts and edits, and honor host permissions. Do not ask the worker to commit, push, delete files, or change unrelated configuration.
+For Claude, read-only/write modes configure tool approvals, not an operating-system sandbox. Allowed build scripts can have side effects beyond the named task. Constrain the task, inspect relevant scripts and edits, and honor host permissions. Do not ask the worker to commit, push, delete files, or change unrelated configuration.
 
-The CLI needs network access and writes state outside the workspace (`~/.claude`, `$XDG_STATE_HOME/offload`, default `~/.local/state/offload`). Use approved escalation only when the host supports and requires it. Nested workers inherit host restrictions; some hosts may prevent writes. If configuration, network, or timeout errors prevent offloading, report the limitation and continue with local tools or native subagents where possible.
+The CLI needs network access and writes state outside the workspace (`~/.claude` or `$CODEX_HOME`, `$XDG_STATE_HOME/offload`, default `~/.local/state/offload`). Use approved escalation only when the host supports and requires it. Nested workers inherit host restrictions; some hosts may prevent writes. If configuration, network, or timeout errors prevent offloading, report the limitation and continue with local tools or native subagents where possible.
 
 Before launching the worker, a 5s TCP reachability check fails fast with exit 2 (`cannot reach gateway`). Proxy settings skip the direct check; connectivity, credentials, and model access can still fail later. Follow host permissions instead of assuming all sandboxed runs need the same escalation.
 

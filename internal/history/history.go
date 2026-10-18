@@ -16,6 +16,7 @@ type Record struct {
 	Status         string   `json:"status"` // ok | error | timeout
 	ExitCode       *int     `json:"exit_code"`
 	Profile        string   `json:"profile"`
+	Backend        string   `json:"backend,omitempty"`
 	Model          string   `json:"model"`
 	Dir            string   `json:"dir"`
 	Task           string   `json:"task"`

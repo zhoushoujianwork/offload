@@ -2,7 +2,7 @@
 
 Hand token-heavy grunt work from a supervising agent, such as Codex or Claude Code, to a cheaper model. Get back the final report, estimated worker cost, and measured elapsed time.
 
-`offload` runs `claude -p --bare` against an Anthropic-compatible gateway (MiniMax, DeepSeek, Kimi, GLM, a LiteLLM proxy, …). Use it for reading many files, code searches, log analysis, document summaries, and bounded mechanical edits. The supervisor plans the work and verifies the result.
+`offload` runs Claude Code against an Anthropic-compatible gateway (MiniMax, DeepSeek, Kimi, GLM, a LiteLLM proxy, …), or runs `codex exec` using your Codex login and configuration. Use it for reading many files, code searches, log analysis, document summaries, and bounded mechanical edits. The supervisor plans the work and verifies the result.
 
 ```text
 $ offload -d /absolute/path/app "Find retry logic; return file:line references, max 10 rows. Do not edit files."
@@ -19,7 +19,7 @@ https://github.com/user-attachments/assets/5f77d50f-7338-4a12-a740-af4c91c6e50d
 
 ## Install
 
-Requires [Claude Code](https://docs.anthropic.com/en/docs/claude-code) (`claude` on PATH or at `~/.claude/local/claude`) and Go 1.24+.
+Requires Go 1.24+ and the CLI for your selected backend: [Claude Code](https://docs.anthropic.com/en/docs/claude-code) (`claude` on PATH or at `~/.claude/local/claude`) or [Codex](https://developers.openai.com/codex/cli/) (`codex` on PATH, already signed in).
 
 ```bash
 go install github.com/zhoushoujianwork/offload@latest
@@ -40,6 +40,9 @@ To install from a source checkout, run `go install .` in that checkout. If an ol
       "model": "MiniMax-M3",
       "token_cmd": "security find-generic-password -s offload-minimax -w"
     },
+    "codex": {
+      "backend": "codex"
+    },
     "deepseek": {
       "base_url": "https://api.deepseek.com/anthropic",
       "model": "deepseek-chat",
@@ -53,7 +56,7 @@ To install from a source checkout, run `go install .` in that checkout. If an ol
 
 ### How switching works
 
-A profile is just the three variables Claude Code reads. For each run, offload drops every `ANTHROPIC_*` variable from the caller's environment and sets exactly:
+Profiles select a `backend`: `claude` (the default for existing profiles) or `codex`. Claude profiles provide the three variables Claude Code reads. For each Claude run, offload drops every `ANTHROPIC_*` variable from the caller's environment and sets exactly:
 
 | profile field | worker env |
 |---|---|
@@ -63,15 +66,29 @@ A profile is just the three variables Claude Code reads. For each run, offload d
 
 `--setting-sources ""` disables user, project, and local settings so their environment overrides cannot replace the profile's gateway, token, or model. `--bare` alone does not isolate settings. Authentication is environment-only; no `apiKeyHelper` or `--settings` argument is used. Tokens never appear in argv.
 
+### Codex workers
+
+A profile with `"backend": "codex"` runs `codex exec --json`. It uses your existing Codex authentication, provider, and configuration, including `CODEX_HOME`. The optional `model` field or `-m` selects a model; omit both to use the Codex default. Gateway fields (`base_url`, `token`, `token_cmd`) apply only to Claude profiles. `OFFLOAD_CODEX` can override the Codex executable.
+
+Codex runs with approval policy `never`, using the `read-only` sandbox by default and `workspace-write` with `-w`. These are Codex sandbox policies, separate from the Claude tool approval lists below. Instructions and the task are sent over stdin. Codex also discovers its own agent instructions. JSONL events supply the report, session ID, and live tool progress; `turns` counts tool calls. Codex does not report a USD cost, so offload shows `unknown` (`null` in JSON).
+
+Interrupted Codex runs retain progress and a resume command. Automatic tool-less salvage is supported only for Claude.
+
 ### Choosing a profile
 
 Choose per run with `-p name`, per shell with `OFFLOAD_PROFILE=name`, otherwise through `default` in the config. `offload profiles` lists profiles, with `*` marking the selected default; it never prints tokens.
 
 ```bash
 offload profiles
+offload default codex     # save Codex as the default
+offload default minimax   # switch back to Claude through this profile
+offload default           # show the saved default
+offload -p codex -d /absolute/path/app "Summarize README.md, max 5 bullets."
 offload -p minimax -d /absolute/path/app "Summarize README.md, max 5 bullets."
 OFFLOAD_PROFILE=deepseek offload -d /absolute/path/app "Find retry entry points, max 10 file:line rows."
 ```
+
+`offload default <profile>` validates the profile and saves it without changing other configuration fields. `OFFLOAD_PROFILE` still overrides the saved default for new runs. Resuming a known session reuses its original profile and directory; `-p` and `-d` explicitly override them.
 
 `-m` overrides the selected profile's model for that run.
 
@@ -125,6 +142,7 @@ offload show <session>        print every report of a session
 offload status                what each worker is doing right now
 offload watch                 one line per event (started, progress, STALLED, finished) until all workers end
 offload profiles              list profiles (* = the one a run would use)
+offload default [profile]     show or set the saved default profile
 offload install-agent [flags] install skills and proactive agent instructions
 offload version
 
@@ -144,7 +162,7 @@ offload version
 
 ### Cost and elapsed time
 
-`cost_usd` comes from the Claude worker's reported estimate; `cost_is_estimate` is `true`. It excludes the parent Codex/Claude agent and any native subagent coordination. Actual provider bills and total savings are unverified. Missing cost is `null` in JSON and `unknown` in text; a reported zero is valid. Old history still loads, with unavailable cost, exit code, or elapsed time shown as `unknown`.
+Codex does not provide a USD cost; its `cost_usd` is `null`. For Claude, `cost_usd` comes from the worker's reported estimate; `cost_is_estimate` is `true`. It excludes the parent Codex/Claude agent and any native subagent coordination. Actual provider bills and total savings are unverified. Missing cost is `null` in JSON and `unknown` in text; a reported zero is valid. Old history still loads, with unavailable cost, exit code, or elapsed time shown as `unknown`.
 
 `elapsed_ms` measures wall-clock time from CLI entry, including setup and credential retrieval. `duration_ms` preserves the worker-reported duration. The `-t` timeout begins after prompt setup, credential/executable resolution, and the reachability preflight, so elapsed time can exceed it.
 
@@ -188,16 +206,16 @@ These Claude tool approval rules are not an operating-system sandbox or a guaran
 
 ### Codex host permissions and reachability
 
-Install the Codex instructions with `offload install-agent -agent codex`. The CLI needs network access and writes state outside the project (`~/.claude` and the offload history directory). Follow the host's permission policy; use approved escalation or an allowed environment only when available and needed.
+Install the Codex instructions with `offload install-agent -agent codex`. The CLI needs network access and writes state outside the project (`~/.claude` or `$CODEX_HOME`, plus the offload history directory). Follow the host's permission policy; use approved escalation or an allowed environment only when available and needed.
 
 Before launching Claude, a reachability preflight attempts a TCP connection to the configured gateway with a 5s timeout. If unreachable, offload exits 2 with `cannot reach gateway`, rather than leaving the worker to retry until its task timeout. A configured HTTP/SOCKS proxy skips this direct check because the proxy determines reachability. This check does not validate credentials or model access.
 
 ## Known limits
 
-- The worker is headless, so permission prompts cannot be approved. Compound shell commands (pipes, `&&`, heredocs, `python -c`) are refused and burn a turn. Read-only `rtk` forms (`rtk ls`, `rtk read`, `rtk grep`, `rtk git log`, ...) are allowed; `rtk run`, `proxy`, `err`, `summary`, `pipe`, `test` and `find` are not; `permission_denials=N` in the summary line counts them.
-- A worker stopped by `-t`, by 10 minutes of silence, or ending without a result is asked once, with all tools off, for a report from what it already read. The result starts with `[SALVAGED REPORT ...]`, the summary line shows `salvaged=true`, and `-json` has `"salvaged": true`. Its `cost_usd` covers only that step. It is partial and unverified. `-no-salvage` skips the step; if nothing could be salvaged you get the progress and an `offload -r <session>` command. For such runs `turns` counts tool calls.
+- The worker is headless, so permission prompts cannot be approved. With Claude, compound shell commands (pipes, `&&`, heredocs, `python -c`) are refused and burn a turn. Read-only `rtk` forms (`rtk ls`, `rtk read`, `rtk grep`, `rtk git log`, ...) are allowed; `rtk run`, `proxy`, `err`, `summary`, `pipe`, `test` and `find` are not; `permission_denials=N` in the summary line counts them.
+- A Claude worker stopped by `-t`, by 10 minutes of silence, or ending without a result is asked once, with all tools off, for a report from what it already read. The result starts with `[SALVAGED REPORT ...]`, the summary line shows `salvaged=true`, and `-json` has `"salvaged": true`. Its `cost_usd` covers only that step. It is partial and unverified. `-no-salvage` skips the step; if nothing could be salvaged you get the progress and an `offload -r <session>` command. For such runs `turns` counts tool calls.
 - A worker that prints nothing for 10 minutes (a hung model request) is stopped without waiting for `-t`; the idle limit is fixed. Large tasks are slow (20-40s per turn). Split broad audits instead of raising `-t`; keep `-t` at its default unless the task needs more.
-- Requires network access and writes state outside the project (`~/.claude` and the offload history directory). Use host-approved permissions; when offloading is unavailable, report the failure and continue with local tools or native subagents.
+- Requires network access and writes state outside the project (`~/.claude` or `$CODEX_HOME`, plus the offload history directory). Use host-approved permissions; when offloading is unavailable, report the failure and continue with local tools or native subagents.
 - Some gateways reject Claude Code's `anthropic-beta: claude-code-*` header and cannot be used as workers.
 - Nested workers inherit host restrictions. For example, the Claude desktop app may prevent file writes; verify the host supports the requested mode.
 
@@ -206,7 +224,7 @@ Before launching Claude, a reachability preflight attempts a TCP connection to t
 ```text
 main.go                    entry point; only wires the version into cli.Run
 internal/cli/              flags, subcommands (ls, show, status, watch, profiles), run summary line
-internal/worker/           one claude -p run: args, env, prompt, stream-json parsing, timeout progress
+internal/worker/           Claude/Codex worker runs: args, env, prompt, stream-json parsing, timeout progress
 internal/config/           gateway profiles and token lookup
 internal/history/          the run log (runs.jsonl) and its Record type
 internal/live/             per-process live state files that status and watch read

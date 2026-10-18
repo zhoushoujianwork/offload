@@ -1,4 +1,4 @@
-// Package worker runs one task through `claude -p` and reports what the worker did.
+// Package worker runs one task through Claude Code or Codex and reports what the worker did.
 package worker
 
 import (
@@ -162,7 +162,11 @@ func writeWorkerPrompt(o Opts) (string, error) {
 		}
 		fmt.Fprintf(&prompt, "Project instructions from %s:\n%s\n\n", path, contents)
 	}
-	prompt.WriteString(Prompt)
+	if o.Profile.BackendName() == "codex" {
+		prompt.WriteString(codexPrompt)
+	} else {
+		prompt.WriteString(Prompt)
+	}
 	if !o.Write {
 		prompt.WriteString("\nRead-only task: do not modify files.")
 	}
@@ -216,7 +220,7 @@ func Run(ctx context.Context, o Opts) (rec history.Record, err error) {
 		started = time.Now()
 	}
 	rec = history.Record{TS: started.Format("2006-01-02 15:04:05"), Profile: o.ProfileName, Model: o.Model,
-		Dir: o.Dir, Task: o.Task, Status: "error", CostIsEstimate: true}
+		Backend: o.Profile.BackendName(), Dir: o.Dir, Task: o.Task, Status: "error", CostIsEstimate: true}
 	defer func() {
 		elapsed := time.Since(started).Milliseconds()
 		rec.ElapsedMs = &elapsed
@@ -235,20 +239,28 @@ func Run(ctx context.Context, o Opts) (rec history.Record, err error) {
 		return rec, err
 	}
 	defer os.Remove(promptPath)
-	token, err := o.Profile.ResolveToken()
-	if err != nil {
-		return rec, err
-	}
-	bin, err := claudeBin()
-	if err != nil {
-		return rec, fmt.Errorf("claude CLI not found: %w", err)
-	}
-	if err := Preflight(o.Profile.BaseURL); err != nil {
-		return rec, err
+	var token, bin string
+	if o.Profile.BackendName() == "codex" {
+		bin, err = codexBin()
+		if err != nil {
+			return rec, fmt.Errorf("codex CLI not found: %w", err)
+		}
+	} else {
+		token, err = o.Profile.ResolveToken()
+		if err != nil {
+			return rec, err
+		}
+		bin, err = claudeBin()
+		if err != nil {
+			return rec, fmt.Errorf("claude CLI not found: %w", err)
+		}
+		if err := Preflight(o.Profile.BaseURL); err != nil {
+			return rec, err
+		}
 	}
 	pub := newPublisher(o, started)
 	defer func() { pub.finish(rec) }()
-	a := runClaude(ctx, bin, o, promptPath, token, o.Timeout, pub.update)
+	a := runAttempt(ctx, bin, o, promptPath, token, o.Timeout, pub.update)
 	s := a.s
 	rec.Session, rec.Turns, rec.Denials = s.Session, s.ToolCalls, s.Denials
 	stopped := errors.Is(a.cause, errIdle) || errors.Is(a.cause, context.DeadlineExceeded)
@@ -283,7 +295,7 @@ func Run(ctx context.Context, o Opts) (rec history.Record, err error) {
 		rec.Result = rec.Error + s.progress()
 		// A stopped worker has usually read plenty. Ask it for the report without tools instead
 		// of leaving the supervisor with a progress sketch. Not after the user pressed Ctrl-C.
-		if !o.NoSalvage && s.Session != "" && ctx.Err() == nil {
+		if !o.NoSalvage && o.Profile.BackendName() == "claude" && s.Session != "" && ctx.Err() == nil {
 			pub.phase(live.Salvaging)
 			if report, cost, ok := salvage(ctx, bin, o, promptPath, token, s.Session, pub.keepAlive); ok {
 				rec.Salvaged, rec.CostUSD = true, cost
@@ -327,7 +339,7 @@ func Run(ctx context.Context, o Opts) (rec history.Record, err error) {
 	return rec, nil
 }
 
-// attempt is the outcome of one claude process.
+// attempt is the outcome of one worker process.
 type attempt struct {
 	s              streamSummary
 	cause          error
@@ -335,17 +347,31 @@ type attempt struct {
 	stdout, stderr string
 }
 
-// runClaude starts one claude process and waits for it. It stops early on the timeout or when the
+// runAttempt starts one worker process and waits for it. It stops early on the timeout or when the
 // worker goes silent, and calls tick every publishEvery with what the worker has done so far.
-func runClaude(ctx context.Context, bin string, o Opts, promptPath, token string, timeout time.Duration,
+func runAttempt(ctx context.Context, bin string, o Opts, promptPath, token string, timeout time.Duration,
 	tick func(streamSummary, time.Time)) attempt {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	ctx, cancelCause := context.WithCancelCause(ctx)
 	defer cancelCause(nil)
-	cmd := exec.CommandContext(ctx, bin, buildArgs(o, promptPath)...)
-	cmd.Dir = o.Dir
-	cmd.Env = childEnv(os.Environ(), o, token)
+	var cmd *exec.Cmd
+	parse := parseStream
+	if o.Profile.BackendName() == "codex" {
+		cmd = exec.CommandContext(ctx, bin, buildCodexArgs(o)...)
+		cmd.Dir = o.Dir
+		cmd.Env = os.Environ()
+		prompt, err := os.ReadFile(promptPath)
+		if err != nil {
+			return attempt{runErr: err}
+		}
+		cmd.Stdin = strings.NewReader(string(prompt) + "\nTask:\n" + o.Task)
+		parse = parseCodexStream
+	} else {
+		cmd = exec.CommandContext(ctx, bin, buildArgs(o, promptPath)...)
+		cmd.Dir = o.Dir
+		cmd.Env = childEnv(os.Environ(), o, token)
+	}
 	out := &activityWriter{}
 	out.last.Store(time.Now().UnixNano())
 	var workerErr bytes.Buffer
@@ -360,7 +386,7 @@ func runClaude(ctx context.Context, bin string, o Opts, promptPath, token string
 				case <-ctx.Done():
 					return
 				case <-t.C:
-					tick(parseStream(out.Bytes()), time.Unix(0, out.last.Load()))
+					tick(parse(out.Bytes()), time.Unix(0, out.last.Load()))
 				}
 			}
 		}()
@@ -368,7 +394,7 @@ func runClaude(ctx context.Context, bin string, o Opts, promptPath, token string
 	// Do not wait indefinitely for a worker descendant to close inherited pipes.
 	cmd.WaitDelay = 100 * time.Millisecond
 	runErr := cmd.Run()
-	return attempt{s: parseStream(out.Bytes()), cause: context.Cause(ctx), runErr: runErr,
+	return attempt{s: parse(out.Bytes()), cause: context.Cause(ctx), runErr: runErr,
 		stdout: out.String(), stderr: workerErr.String()}
 }
 
@@ -376,7 +402,7 @@ func runClaude(ctx context.Context, bin string, o Opts, promptPath, token string
 func salvage(ctx context.Context, bin string, o Opts, promptPath, token, session string, tick func(streamSummary, time.Time)) (string, *float64, bool) {
 	so := o
 	so.Resume, so.Salvage, so.Write, so.Task = session, true, false, salvageTask
-	a := runClaude(ctx, bin, so, promptPath, token, SalvageTimeout, tick)
+	a := runAttempt(ctx, bin, so, promptPath, token, SalvageTimeout, tick)
 	r := a.s.Result
 	if r == nil || r.IsError || strings.TrimSpace(r.Result) == "" {
 		return "", nil, false

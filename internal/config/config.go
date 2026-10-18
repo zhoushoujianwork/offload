@@ -1,4 +1,4 @@
-// Package config loads the gateway profiles a worker can run against.
+// Package config loads worker backend profiles.
 package config
 
 import (
@@ -11,8 +11,9 @@ import (
 	"strings"
 )
 
-// Profile is one Anthropic-compatible gateway the worker can run against.
+// Profile selects a worker backend and its model/configuration.
 type Profile struct {
+	Backend string `json:"backend,omitempty"` // claude (default) or codex
 	BaseURL string `json:"base_url"`
 	Model   string `json:"model"`
 	// TokenCmd prints the token on stdout (e.g. `security find-generic-password -s offload-minimax -w`).
@@ -66,10 +67,60 @@ func (c *Config) Resolve(name string) (string, Profile, error) {
 	if !ok {
 		return name, p, fmt.Errorf("unknown profile %q", name)
 	}
-	if p.BaseURL == "" || p.Model == "" {
+	if p.BackendName() != "claude" && p.BackendName() != "codex" {
+		return name, p, fmt.Errorf("profile %q has unknown backend %q", name, p.Backend)
+	}
+	if p.BackendName() == "claude" && (p.BaseURL == "" || p.Model == "") {
 		return name, p, fmt.Errorf("profile %q needs base_url and model", name)
 	}
 	return name, p, nil
+}
+
+func (p Profile) BackendName() string {
+	if p.Backend == "" {
+		return "claude"
+	}
+	return p.Backend
+}
+
+// SetDefault updates only the default field, preserving other configuration fields.
+func SetDefault(path, name string) error {
+	c, err := Load(path)
+	if err != nil {
+		return err
+	}
+	if name == "" {
+		return errors.New("default profile name must not be empty")
+	}
+	if _, _, err := c.Resolve(name); err != nil {
+		return err
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(b, &fields); err != nil {
+		return err
+	}
+	fields["default"], _ = json.Marshal(name)
+	b, err = json.MarshalIndent(fields, "", "  ")
+	if err != nil {
+		return err
+	}
+	f, err := os.CreateTemp(filepath.Dir(path), ".config-*.json")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(f.Name())
+	if _, err := f.Write(append(b, '\n')); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	return os.Rename(f.Name(), path)
 }
 
 // ResolveToken returns the profile's token, running token_cmd when set.

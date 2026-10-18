@@ -23,7 +23,7 @@ import (
 	"github.com/zhoushoujianwork/offload/internal/worker"
 )
 
-const usage = `offload — hand a task to a cheaper model via claude -p; print only its final report.
+const usage = `offload — hand a task to Claude Code or Codex; print only its final report.
 
 usage:
   offload [flags] "task"        run a task (task may also come on stdin)
@@ -32,6 +32,7 @@ usage:
   offload status                what each worker is doing right now
   offload watch                 one line per event (start, progress, STALLED, finish) until all workers end
   offload profiles              list profiles (* = the one a run would use)
+  offload default [profile]     show or set the saved default profile
   offload install-agent [flags] install proactive instructions for a host agent
   offload version
 
@@ -54,6 +55,8 @@ func Run(version string, args []string, stdin io.Reader, stdout, stderr io.Write
 			return cmdWatch(ctx, stdout, stderr)
 		case "profiles":
 			return cmdProfiles(stdout, stderr)
+		case "default":
+			return cmdDefault(args[1:], stdout, stderr)
 		case "install-agent":
 			return agentinstall.Run(args[1:], stdout, stderr)
 		case "version":
@@ -75,7 +78,7 @@ func cmdRun(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	resume := fs.String("r", "", "resume a session id; reuses its original dir unless -d is given")
 	dir := fs.String("d", "", "working directory (default: cwd)")
 	timeout := fs.Duration("t", 30*time.Minute, "timeout")
-	noSalvage := fs.Bool("no-salvage", false, "do not ask a stopped worker for a report from what it already read")
+	noSalvage := fs.Bool("no-salvage", false, "skip automatic report salvage for stopped Claude workers")
 	jsonOutput := fs.Bool("json", false, "print one structured run result instead of plain report")
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -104,8 +107,20 @@ func cmdRun(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	if err != nil {
 		return failRun(err)
 	}
-	name, prof, err := cfg.Resolve(*profile)
+	selected := *profile
+	// Resumes retain their original profile even after the default changes.
+	if selected == "" && *resume != "" {
+		rs, readErr := history.Read(logPath)
+		if readErr != nil {
+			return failRun(readErr)
+		}
+		if hit := history.BySession(rs, *resume); len(hit) > 0 {
+			selected = hit[len(hit)-1].Profile
+		}
+	}
+	name, prof, err := cfg.Resolve(selected)
 	rec.Profile, rec.Model = name, firstNonEmpty(*model, prof.Model)
+	rec.Backend = prof.BackendName()
 	if err != nil {
 		return failRun(err)
 	}
@@ -261,8 +276,25 @@ func cmdProfiles(stdout, stderr io.Writer) int {
 			mark = "*"
 		}
 		p := cfg.Profiles[n]
-		fmt.Fprintf(stdout, "%s %-12s %-24s %s\n", mark, n, p.Model, p.BaseURL)
+		fmt.Fprintf(stdout, "%s %-12s %-8s %-24s %s\n", mark, n, p.BackendName(), p.Model, p.BaseURL)
 	}
+	return 0
+}
+
+func cmdDefault(args []string, stdout, stderr io.Writer) int {
+	if len(args) > 1 {
+		return fail(stderr, errors.New("usage: offload default [profile]"))
+	}
+	if len(args) == 1 {
+		if err := config.SetDefault(config.Path(), args[0]); err != nil {
+			return fail(stderr, err)
+		}
+	}
+	cfg, err := config.Load(config.Path())
+	if err != nil {
+		return fail(stderr, err)
+	}
+	fmt.Fprintln(stdout, cfg.Default)
 	return 0
 }
 
