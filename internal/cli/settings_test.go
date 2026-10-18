@@ -93,6 +93,10 @@ func (f *fakePrompt) Choose(label string, choices []string, cursor int) (int, er
 	return s.index, nil
 }
 
+func (f *fakePrompt) Slider(cursor int) (int, error) {
+	return f.Choose("Offload level", []string{"Less offload", "More offload"}, cursor)
+}
+
 func (f *fakePrompt) Ask(label, initial string) (string, error) {
 	f.calls = append(f.calls, recordedCall{kind: "ask", label: label, initial: initial})
 	if f.pos >= len(f.steps) {
@@ -150,8 +154,8 @@ func TestSettingsModeChangePersistsAndInstallsRules(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("code=%d out=%q err=%q", code, out, errOut)
 	}
-	if !strings.Contains(out, "Delegation mode: basic") || !strings.Contains(out, "Start a new agent session") {
-		t.Fatalf("missing mode confirmation: %q", out)
+	if strings.Contains(out, "updated ") || strings.Contains(out, "Delegation mode:") || strings.Count(out, "Offload settings") != 1 {
+		t.Fatalf("unexpected change logs or repeated header: %q", out)
 	}
 	mode, err := config.LoadMode(config.Path())
 	if err != nil || mode != "basic" {
@@ -174,13 +178,13 @@ func TestSettingsModeChangePersistsAndInstallsRules(t *testing.T) {
 	if f.calls[0].label != "Settings" {
 		t.Fatalf("top menu label = %q", f.calls[0].label)
 	}
-	if f.calls[1].label != "Assistance scope" || f.calls[1].cursor != 1 {
+	if f.calls[1].label != "Offload level" || f.calls[1].cursor != 1 {
 		t.Fatalf("mode submenu call = %+v, want cursor on proactive (current default)", f.calls[1])
 	}
-	if !slices.Equal(f.calls[1].choices, []string{"Research & small edits", "Research + implementation (test & document too)"}) {
+	if !slices.Equal(f.calls[1].choices, []string{"Less offload", "More offload"}) {
 		t.Fatalf("unclear assistance choices: %v", f.calls[1].choices)
 	}
-	if f.calls[2].choices[0] != "Assistance scope: Research & small edits" {
+	if f.calls[2].choices[0] != "Offload level: Less offload" {
 		t.Fatalf("scope not reflected in menu: %v", f.calls[2].choices)
 	}
 }
@@ -201,8 +205,8 @@ func TestSettingsDefaultProfileSortedHighlightedIgnoresEnvOverride(t *testing.T)
 	if !strings.Contains(out, "Shell override: OFFLOAD_PROFILE=c") {
 		t.Fatalf("missing override note: %q", out)
 	}
-	if !strings.Contains(out, "Default profile saved: a") {
-		t.Fatalf("missing save confirmation: %q", out)
+	if strings.Contains(out, "saved:") {
+		t.Fatalf("unexpected save confirmation: %q", out)
 	}
 	sub := f.calls[1]
 	if sub.label != "Default profile" {
@@ -239,8 +243,8 @@ func TestSettingsModelEditPreservesSecretsAndSupportsCodexBlank(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("code=%d out=%q err=%q", code, out, errOut)
 	}
-	if !strings.Contains(out, "Model saved for profile codex1") || !strings.Contains(out, "Model saved for profile claude1") {
-		t.Fatalf("missing save confirmations: %q", out)
+	if strings.Contains(out, "Model saved") {
+		t.Fatalf("unexpected save confirmations: %q", out)
 	}
 	cfg, err := config.Load(config.Path())
 	if err != nil {

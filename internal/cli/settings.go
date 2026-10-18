@@ -18,6 +18,7 @@ import (
 
 type settingsPrompt interface {
 	Choose(label string, choices []string, cursor int) (int, error)
+	Slider(cursor int) (int, error)
 	Ask(label, initial string) (string, error)
 }
 
@@ -86,11 +87,11 @@ func settingsLine(text string, width int) string {
 	return result.String() + suffix
 }
 
-func assistanceScope(mode string) string {
+func offloadLevelLabel(mode string) string {
 	if mode == config.ModeBasic {
-		return "Research & small edits"
+		return "Less offload"
 	}
-	return "Research + implementation"
+	return "More offload (less caller-model work)"
 }
 
 func (p terminalSettingsPrompt) Ask(label, initial string) (string, error) {
@@ -116,7 +117,7 @@ func cmdSettings(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 }
 
 func settingsCancelled(err error) bool {
-	return errors.Is(err, promptui.ErrInterrupt) || errors.Is(err, promptui.ErrEOF) || errors.Is(err, io.EOF)
+	return errors.Is(err, promptui.ErrInterrupt) || errors.Is(err, readline.ErrInterrupt) || errors.Is(err, promptui.ErrEOF) || errors.Is(err, io.EOF)
 }
 
 func settingsChoice(p settingsPrompt, label string, choices []string, cursor int) (int, error) {
@@ -141,17 +142,17 @@ func settingsConfig() (*config.Config, string, error) {
 
 func runSettings(p settingsPrompt, stdout, stderr io.Writer) int {
 	cursor := 0
+	fmt.Fprintf(stdout, "\nOffload settings\nConfiguration: %s\n", config.Path())
+	fmt.Fprintln(stdout, "Up/Down: select   Enter: apply   Ctrl-C: back/exit")
+	if override := os.Getenv("OFFLOAD_PROFILE"); override != "" {
+		fmt.Fprintf(stdout, "Shell override: OFFLOAD_PROFILE=%s (takes priority over the saved default).\n", override)
+	}
 	for {
 		cfg, mode, err := settingsConfig()
 		if err != nil {
 			return fail(stderr, err)
 		}
-		fmt.Fprintf(stdout, "\nOffload settings\nConfiguration: %s\n", config.Path())
-		fmt.Fprintln(stdout, "Up/Down: select   Enter: apply immediately   Ctrl-C: back/exit")
-		if override := os.Getenv("OFFLOAD_PROFILE"); override != "" {
-			fmt.Fprintf(stdout, "Shell override: OFFLOAD_PROFILE=%s (takes priority over the saved default).\n", override)
-		}
-		choices := []string{"Assistance scope: " + assistanceScope(mode), "Default profile: " + firstNonEmpty(cfg.Default, "(not configured)"),
+		choices := []string{"Offload level: " + offloadLevelLabel(mode), "Default profile: " + firstNonEmpty(cfg.Default, "(not configured)"),
 			"Profile model", "Exit"}
 		selected, err := settingsChoice(p, "Settings", choices, cursor)
 		if settingsCancelled(err) {
@@ -163,11 +164,11 @@ func runSettings(p settingsPrompt, stdout, stderr io.Writer) int {
 		cursor = selected
 		switch selected {
 		case 0:
-			err = settingsMode(p, mode, stdout, stderr)
+			err = settingsMode(p, mode, stderr)
 		case 1:
-			err = settingsProfile(p, cfg, false, stdout)
+			err = settingsProfile(p, cfg, false)
 		case 2:
-			err = settingsProfile(p, cfg, true, stdout)
+			err = settingsProfile(p, cfg, true)
 		case 3:
 			return 0
 		}
@@ -177,25 +178,24 @@ func runSettings(p settingsPrompt, stdout, stderr io.Writer) int {
 	}
 }
 
-func settingsMode(p settingsPrompt, current string, stdout, stderr io.Writer) error {
+func settingsMode(p settingsPrompt, current string, stderr io.Writer) error {
 	modes := []string{config.ModeBasic, config.ModeProactive}
 	cursor := 0
 	if current == config.ModeProactive {
 		cursor = 1
 	}
-	fmt.Fprintln(stdout, "The main agent always owns design and final review.")
-	index, err := settingsChoice(p, "Assistance scope", []string{
-		"Research & small edits",
-		"Research + implementation (test & document too)",
-	}, cursor)
+	index, err := p.Slider(cursor)
 	if err != nil {
 		return err
 	}
-	agentinstall.RunMode([]string{modes[index]}, stdout, stderr)
+	if index < 0 || index >= len(modes) {
+		return errors.New("invalid offload level")
+	}
+	agentinstall.RunMode([]string{modes[index]}, io.Discard, stderr)
 	return nil // RunMode reports any install/persistence failure; keep the menu available.
 }
 
-func settingsProfile(p settingsPrompt, cfg *config.Config, editModel bool, stdout io.Writer) error {
+func settingsProfile(p settingsPrompt, cfg *config.Config, editModel bool) error {
 	names := make([]string, 0, len(cfg.Profiles))
 	for name := range cfg.Profiles {
 		names = append(names, name)
@@ -233,7 +233,6 @@ func settingsProfile(p settingsPrompt, cfg *config.Config, editModel bool, stdou
 		if err := config.SetDefault(config.Path(), name); err != nil {
 			return err
 		}
-		fmt.Fprintln(stdout, "Default profile saved:", name)
 		return nil
 	}
 	profile := cfg.Profiles[name]
@@ -248,6 +247,5 @@ func settingsProfile(p settingsPrompt, cfg *config.Config, editModel bool, stdou
 	if err := config.SetModel(config.Path(), name, strings.TrimSpace(model)); err != nil {
 		return err
 	}
-	fmt.Fprintf(stdout, "Model saved for profile %s.\n", name)
 	return nil
 }
