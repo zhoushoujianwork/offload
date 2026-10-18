@@ -2,7 +2,7 @@
 
 Hand token-heavy grunt work from a supervising agent, such as Codex or Claude Code, to a cheaper model. Get back the final report, estimated worker cost, and measured elapsed time.
 
-`offload` runs Claude Code against an Anthropic-compatible gateway (MiniMax, DeepSeek, Kimi, GLM, a LiteLLM proxy, …), or runs `codex exec` using your Codex login and configuration. Use it for reading many files, code searches, log analysis, document summaries, and bounded mechanical edits. The supervisor plans the work and verifies the result.
+`offload` runs Claude Code against an Anthropic-compatible gateway (MiniMax, DeepSeek, Kimi, GLM, a LiteLLM proxy, …), or runs `codex exec` using your Codex login and configuration. Use it throughout investigation, code localization, implementation, testing, validation, and documentation. The supervisor owns design decisions, delegates work with clear scope and acceptance criteria, and verifies the result.
 
 ```text
 $ offload -d /absolute/path/app "Find retry logic; return file:line references, max 10 rows. Do not edit files."
@@ -120,18 +120,24 @@ Codex's current skill locations are documented in [Build skills](https://learn.c
 
 ### Main agent and subagent workflow
 
-The installed policy asks main agents and native subagents to choose offloading before loading large outputs. Call the CLI directly when another coordination layer adds no value. For parallel work or independent review, a native Codex subagent can launch the external worker:
+The installed policy asks main agents and native subagents to proactively consider offload before doing substantial work themselves, throughout execution. The main agent owns requirements, architecture/design, tradeoffs, task decomposition, and final review/acceptance; once it has a clear design/plan and acceptance criteria, it should proactively offload the bounded implementation too, including code localization, tests, regression checks, and docs, not only research or mechanical edits. Complexity alone is not a reason to keep implementation in the main agent. If a worker finds the design, scope, or architecture needs to change, it reports findings/options back instead of redesigning on its own. Call the CLI directly when another coordination layer adds no value. For parallel work or independent review, a native Codex subagent can launch the external worker:
 
 ```text
-Codex main agent → native Codex subagent → offload → Claude CLI / MiniMax
+Main agent → optional native subagent → offload → selected Claude/Codex profile
                  ← verified conclusion + worker metrics ← final report
 ```
 
-This uses an external worker process; it does not change Codex's native subagent model provider. Give a suitable subagent this instruction:
+This uses an external worker process; it does not change Codex's native subagent model provider. Give a suitable subagent this instruction for bulk reading:
 
 > Use offload for the bulk reading in /absolute/path/app, read-only. Find retry entry points and tests; return at most 10 file:line rows. Verify two key references and report the model, session, estimated worker cost, and elapsed time.
 
-Keep short conversations, trivial lookups, architecture choices, sensitive changes, and final review with the supervisor. Workers already launched by offload should finish their assigned task directly instead of delegating again. Spot-check reports; after authorized `-w` work, inspect the diff and independently run relevant checks.
+Once the design is decided, hand off bounded implementation the same way, explicitly with `-w`:
+
+```bash
+offload -w -json -d /absolute/path/app "Design decided: expose the existing 3-attempt retry limit as maxAttempts (default 3); preserve backoff and error behavior. Only edit internal/http/client.go and internal/http/client_test.go. Update the API comment, test default and explicit limits, and run go test ./internal/http. No commit, push, or unrelated changes. Report changes, check results, and any design questions."
+```
+
+Keep short conversations, trivial lookups, architecture choices, sensitive changes, and final review with the supervisor, and keep trivial tasks in the main agent when delegation overhead would exceed the work saved. Workers already launched by offload should finish their assigned task directly instead of delegating again. Default to read-only for inspection; use `-w` explicitly for authorized implementation rather than silently falling back to read-only. Spot-check reports; after authorized `-w` work, inspect the actual diff and independently run relevant checks yourself.
 
 ## Usage
 

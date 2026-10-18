@@ -1,6 +1,6 @@
 ---
 name: offload
-description: Proactively delegate token-heavy file reading, log analysis, code searches, document summaries, and bounded mechanical edits to a cheaper model through the offload CLI. Use for main agents and native subagents when a concise verified report is enough.
+description: Proactively delegate investigation, code localization, implementation, tests, validation, and documentation through the offload CLI. Use throughout execution once work can be scoped; keep design decisions and final acceptance with the supervising agent.
 ---
 
 # offload
@@ -15,22 +15,30 @@ For Claude profiles, the CLI starts an external `claude -p --bare` worker on the
 
 ## Choose the worker early
 
-Proactively offload bulk reading, broad searches, long log/document summaries, and bounded mechanical edits before loading large outputs into the supervising context. This applies to main agents and native subagents.
+Proactively consider offload throughout investigation, code localization, implementation, regression testing, validation, and documentation. Use it as a routine execution assistant, not just for bulk reading or mechanical edits. Decide before doing substantial work yourself or ingesting large outputs. During investigation, delegate evidence gathering and localization; after the main agent decides the design and acceptance criteria, delegate bounded implementation with `-w`. This applies to main agents and native subagents.
 
-Call offload directly when an extra coordination layer adds no value. Use a native subagent when parallel work or independent review helps; explicitly instruct it to call offload for the bulk task and verify the report. If already running as an external offload worker, complete the assigned task directly without recursive delegation.
+Call offload directly when an extra coordination layer adds no value. Use a native subagent when parallel work or independent review helps; explicitly instruct it to call offload for the bulk or implementation task and verify the report. If already running as an external offload worker, complete the assigned task directly without recursive delegation.
 
-Keep short conversations, trivial lookups, architecture decisions, sensitive changes, and final review with the supervisor. Use `-w` only for edits already authorized by the user's task.
+The main agent owns requirements, architecture/design, important tradeoffs, task decomposition, and final review/acceptance. It must supply a clear design/implementation plan and acceptance criteria before delegating a feature/bugfix; complexity alone is not a reason to keep implementation in the main agent. If a worker determines mid-task that the design, scope, or architecture needs to change, it should report findings/options back rather than redesigning on its own.
+
+Keep short conversations, trivial lookups, architecture decisions, sensitive changes, and final review with the supervisor. Keep trivial tasks in the main agent when delegation overhead would exceed the work saved. Use `-w` only for edits already authorized by the user's task, and use it explicitly for authorized implementation rather than silently falling back to read-only.
 
 ## Pick tasks that fit
 
-Offload works best on tasks with a clear boundary: name the files or directories to read, say it is read-only and needs no shell commands, and fix the output shape (for example `file:line | purpose`, max 10 rows). Workers do worst on open-ended jobs: a review that must discover what to read through `git show` or `git log` keeps reading and can run past the timeout, and `-w` implementation runs have been the least reliable. Keep open-ended review, history digging and non-trivial implementation with the supervisor or a native subagent, or have the worker do only the bounded reading and make the judgment yourself.
+Offload works best on tasks with a clear boundary: name the files or directories involved, state whether it is read-only or `-w`, and fix the output shape (for example `file:line | purpose`, max 10 rows, or a completion report). Workers do worst on genuinely open-ended jobs where the goal itself is undefined, such as a review that must discover what to read through `git show` or `git log` with no stated scope; those can keep reading and run past the timeout. Keep that kind of undirected exploration and all architecture/design decisions with the supervisor or a native subagent. Once the main agent has done that design work, bounded `-w` implementation (including its tests and docs) is a good fit for delegation.
 
 ## Assign a bounded task
 
-Give each worker an absolute `-d` directory, a clear goal, scope constraints, an acceptance check, and a concise output format. Ask it to inspect source files rather than answer from memory. Leave `-t` at its default unless the task clearly needs longer; a short `-t` kills a slow worker and loses its report. Offload has no USD cap option; do not impose one. Default to read-only.
+Give each worker an absolute `-d` directory, the objective, the design/plan to follow, the allowed files or directories, scope constraints, relevant checks, and a concise completion report format. Ask it to inspect source files rather than answer from memory. Leave `-t` at its default unless the task clearly needs longer; a short `-t` kills a slow worker and loses its report. Offload has no USD cap option; do not impose one. Default to read-only for inspection.
 
 ```bash
 offload -json -d /absolute/path/app "Find HTTP retry entry points and related tests. Read-only; no shell commands. Return file:line | purpose, max 10 rows; mark uncertainty."
+```
+
+For implementation, hand off after the main agent has decided the design:
+
+```bash
+offload -w -json -d /absolute/path/app "Design decided: expose the existing 3-attempt retry limit as maxAttempts (default 3); preserve backoff and error behavior. Only edit internal/http/client.go and internal/http/client_test.go. Update the API comment, test default and explicit limits, and run go test ./internal/http. No commit, push, or unrelated changes. Report changes, check results, and any design questions."
 ```
 
 Default stdout contains the final report only. `-json` emits a run record containing `status`, `exit_code`, `profile`, `model`, `session`, `turns`, `cost_usd`, `cost_is_estimate`, `duration_ms`, `elapsed_ms`, `result`, and optional `error` (plus task/directory/time). Stderr provides one summary line:
