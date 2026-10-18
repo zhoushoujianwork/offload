@@ -90,12 +90,12 @@ func runSettings(p settingsPrompt, stdout, stderr io.Writer) int {
 			return fail(stderr, err)
 		}
 		fmt.Fprintf(stdout, "\nOffload settings\nConfiguration: %s\n", config.Path())
-		fmt.Fprintln(stdout, "Up/Down: select   Enter: confirm   Ctrl-C: back/exit")
+		fmt.Fprintln(stdout, "Up/Down: select   Enter: apply immediately   Ctrl-C: back/exit")
 		if override := os.Getenv("OFFLOAD_PROFILE"); override != "" {
 			fmt.Fprintf(stdout, "Shell override: OFFLOAD_PROFILE=%s (takes priority over the saved default).\n", override)
 		}
 		choices := []string{"Delegation mode: " + mode, "Default profile: " + firstNonEmpty(cfg.Default, "(not configured)"),
-			"Profile model", "Apply agent settings", "Exit"}
+			"Profile model", "Exit"}
 		selected, err := settingsChoice(p, "Settings", choices, cursor)
 		if settingsCancelled(err) {
 			return 0
@@ -112,10 +112,6 @@ func runSettings(p settingsPrompt, stdout, stderr io.Writer) int {
 		case 2:
 			err = settingsProfile(p, cfg, true, stdout)
 		case 3:
-			if agentinstall.Run(nil, stdout, stderr) == 0 {
-				fmt.Fprintln(stdout, "Agent settings applied. Start a new agent session to load the instructions.")
-			}
-		case 4:
 			return 0
 		}
 		if err != nil && !settingsCancelled(err) {

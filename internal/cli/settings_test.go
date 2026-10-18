@@ -108,7 +108,7 @@ func assertNoANSI(t *testing.T, s string) {
 
 func TestSettingsModeChangePersistsAndInstallsRules(t *testing.T) {
 	home := settingsEnv(t)
-	f := &fakePrompt{steps: []step{choose(0), choose(0), choose(4)}}
+	f := &fakePrompt{steps: []step{choose(0), choose(0), choose(3)}}
 	code, out, errOut := runSettingsTest(f)
 	if code != 0 {
 		t.Fatalf("code=%d out=%q err=%q", code, out, errOut)
@@ -150,7 +150,7 @@ func TestSettingsDefaultProfileSortedHighlightedIgnoresEnvOverride(t *testing.T)
 		"c":{"base_url":"https://c","model":"mc","token":"tok-c"}}}`)
 	t.Setenv("OFFLOAD_PROFILE", "c")
 
-	f := &fakePrompt{steps: []step{choose(1), choose(0), choose(4)}}
+	f := &fakePrompt{steps: []step{choose(1), choose(0), choose(3)}}
 	code, out, errOut := runSettingsTest(f)
 	if code != 0 {
 		t.Fatalf("code=%d out=%q err=%q", code, out, errOut)
@@ -190,7 +190,7 @@ func TestSettingsModelEditPreservesSecretsAndSupportsCodexBlank(t *testing.T) {
 	f := &fakePrompt{steps: []step{
 		choose(2), choose(1), ask(""), // codex1 -> blank model allowed
 		choose(2), choose(0), ask("m2"), // claude1 -> nonblank model required
-		choose(4),
+		choose(3),
 	}}
 	code, out, errOut := runSettingsTest(f)
 	if code != 0 {
@@ -223,7 +223,7 @@ func TestSettingsInvalidModelReportsErrorAndMenuStaysUsable(t *testing.T) {
 	settingsEnv(t)
 	original := `{"default":"claude1","profiles":{"claude1":{"backend":"claude","base_url":"https://x","model":"m1","token_cmd":"echo tok"}}}`
 	writeSettingsConfig(t, original)
-	f := &fakePrompt{steps: []step{choose(2), choose(0), ask(""), choose(4)}}
+	f := &fakePrompt{steps: []step{choose(2), choose(0), ask(""), choose(3)}}
 	code, out, errOut := runSettingsTest(f)
 	if code != 0 {
 		t.Fatalf("code=%d out=%q err=%q", code, out, errOut)
@@ -257,7 +257,7 @@ func TestSettingsCancellationReturnsToParentWithoutWrites(t *testing.T) {
 	t.Run("submenu cancel", func(t *testing.T) {
 		settingsEnv(t)
 		writeSettingsConfig(t, `{"default":"a","profiles":{"a":{"base_url":"https://a","model":"ma"},"b":{"base_url":"https://b","model":"mb"}}}`)
-		f := &fakePrompt{steps: []step{choose(1), failStep(io.EOF), choose(4)}}
+		f := &fakePrompt{steps: []step{choose(1), failStep(io.EOF), choose(3)}}
 		code, _, errOut := runSettingsTest(f)
 		if code != 0 {
 			t.Fatalf("code=%d err=%q", code, errOut)
@@ -274,7 +274,7 @@ func TestSettingsCancellationReturnsToParentWithoutWrites(t *testing.T) {
 		settingsEnv(t)
 		original := `{"default":"a","profiles":{"a":{"base_url":"https://a","model":"ma"}}}`
 		writeSettingsConfig(t, original)
-		f := &fakePrompt{steps: []step{choose(2), choose(0), failStep(io.EOF), choose(4)}}
+		f := &fakePrompt{steps: []step{choose(2), choose(0), failStep(io.EOF), choose(3)}}
 		code, _, errOut := runSettingsTest(f)
 		if code != 0 {
 			t.Fatalf("code=%d err=%q", code, errOut)
@@ -300,7 +300,7 @@ func TestSettingsMainMenuEOFExitsCleanlyNoMutations(t *testing.T) {
 
 func TestSettingsEmptyConfigReportsNoProfilesWithoutCreatingOne(t *testing.T) {
 	settingsEnv(t)
-	f := &fakePrompt{steps: []step{choose(2), choose(4)}}
+	f := &fakePrompt{steps: []step{choose(2), choose(3)}}
 	code, out, errOut := runSettingsTest(f)
 	if code != 0 {
 		t.Fatalf("code=%d out=%q err=%q", code, out, errOut)

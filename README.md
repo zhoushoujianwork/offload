@@ -118,9 +118,9 @@ offload config   # open settings in an interactive terminal
 offload          # also opens settings when stdin and stdout are terminals
 ```
 
-Use the up/down arrow keys to choose an item and Enter to confirm. Ctrl-C cancels a submenu or exits the main menu. Settings apply when confirmed; cancelling does not save a change.
+Use the up/down arrow keys to choose an item and Enter to confirm. Each change is automatically saved and applied when confirmed, with no separate Save or Apply step. Ctrl-C cancels a submenu or exits the main menu; cancelling does not save a change.
 
-The menu shows the current delegation mode and saved default profile. You can switch `basic`/`proactive`, select a default profile, edit an existing profile's model, or reapply agent settings. Profiles show their execution backend and model, without displaying credentials. An `OFFLOAD_PROFILE` shell override is shown separately from the saved default.
+The menu shows the current delegation mode and saved default profile. You can switch `basic`/`proactive`, select a default profile, or edit an existing profile's model. Profile and model changes take effect on the next task. Profiles show their execution backend and model, without displaying credentials. An `OFFLOAD_PROFILE` shell override is shown separately from the saved default.
 
 Model edits preserve the profile's provider settings and credentials. Leave a Codex model empty to use its native default; Claude profiles require a model. The menu lists profiles defined in `config.json`; if none exist, it shows the configuration path so you can add them.
 
