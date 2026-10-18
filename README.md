@@ -120,7 +120,9 @@ offload          # also opens settings when stdin and stdout are terminals
 
 Use the up/down arrow keys to choose an item and Enter to confirm. Each change is automatically saved and applied when confirmed, with no separate Save or Apply step. Ctrl-C cancels a submenu or exits the main menu; cancelling does not save a change.
 
-The menu shows the current delegation mode and saved default profile. You can switch `basic`/`proactive`, select a default profile, or edit an existing profile's model. Profile and model changes take effect on the next task. Profiles show their execution backend and model, without displaying credentials. An `OFFLOAD_PROFILE` shell override is shown separately from the saved default.
+The menu shows the current **Assistance scope** and saved default profile. Choose **Research & small edits** (`basic`) for research, code lookup, and mechanical changes, or **Research + implementation** (`proactive`) to also delegate implementation, tests, and documentation after the main agent designs the change. The main agent always owns design and final review. These labels use the existing mode values, so saved settings and CLI commands remain compatible.
+
+You can also select a default profile or edit an existing profile's model. Profile and model changes take effect on the next task. Profiles show their execution backend and model, without displaying credentials. Long menu items shorten to fit the terminal width. An `OFFLOAD_PROFILE` shell override is shown separately from the saved default.
 
 Model edits preserve the profile's provider settings and credentials. Leave a Codex model empty to use its native default; Claude profiles require a model. The menu lists profiles defined in `config.json`; if none exist, it shows the configuration path so you can add them.
 

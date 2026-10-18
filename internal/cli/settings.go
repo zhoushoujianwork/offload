@@ -7,6 +7,8 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"text/template"
+	"unicode"
 
 	"github.com/chzyer/readline"
 	"github.com/manifoldco/promptui"
@@ -30,10 +32,65 @@ type settingsWriter struct{ io.Writer }
 func (settingsWriter) Close() error { return nil }
 
 func (p terminalSettingsPrompt) Choose(label string, choices []string, cursor int) (int, error) {
+	// promptui counts logical lines, so wrapped items leave stale rows on redraw.
+	fit := func(text string) string {
+		width := readline.GetScreenWidth()
+		if width <= 0 {
+			width = 80
+		}
+		return settingsLine(text, max(1, width-5))
+	}
+	funcs := template.FuncMap{}
+	for name, fn := range promptui.FuncMap {
+		funcs[name] = fn
+	}
+	funcs["fit"] = fit
 	s := promptui.Select{Label: label, Items: choices, CursorPos: cursor, Size: 7,
-		HideSelected: true, Stdin: p.in, Stdout: p.out}
+		HideSelected: true, HideHelp: true, Stdin: p.in, Stdout: p.out,
+		Templates: &promptui.SelectTemplates{
+			Label: "{{ . | fit }}:", Active: "> {{ . | fit }}", Inactive: "  {{ . | fit }}",
+			FuncMap: funcs,
+		}}
 	index, _, err := s.Run()
 	return index, err
+}
+
+// Keep a rendered choice on one terminal row, including wide Unicode text.
+func settingsLine(text string, width int) string {
+	if width < 1 {
+		width = 1
+	}
+	text = strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) {
+			return ' '
+		}
+		return r
+	}, text)
+	runes := readline.Runes{}
+	if runes.WidthAll([]rune(text)) <= width {
+		return text
+	}
+	suffix := "..."
+	if width < len(suffix) {
+		return suffix[:width]
+	}
+	var result strings.Builder
+	used := 0
+	for _, r := range text {
+		used += runes.Width(r)
+		if used > width-len(suffix) {
+			break
+		}
+		result.WriteRune(r)
+	}
+	return result.String() + suffix
+}
+
+func assistanceScope(mode string) string {
+	if mode == config.ModeBasic {
+		return "Research & small edits"
+	}
+	return "Research + implementation"
 }
 
 func (p terminalSettingsPrompt) Ask(label, initial string) (string, error) {
@@ -94,7 +151,7 @@ func runSettings(p settingsPrompt, stdout, stderr io.Writer) int {
 		if override := os.Getenv("OFFLOAD_PROFILE"); override != "" {
 			fmt.Fprintf(stdout, "Shell override: OFFLOAD_PROFILE=%s (takes priority over the saved default).\n", override)
 		}
-		choices := []string{"Delegation mode: " + mode, "Default profile: " + firstNonEmpty(cfg.Default, "(not configured)"),
+		choices := []string{"Assistance scope: " + assistanceScope(mode), "Default profile: " + firstNonEmpty(cfg.Default, "(not configured)"),
 			"Profile model", "Exit"}
 		selected, err := settingsChoice(p, "Settings", choices, cursor)
 		if settingsCancelled(err) {
@@ -126,9 +183,10 @@ func settingsMode(p settingsPrompt, current string, stdout, stderr io.Writer) er
 	if current == config.ModeProactive {
 		cursor = 1
 	}
-	index, err := settingsChoice(p, "Delegation mode", []string{
-		"basic - research, localization and mechanical edits",
-		"proactive - also implement, test and document after the main agent designs the change",
+	fmt.Fprintln(stdout, "The main agent always owns design and final review.")
+	index, err := settingsChoice(p, "Assistance scope", []string{
+		"Research & small edits",
+		"Research + implementation (test & document too)",
 	}, cursor)
 	if err != nil {
 		return err

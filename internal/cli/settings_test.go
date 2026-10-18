@@ -9,9 +9,46 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
+	"github.com/chzyer/readline"
 	"github.com/zhoushoujianwork/offload/internal/config"
 )
+
+func TestTerminalSettingsPromptRendersWithoutDuplicateHelp(t *testing.T) {
+	var out bytes.Buffer
+	p := terminalSettingsPrompt{in: io.NopCloser(strings.NewReader("\r")), out: settingsWriter{&out}}
+	index, err := p.Choose("Assistance scope", []string{"Research & small edits", "Research + implementation"}, 0)
+	if err != nil || index != 0 {
+		t.Fatalf("selection = %d, %v; output: %q", index, err, out.String())
+	}
+	if strings.Contains(out.String(), "Use the arrow keys to navigate") {
+		t.Fatalf("duplicate navigation help: %q", out.String())
+	}
+}
+
+func TestSettingsLineFitsTerminalRow(t *testing.T) {
+	for _, tc := range []struct {
+		text  string
+		width int
+		want  string
+	}{
+		{"short", 10, "short"},
+		{"long profile name", 10, "long pr..."},
+		{"模型配置很长", 8, "模型..."},
+		{"long", 2, ".."},
+		{"long", 0, "."},
+		{"a\nb\rc\td", 20, "a b c d"},
+	} {
+		got := settingsLine(tc.text, tc.width)
+		if got != tc.want || !utf8.ValidString(got) {
+			t.Errorf("settingsLine(%q, %d) = %q, want %q", tc.text, tc.width, got, tc.want)
+		}
+		if (readline.Runes{}).WidthAll([]rune(got)) > max(1, tc.width) {
+			t.Errorf("rendered choice exceeds width: %q", got)
+		}
+	}
+}
 
 // step queues one scripted answer for either Choose or Ask. Whichever method
 // is actually invoked next consumes it; err, when set, is returned instead of
@@ -137,8 +174,14 @@ func TestSettingsModeChangePersistsAndInstallsRules(t *testing.T) {
 	if f.calls[0].label != "Settings" {
 		t.Fatalf("top menu label = %q", f.calls[0].label)
 	}
-	if f.calls[1].label != "Delegation mode" || f.calls[1].cursor != 1 {
+	if f.calls[1].label != "Assistance scope" || f.calls[1].cursor != 1 {
 		t.Fatalf("mode submenu call = %+v, want cursor on proactive (current default)", f.calls[1])
+	}
+	if !slices.Equal(f.calls[1].choices, []string{"Research & small edits", "Research + implementation (test & document too)"}) {
+		t.Fatalf("unclear assistance choices: %v", f.calls[1].choices)
+	}
+	if f.calls[2].choices[0] != "Assistance scope: Research & small edits" {
+		t.Fatalf("scope not reflected in menu: %v", f.calls[2].choices)
 	}
 }
 
