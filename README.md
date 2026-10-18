@@ -111,6 +111,21 @@ offload mode proactive    # switch back to proactive
 
 `offload mode` with no argument only reads the saved mode and does not create a config file or touch installed instructions. Setting it validates the mode first, then updates the installed policy/skill for both Codex and Claude Code (user scope) using the same install logic as `install-agent`, and finally saves `delegation_mode` in the config, preserving every other field (profiles, default, credentials). If persisting the choice fails after the instructions were already updated, the command reports that explicitly so you know the files and the saved mode are out of sync. Repeating the same mode leaves already matching files unchanged. **Start a new agent session after changing the mode** so it picks up the updated instructions; a session already running keeps its previously loaded copy.
 
+## Interactive settings
+
+```bash
+offload config   # open settings in an interactive terminal
+offload          # also opens settings when stdin and stdout are terminals
+```
+
+Use the up/down arrow keys to choose an item and Enter to confirm. Ctrl-C cancels a submenu or exits the main menu. Settings apply when confirmed; cancelling does not save a change.
+
+The menu shows the current delegation mode and saved default profile. You can switch `basic`/`proactive`, select a default profile, edit an existing profile's model, or reapply agent settings. Profiles show their execution backend and model, without displaying credentials. An `OFFLOAD_PROFILE` shell override is shown separately from the saved default.
+
+Model edits preserve the profile's provider settings and credentials. Leave a Codex model empty to use its native default; Claude profiles require a model. The menu lists profiles defined in `config.json`; if none exist, it shows the configuration path so you can add them.
+
+Mode changes also update the installed Codex and Claude instructions. Start a new agent session to load them. Piped task input and existing non-interactive commands continue to work as before.
+
 ## Set up Codex and Claude Code
 
 Install the bundled skill and delegation policy into each supervising agent's main instruction file:
@@ -165,6 +180,7 @@ Keep short conversations, trivial lookups, architecture choices, sensitive chang
 
 ```text
 offload [flags] "task"        run a task (task may also come on stdin)
+offload config               open interactive settings (terminal only)
 offload ls [n]                list the last n runs (default 10)
 offload show <session>        print every report of a session
 offload status                what each worker is doing right now

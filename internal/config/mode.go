@@ -59,6 +59,10 @@ func SetMode(path, mode string) error {
 		return nil
 	}
 	fields["delegation_mode"], _ = json.Marshal(mode)
+	return writeSettings(path, fields)
+}
+
+func writeSettings(path string, fields map[string]json.RawMessage) error {
 	b, err := json.MarshalIndent(fields, "", "  ")
 	if err != nil {
 		return err

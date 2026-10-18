@@ -27,6 +27,7 @@ const usage = `offload — hand a task to Claude Code or Codex; print only its f
 
 usage:
   offload [flags] "task"        run a task (task may also come on stdin)
+  offload config               open interactive settings (also: offload in a terminal)
   offload ls [n]                list the last n runs (default 10)
   offload show <session>        print every report of a session
   offload status                what each worker is doing right now
@@ -42,8 +43,13 @@ flags:
 
 // Run dispatches one offload invocation and returns the process exit code.
 func Run(version string, args []string, stdin io.Reader, stdout, stderr io.Writer) int {
+	if len(args) == 0 && terminalStream(stdin) && terminalStream(stdout) {
+		return cmdSettings(nil, stdin, stdout, stderr)
+	}
 	if len(args) > 0 {
 		switch args[0] {
+		case "config":
+			return cmdSettings(args[1:], stdin, stdout, stderr)
 		case "ls":
 			return cmdList(args[1:], stdout, stderr)
 		case "show":
@@ -307,12 +313,7 @@ func fail(w io.Writer, err error) int {
 }
 
 func isTerminal(r io.Reader) bool {
-	f, ok := r.(*os.File)
-	if !ok {
-		return false
-	}
-	st, err := f.Stat()
-	return err == nil && st.Mode()&os.ModeCharDevice != 0
+	return terminalStream(r)
 }
 
 func firstNonEmpty(a, b string) string {

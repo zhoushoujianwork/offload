@@ -1,5 +1,4 @@
-// offload runs a task on a cheaper model through `claude -p` against an Anthropic-compatible
-// gateway and prints only the worker's final report, so a supervising agent spends few tokens.
+// offload delegates tasks to a configured CLI worker or opens interactive settings.
 package main
 
 import (

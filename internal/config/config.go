@@ -128,23 +128,7 @@ func SetDefault(path, name string) error {
 		return err
 	}
 	fields["default"], _ = json.Marshal(name)
-	b, err = json.MarshalIndent(fields, "", "  ")
-	if err != nil {
-		return err
-	}
-	f, err := os.CreateTemp(filepath.Dir(path), ".config-*.json")
-	if err != nil {
-		return err
-	}
-	defer os.Remove(f.Name())
-	if _, err := f.Write(append(b, '\n')); err != nil {
-		f.Close()
-		return err
-	}
-	if err := f.Close(); err != nil {
-		return err
-	}
-	return os.Rename(f.Name(), path)
+	return writeSettings(path, fields)
 }
 
 // ResolveToken returns the profile's token, running token_cmd when set.
