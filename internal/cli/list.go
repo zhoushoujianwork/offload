@@ -42,10 +42,7 @@ func cmdList(args []string, stdout, stderr io.Writer) int {
 		if r.ExitCode == nil || *r.ExitCode != 0 {
 			status += " (exit=" + exitText(r) + ")"
 		}
-		cost := "cost unknown"
-		if r.CostUSD != nil {
-			cost = "est. " + costText(r)
-		}
+		cost := listCost(r)
 		profile := firstNonEmpty(r.Profile, "profile unavailable")
 		if r.Model != "" && !strings.Contains(strings.ToLower(profile), strings.ToLower(r.Model)) {
 			profile += " / " + r.Model
@@ -59,6 +56,15 @@ func cmdList(args []string, stdout, stderr io.Writer) int {
 			listLine(project), listLine(profile), settingsLine(r.Task, 100), firstNonEmpty(r.Session, "unavailable"))
 	}
 	return 0
+}
+
+// listCost marks recorded values as estimates and explains why a missing one is unavailable.
+// A recorded zero stays $0.0000; unavailable is never shown as zero.
+func listCost(r history.Record) string {
+	if r.CostUSD != nil {
+		return "est. " + costText(r)
+	}
+	return "cost unavailable (" + firstNonEmpty(r.CostNote, history.CostNoteNotReport) + ")"
 }
 
 // Sanitize metadata without shortening profile names or model identifiers.

@@ -25,11 +25,13 @@ type Record struct {
 	Denials        int      `json:"permission_denials,omitempty"` // tool calls the worker was refused
 	CostUSD        *float64 `json:"cost_usd"`                     // worker estimate, never verified billing; nil means unavailable
 	CostIsEstimate bool     `json:"cost_is_estimate"`
-	DurationMs     int64    `json:"duration_ms"` // duration reported by the worker (legacy field)
-	ElapsedMs      *int64   `json:"elapsed_ms"`  // measured end-to-end, including setup; nil for older records
-	Result         string   `json:"result"`
-	Error          string   `json:"error,omitempty"`
-	Salvaged       bool     `json:"salvaged,omitempty"` // Result is a report written after the worker was stopped
+	// CostNote explains why CostUSD is nil. Read derives it for display only; it is never persisted.
+	CostNote   string `json:"-"`
+	DurationMs int64  `json:"duration_ms"` // duration reported by the worker (legacy field)
+	ElapsedMs  *int64 `json:"elapsed_ms"`  // measured end-to-end, including setup; nil for older records
+	Result     string `json:"result"`
+	Error      string `json:"error,omitempty"`
+	Salvaged   bool   `json:"salvaged,omitempty"` // Result is a report written after the worker was stopped
 }
 
 // Path is the run log location.
@@ -75,16 +77,38 @@ func Read(path string) ([]Record, error) {
 	for sc.Scan() {
 		var r Record
 		if json.Unmarshal(sc.Bytes(), &r) == nil {
-			// Old versions serialized missing costs as zero. Without the new marker,
-			// an old zero is ambiguous and must not be presented as a known estimate.
-			if r.CostUSD != nil && (!ValidCost(*r.CostUSD) || (!r.CostIsEstimate && *r.CostUSD == 0)) {
-				r.CostUSD = nil
-			}
-			r.CostIsEstimate = true
+			normalizeCost(&r)
 			rs = append(rs, r)
 		}
 	}
 	return rs, sc.Err()
+}
+
+// Reasons a stored cost is unavailable, shown by `offload ls`.
+const (
+	CostNoteLegacyZero = "legacy zero is ambiguous"
+	CostNoteInvalid    = "invalid value recorded"
+	CostNoteCodex      = "Codex does not report USD cost"
+	CostNoteNotReport  = "worker did not report cost"
+)
+
+// normalizeCost keeps genuine values and records why a missing one is missing.
+// Old versions serialized a missing cost as 0 without cost_is_estimate, so an
+// unmarked zero is ambiguous and is treated as unavailable rather than as $0.
+func normalizeCost(r *Record) {
+	r.CostNote = ""
+	switch {
+	case r.CostUSD != nil && !ValidCost(*r.CostUSD):
+		r.CostUSD, r.CostNote = nil, CostNoteInvalid
+	case r.CostUSD != nil && !r.CostIsEstimate && *r.CostUSD == 0:
+		r.CostUSD, r.CostNote = nil, CostNoteLegacyZero
+	case r.CostUSD == nil && r.Backend == "codex":
+		r.CostNote = CostNoteCodex
+	case r.CostUSD == nil:
+		r.CostNote = CostNoteNotReport
+	}
+	// Every stored cost is a worker estimate; a missing cost is not an estimate of anything.
+	r.CostIsEstimate = r.CostUSD != nil
 }
 
 // BySession filters records to one worker session.

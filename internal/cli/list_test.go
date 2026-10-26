@@ -87,9 +87,9 @@ func TestListSummaryMetrics(t *testing.T) {
 	}
 	wants := []string{
 		"2026-10-26T10:00:00Z | OK | 1m47s | 4 turns | est. $0.0000\n  app | cheap / m-1\n  review\n  Session: full-session-id",
-		"legacy | ERROR (exit=1) | elapsed unknown | 0 turns | cost unknown",
+		"legacy | ERROR (exit=1) | elapsed unknown | 0 turns | cost unavailable (legacy zero is ambiguous)",
 		"stopped | TIMEOUT (exit=124) | elapsed unknown | 0 turns | est. $0.2500",
-		"unknown | OK (exit=unknown) | elapsed unknown | 0 turns | cost unknown",
+		"unknown | OK (exit=unknown) | elapsed unknown | 0 turns | cost unavailable (worker did not report cost)",
 		"  Session: unavailable",
 	}
 	for _, want := range wants {
@@ -135,5 +135,51 @@ func TestListUnicodeTaskAndLongProfile(t *testing.T) {
 		if unicode.IsControl(r) {
 			t.Errorf("unsanitized control %U", r)
 		}
+	}
+}
+
+// Saved run fixtures, one per cost case; no worker or paid model is invoked.
+const costFixtures = `{"ts":"t-available","status":"ok","exit_code":0,"backend":"claude","cost_usd":0.0753,"cost_is_estimate":true,"session":"s1"}
+{"ts":"t-zero","status":"ok","exit_code":0,"backend":"claude","cost_usd":0,"cost_is_estimate":true,"session":"s2"}
+{"ts":"t-missing","status":"ok","exit_code":0,"backend":"claude","cost_usd":null,"cost_is_estimate":true,"session":"s3"}
+{"ts":"t-legacy-nonzero","status":"ok","exit_code":0,"cost_usd":0.5,"session":"s4"}
+{"ts":"t-legacy-zero","status":"ok","exit_code":0,"cost_usd":0,"session":"s5"}
+{"ts":"t-codex","status":"ok","exit_code":0,"backend":"codex","cost_usd":null,"cost_is_estimate":false,"session":"s6"}
+{"ts":"t-invalid","status":"ok","exit_code":0,"cost_usd":-1,"cost_is_estimate":true,"session":"s7"}
+`
+
+func TestListCostFromSavedFixtures(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	if err := os.MkdirAll(filepath.Dir(history.Path()), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(history.Path(), []byte(costFixtures), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	code, out, errOut := runCLI("ls", "20")
+	if code != 0 || errOut != "" {
+		t.Fatalf("code=%d stderr=%q", code, errOut)
+	}
+	for ts, want := range map[string]string{
+		"t-available":      "est. $0.0753",
+		"t-zero":           "est. $0.0000",
+		"t-missing":        "cost unavailable (worker did not report cost)",
+		"t-legacy-nonzero": "est. $0.5000",
+		"t-legacy-zero":    "cost unavailable (legacy zero is ambiguous)",
+		"t-codex":          "cost unavailable (Codex does not report USD cost)",
+		"t-invalid":        "cost unavailable (invalid value recorded)",
+	} {
+		if !strings.Contains(out, ts+" | OK | elapsed unknown | 0 turns | "+want+"\n") {
+			t.Errorf("%s: want %q in %q", ts, want, out)
+		}
+	}
+	// Unavailable must never be rendered as a zero price.
+	for _, line := range strings.Split(out, "\n") {
+		if strings.Contains(line, "unavailable (") && strings.Contains(line, "$") {
+			t.Errorf("unavailable cost shows a price: %q", line)
+		}
+	}
+	if strings.Contains(out, "cost unknown") {
+		t.Errorf("stale unexplained wording in %q", out)
 	}
 }
