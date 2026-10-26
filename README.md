@@ -216,6 +216,16 @@ offload -w -json -d /abs/docs "..."
 
 **Don't repeat the worker's work.** The parent keeps requirements, design, tradeoffs, and acceptance; it delegates a coherent slice, inspects targeted evidence or the diff, and runs scoped checks. Workers return a compact report (outcome, changed files or key references, checks, unresolved issues); `offload show` has the full history.
 
+**Reproducible comparison.** `go test ./internal/cli -run TestPollingCoordinationComparison -v` runs a fake long-running worker headlessly and logs, per waiting strategy, the parent turns (one offload CLI call each), elapsed time, exit codes, and whether the outcome was seen. Example output from one run on a 3s worker (timings are scaled down, so only the turn counts and visibility are meaningful):
+
+```text
+short poll (status/400ms)    turns=10 elapsed=3.6s exit_codes=[0 0 0 0 0 0 0 0 0 0] outcome_seen="status=ok exit_code=0"
+one long watch (-t 30s)      turns=1  elapsed=3.1s exit_codes=[0]                    outcome_seen="status=ok exit_code=0"
+bounded watches (-t 1s)      turns=4  elapsed=3.1s exit_codes=[124 124 124 0]        outcome_seen="status=ok exit_code=0"
+```
+
+The same test checks that a failed worker, a timeout, and a stall stay visible under a long watch. It counts parent turns only. Parent and worker tokens (cached or noncached) and cost are not measured there and stay unavailable, so these counts are not a token or cost saving. A worker that ends between two bounded watches is reported by the next one as `recently finished`.
+
 When measuring this, report parent polling/tool turns, parent and worker token usage where available (cached input separately from noncached), elapsed time, and failures. Cost stays unknown when unavailable, and savings are not claimed without a comparable baseline.
 
 ## Usage

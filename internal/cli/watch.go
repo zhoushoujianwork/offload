@@ -66,6 +66,17 @@ type seenWorker struct {
 
 func (w *watcher) emit(format string, a ...any) { fmt.Fprintf(w.out, format+"\n", a...) }
 
+// recentlyFinished reports workers that ended before this watch began. Live state files expire
+// after live.ExpireAfter, so these are always recent.
+func (w *watcher) recentlyFinished(states []live.State) {
+	for _, s := range states {
+		if s.Phase == live.Done {
+			w.emit("[offload] recently finished status=%s exit_code=%d tool_calls=%d session=%s task=%q",
+				s.Status, s.ExitCode, s.ToolCalls, firstNonEmpty(s.Session, "-"), text.Truncate(s.Task, 60))
+		}
+	}
+}
+
 // step reports what changed since the last call and returns how many workers are still active.
 func (w *watcher) step(states []live.State) int {
 	active := 0
@@ -112,10 +123,15 @@ func (w *watcher) step(states []live.State) int {
 func cmdWatch(ctx context.Context, stdout, stderr io.Writer) int {
 	w := &watcher{seen: map[int]*seenWorker{}, out: stdout}
 	started := false
-	for {
+	for first := true; ; first = false {
 		states, err := live.List()
 		if err != nil {
 			return fail(stderr, err)
+		}
+		if first {
+			// A worker can finish between two bounded watches (after exit 124). Show how it ended
+			// instead of hiding the outcome behind "no active workers".
+			w.recentlyFinished(states)
 		}
 		active := w.step(states)
 		if active > 0 {
