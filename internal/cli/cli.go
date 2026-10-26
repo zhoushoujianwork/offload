@@ -232,6 +232,9 @@ func costText(rec history.Record) string {
 	if rec.CostUSD == nil {
 		return "unknown"
 	}
+	if rec.CostBasis == "api_baseline" {
+		return fmt.Sprintf("API baseline est. $%.4f", *rec.CostUSD)
+	}
 	return fmt.Sprintf("$%.4f", *rec.CostUSD)
 }
 
@@ -287,8 +290,10 @@ func cmdShow(args []string, stdout, stderr io.Writer) int {
 		return fail(stderr, fmt.Errorf("no run with session %s", args[0]))
 	}
 	for _, r := range hit {
-		fmt.Fprintf(stdout, "## %s %s %s/%s %s\nexit_code=%s turns=%d estimated_cost=%s elapsed=%s session=%s\n> %s\n\n%s\n\n",
-			r.TS, r.Status, r.Profile, r.Model, r.Dir, exitText(r), r.Turns, costText(r), elapsedText(r), r.Session, r.Task, r.Result)
+		fmt.Fprintf(stdout, "## %s %s %s/%s %s\nexit_code=%s turns=%d estimated_cost=%s elapsed=%s session=%s\n",
+			r.TS, r.Status, r.Profile, r.Model, r.Dir, exitText(r), r.Turns, costText(r), elapsedText(r), r.Session)
+		showCostDetails(stdout, r)
+		fmt.Fprintf(stdout, "> %s\n\n%s\n\n", r.Task, r.Result)
 	}
 	return 0
 }

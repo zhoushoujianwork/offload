@@ -119,14 +119,16 @@ type Opts struct {
 
 // claudeResult is the subset of `claude -p --output-format json` we use.
 type claudeResult struct {
-	Result     string   `json:"result"`
-	IsError    bool     `json:"is_error"`
-	Subtype    string   `json:"subtype"`
-	Errors     []string `json:"errors"`
-	NumTurns   int      `json:"num_turns"`
-	CostUSD    *float64 `json:"total_cost_usd"`
-	DurationMs int64    `json:"duration_ms"`
-	SessionID  string   `json:"session_id"`
+	CumulativeUsage  *history.TokenUsage `json:"-"`
+	UsageUnavailable string              `json:"-"`
+	Result           string              `json:"result"`
+	IsError          bool                `json:"is_error"`
+	Subtype          string              `json:"subtype"`
+	Errors           []string            `json:"errors"`
+	NumTurns         int                 `json:"num_turns"`
+	CostUSD          *float64            `json:"total_cost_usd"`
+	DurationMs       int64               `json:"duration_ms"`
+	SessionID        string              `json:"session_id"`
 }
 
 // salvageTask makes a stopped worker write its report from what it already read.
@@ -277,6 +279,11 @@ func Run(ctx context.Context, o Opts) (rec history.Record, err error) {
 	pub = newPublisher(o, started)
 	a := runAttempt(ctx, bin, o, promptPath, token, o.Timeout, pub.update)
 	s := a.s
+	if o.Profile.BackendName() == "codex" {
+		defer func() {
+			applyCodexAccounting(&rec, s, a.baseline, a.baselineError, o, a.runErr == nil && a.cause == nil)
+		}()
+	}
 	rec.Session, rec.Turns, rec.Denials = s.Session, s.ToolCalls, s.Denials
 	stopped := errors.Is(a.cause, errIdle) || errors.Is(a.cause, context.DeadlineExceeded)
 	if stopped {
@@ -356,6 +363,8 @@ func Run(ctx context.Context, o Opts) (rec history.Record, err error) {
 
 // attempt is the outcome of one worker process.
 type attempt struct {
+	baseline       *history.TokenUsage
+	baselineError  string
 	s              streamSummary
 	cause          error
 	runErr         error
@@ -372,7 +381,10 @@ func runAttempt(ctx context.Context, bin string, o Opts, promptPath, token strin
 	defer cancelCause(nil)
 	var cmd *exec.Cmd
 	parse := parseStream
+	var baseline *history.TokenUsage
+	var baselineError string
 	if o.Profile.BackendName() == "codex" {
+		baseline, baselineError = codexBaseline(o.Resume)
 		cmd = exec.CommandContext(ctx, bin, buildCodexArgs(o)...)
 		cmd.Dir = o.Dir
 		cmd.Env = os.Environ()
@@ -410,6 +422,7 @@ func runAttempt(ctx context.Context, bin string, o Opts, promptPath, token strin
 	cmd.WaitDelay = 100 * time.Millisecond
 	runErr := cmd.Run()
 	return attempt{s: parse(out.Bytes()), cause: context.Cause(ctx), runErr: runErr,
+		baseline: baseline, baselineError: baselineError,
 		stdout: out.String(), stderr: workerErr.String()}
 }
 

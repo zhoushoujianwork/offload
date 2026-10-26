@@ -50,7 +50,7 @@ func buildCodexArgs(o Opts) []string {
 }
 
 // parseCodexStream normalizes Codex JSONL events into the shared progress/result model.
-// Codex reports token usage, not a USD cost; leave cost unavailable.
+// Usage is session-cumulative; run accounting is applied after the process exits.
 func parseCodexStream(out []byte) streamSummary {
 	var s streamSummary
 	var report string
@@ -58,9 +58,10 @@ func parseCodexStream(out []byte) streamSummary {
 	dec := json.NewDecoder(bytes.NewReader(out))
 	for {
 		var e struct {
-			Type     string `json:"type"`
-			ThreadID string `json:"thread_id"`
-			Message  string `json:"message"`
+			Type     string          `json:"type"`
+			Usage    json.RawMessage `json:"usage"`
+			ThreadID string          `json:"thread_id"`
+			Message  string          `json:"message"`
 			Error    struct {
 				Message string `json:"message"`
 			} `json:"error"`
@@ -80,6 +81,8 @@ func parseCodexStream(out []byte) streamSummary {
 			s.Session = e.ThreadID
 		}
 		switch e.Type {
+		case "turn.started":
+			s.Result, report = nil, ""
 		case "item.started", "item.completed":
 			if e.Item.Type == "agent_message" && e.Type == "item.completed" {
 				s.LastText = e.Item.Text
@@ -98,6 +101,10 @@ func parseCodexStream(out []byte) streamSummary {
 			}
 		case "turn.completed":
 			s.Result = &claudeResult{Result: report, SessionID: s.Session, NumTurns: s.ToolCalls}
+			s.Result.CumulativeUsage = decodeCodexUsage(e.Usage)
+			if s.Result.CumulativeUsage == nil {
+				s.Result.UsageUnavailable = "missing or invalid terminal usage"
+			}
 			if strings.TrimSpace(report) == "" {
 				s.Result.IsError = true
 				s.Result.Errors = []string{"Codex completed without a report"}
