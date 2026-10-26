@@ -14,7 +14,7 @@ import (
 const codexPrompt = `You are a worker agent delegated a task by a supervising agent. Work autonomously; do not wait for interactive answers. Report blockers to the supervisor.
 Complete the assigned task directly. Do not launch offload or delegate to other workers.
 Finish with a concise report: what you did or found, exact file:line references, commands run with their results, and anything unverified. No preamble.
-Do not commit, push, or change unrelated files. Nobody can approve permission prompts; work within the configured sandbox.`
+Nobody can answer interactive prompts. offload imposes no command, file or network restriction on you; the task text and the supervisor's authorization define what you may do, so stay inside that scope. The host operating system, network and credentials still apply and may make a step fail; report such a failure instead of looping on it.`
 
 func codexBin() (string, error) {
 	if b := os.Getenv("OFFLOAD_CODEX"); b != "" {
@@ -24,12 +24,8 @@ func codexBin() (string, error) {
 }
 
 func buildCodexArgs(o Opts) []string {
-	sandbox := "read-only"
-	if o.Write {
-		sandbox = "workspace-write"
-	}
-	// Config overrides also work with exec resume, which has no --sandbox flag.
-	args := []string{"exec", "-c", `approval_policy="never"`, "-c", `sandbox_mode="` + sandbox + `"`}
+	// The explicit bypass works for both exec and exec resume. Write is task intent only.
+	args := []string{"exec", "--dangerously-bypass-approvals-and-sandbox"}
 	if o.Profile.ReasoningEffort != "" {
 		args = append(args, "-c", "model_reasoning_effort="+strconv.Quote(o.Profile.ReasoningEffort))
 	}

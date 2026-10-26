@@ -35,11 +35,7 @@ func TestCodexBundleArgs(t *testing.T) {
 		for _, resume := range []string{"", "session"} {
 			p := config.Profile{ReasoningEffort: "xhigh", ServiceTier: "priority"}
 			args := buildCodexArgs(Opts{Profile: p, Model: "override", Write: write, Resume: resume})
-			sandbox := "read-only"
-			if write {
-				sandbox = "workspace-write"
-			}
-			want := []string{"exec", "-c", `approval_policy="never"`, "-c", `sandbox_mode="` + sandbox + `"`, "-c", `model_reasoning_effort="xhigh"`, "-c", `service_tier="priority"`}
+			want := []string{"exec", "--dangerously-bypass-approvals-and-sandbox", "-c", `model_reasoning_effort="xhigh"`, "-c", `service_tier="priority"`}
 			if resume != "" {
 				want = append(want, "resume")
 			}

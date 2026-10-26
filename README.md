@@ -79,7 +79,7 @@ Profiles select a `backend`: `claude` (the default for existing profiles) or `co
 
 A profile with `"backend": "codex"` runs `codex exec --json`. It uses your existing Codex authentication, provider, and configuration, including `CODEX_HOME`. The optional `model` field or `-m` selects a model; omit both to use the Codex default. Log in with the native Codex CLI before running a Codex profile. Optional `reasoning_effort` and `service_tier` override native settings for that worker only; omitted or empty values inherit them. The wizard offers Inherit/Low/Medium/High/Extra high reasoning and Inherit/Standard/Fast speed (`default`/`priority`). Fast is not a token or cost savings guarantee. Gateway fields (`base_url`, `token`, `token_cmd`) apply only to Claude profiles. `OFFLOAD_CODEX` can override the Codex executable.
 
-Codex runs with approval policy `never`, using the `read-only` sandbox by default and `workspace-write` with `-w`. These are Codex sandbox policies, separate from the Claude tool approval lists below. Instructions and the task are sent over stdin. Codex also discovers its own agent instructions. JSONL events supply the report, session ID, and live tool progress; `turns` counts tool calls. Codex reports cumulative token usage. offload preserves run-scoped tokens and can calculate the limited API baseline estimate described below; this is separate from native billing.
+Codex runs with `--dangerously-bypass-approvals-and-sandbox` for both read-only and `-w` tasks; offload adds no sandbox (see Permissions below). Instructions and the task are sent over stdin. Codex also discovers its own agent instructions. JSONL events supply the report, session ID, and live tool progress; `turns` counts tool calls. Codex reports cumulative token usage. offload preserves run-scoped tokens and can calculate the limited API baseline estimate described below; this is separate from native billing.
 
 Interrupted Codex runs retain progress and a resume command. Automatic tool-less salvage is supported only for Claude.
 
@@ -103,7 +103,7 @@ OFFLOAD_PROFILE=deepseek offload -d /absolute/path/app "Find retry entry points,
 
 ## Delegation mode
 
-Delegation mode controls how proactively the installed policy tells a supervising agent to hand work to offload. It is independent of the provider `profile`/model selection above and does not change worker permissions (`-w` still opts in to edits).
+Delegation mode controls how proactively the installed policy tells a supervising agent to hand work to offload. It is independent of the provider `profile`/model selection above and does not change worker permissions, which offload never restricts (`-w` still states that the task may edit).
 
 | Mode | Behavior |
 |---|---|
@@ -112,7 +112,7 @@ Delegation mode controls how proactively the installed policy tells a supervisin
 
 In both modes, actually invoking offload is the default before substantial bounded supporting work, to reduce the supervising model's token use: cross-file localization, bounded evidence gathering, comparisons, and bulk summaries go to a worker before the same material is read locally. One quick orientation lookup is fine; when it expands, delegate. Scope may be narrowed after that orientation, and an open-ended overall objective is not a reason to keep all bounded research local. Otherwise eligible execution work stays local only for a concrete tiny known-file check, a user restriction, a security boundary, or an unavailable worker, with a brief stated reason. Trivial tasks need no call, and savings are not claimed without measurement.
 
-Both modes keep architecture/design decisions, important tradeoffs, and final independent review with the supervising agent, and keep the existing permission, monitoring, resume, and no-recursive-worker rules.
+Both modes keep architecture/design decisions, important tradeoffs, and final independent review with the supervising agent, and keep the existing scope, monitoring, resume, and no-recursive-worker rules.
 
 ```bash
 offload mode              # print the saved mode (unset config defaults to proactive)
@@ -246,7 +246,7 @@ offload version
 
   -p profile   profile name (default: $OFFLOAD_PROFILE, then config default)
   -m model     override the profile's model
-  -w           write mode (default: read-only)
+  -w           task intent: the task may modify files (default: told to stay read-only); instruction only, no tool or sandbox limit either way
   -r session   resume a session; reuses its original dir unless -d is given
   -d dir       working directory (default: cwd)
   -t 30m       worker timeout; a worker silent for 10 minutes is stopped earlier
@@ -306,12 +306,17 @@ Failures can also include an `error` field. Worker error types and messages are 
 
 ### Permissions
 
-| Mode | Automatically approved tools |
-|---|---|
-| read-only (default) | Read, Grep, Glob, `git log/diff/show`, `ls`, `rg` |
-| `-w` | Read, Grep, Glob, Edit/Write (`acceptEdits`), `git status/diff`, `ls`, `rg`, build/test commands (`go`, `make`, `npm test/run`, `pytest`, `cargo`, `idf.py build`) |
+offload imposes no permission restrictions on workers, so commands can run headlessly where nobody can answer a prompt.
 
-These Claude tool approval rules are not an operating-system sandbox or a guarantee that build scripts cannot change files, access other paths, or use the network. Set explicit task constraints, inspect scripts and edits, and honor the host's permissions. Commit, push, deletion, and network tools are not included in the approval list.
+| Backend | What offload passes (fresh and resumed runs, with or without `-w`) |
+|---|---|
+| Claude | `--dangerously-skip-permissions`; no `--allowedTools`, `--disallowedTools`, `acceptEdits` or tool subset |
+| Claude, salvage report step only | `--dangerously-skip-permissions` and `--tools ""` (tool-less by design, so it only writes a report) |
+| Codex | `--dangerously-bypass-approvals-and-sandbox` |
+
+`-w` is a task-intent flag kept for backward compatibility. Without it the worker is told in its prompt not to modify files; with it that sentence is left out. That is an instruction to the model, never a tool or sandbox barrier, so the task text is the real scope control. State the allowed files and actions, and say explicitly whether commits, pushes, deletions, installs, network calls or configuration changes are authorized. A worker can run commands, change files and use the network wherever the parent host and the user account allow.
+
+The parent host's permissions, the operating system, network access and credentials still apply, and a step can fail on them. offload does not guarantee that a worker will succeed. Inspect the actual diff and run checks yourself after a worker edits files.
 
 `--bare` skips hooks, plugins, and automatic CLAUDE.md discovery. Project `CLAUDE.md` / `AGENTS.md` instructions and worker constraints are combined into one private temporary prompt file, passed with `--append-system-prompt-file` and removed after the run. Their contents stay out of argv.
 
@@ -323,12 +328,12 @@ Before launching Claude, a reachability preflight attempts a TCP connection to t
 
 ## Known limits
 
-- The worker is headless, so permission prompts cannot be approved. With Claude, compound shell commands (pipes, `&&`, heredocs, `python -c`) are refused and burn a turn. Read-only `rtk` forms (`rtk ls`, `rtk read`, `rtk grep`, `rtk git log`, ...) are allowed; `rtk run`, `proxy`, `err`, `summary`, `pipe`, `test` and `find` are not; `permission_denials=N` in the summary line counts them.
+- The worker is headless, so prompts cannot be answered. offload adds no command, file or network allowlist, but the host OS, network and credentials still apply and can fail a step. `permission_denials=N` in the summary line counts steps that the host or Claude Code still refused. If Grep or Glob is not exposed to a Claude worker, it is told to fall back to a simple `rg` or `rtk grep` and `ls`.
 - A Claude worker stopped by `-t`, by 10 minutes of silence, or ending without a result is asked once, with all tools off, for a report from what it already read. The result starts with `[SALVAGED REPORT ...]`, the summary line shows `salvaged=true`, and `-json` has `"salvaged": true`. Its `cost_usd` covers only that step. It is partial and unverified. `-no-salvage` skips the step; if nothing could be salvaged you get the progress and an `offload -r <session>` command. For such runs `turns` counts tool calls.
 - A worker that prints nothing for 10 minutes (a hung model request) is stopped without waiting for `-t`; the idle limit is fixed. Large tasks are slow (20-40s per turn). Split broad audits instead of raising `-t`; keep `-t` at its default unless the task needs more.
 - Requires network access and writes state outside the project (`~/.claude` or `$CODEX_HOME`, plus the offload history directory). Use host-approved permissions; when offloading is unavailable, report the failure and continue with local tools or native subagents.
 - Some gateways reject Claude Code's `anthropic-beta: claude-code-*` header and cannot be used as workers.
-- Nested workers inherit host restrictions. For example, the Claude desktop app may prevent file writes; verify the host supports the requested mode.
+- A worker launched from a restricted host inherits that host's restrictions. For example, the Claude desktop app may prevent file writes; verify the host supports the requested mode.
 
 ## Development
 

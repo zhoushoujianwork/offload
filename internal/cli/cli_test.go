@@ -109,14 +109,14 @@ func TestRunReadOnlyPrintsReportAndIsolatesCredentials(t *testing.T) {
 	if strings.Contains(got, "tok-123\n") || strings.Contains(got, "caller-") {
 		t.Errorf("token leaked into argv or caller credential reached worker:\n%s", got)
 	}
-	if strings.Contains(got, "acceptEdits") {
-		t.Error("read-only run must not get acceptEdits")
+	if strings.Contains(got, "acceptEdits") || !strings.Contains(got, "--dangerously-skip-permissions\n") {
+		t.Error("run must skip permission prompts and must not use acceptEdits")
 	}
 }
 
-// rtk saves tokens, so its read-only forms must be allowed; its command runners must not be,
-// since they would bypass the tool lists.
-func TestRtkReadFormsAllowedRunnersNot(t *testing.T) {
+// offload adds no tool list in either mode: the worker skips permission prompts and, with or
+// without -w, gets no allow list, deny list or tool subset.
+func TestNoToolRestrictionsInEitherMode(t *testing.T) {
 	for _, write := range []bool{false, true} {
 		work, record := setup(t, okReply)
 		args := []string{"-d", work, "x"}
@@ -125,14 +125,12 @@ func TestRtkReadFormsAllowedRunnersNot(t *testing.T) {
 		}
 		runCLI(args...)
 		rec, _ := os.ReadFile(record)
-		for _, want := range []string{"Bash(rtk ls:*)", "Bash(rtk read:*)", "Bash(rtk grep:*)"} {
-			if !strings.Contains(string(rec), want) {
-				t.Errorf("write=%v: missing %q", write, want)
-			}
+		if !strings.Contains(string(rec), "--dangerously-skip-permissions\n") {
+			t.Errorf("write=%v: permissions not skipped:\n%s", write, rec)
 		}
-		for _, bad := range []string{"Bash(rtk run", "Bash(rtk proxy", "Bash(rtk err", "Bash(rtk summary", "Bash(rtk pipe", "Bash(rtk test", "Bash(rtk find"} {
+		for _, bad := range []string{"--allowedTools", "--disallowedTools", "--permission-mode", "acceptEdits", "--tools", "Bash("} {
 			if strings.Contains(string(rec), bad) {
-				t.Errorf("write=%v: %q would let the worker run arbitrary commands", write, bad)
+				t.Errorf("write=%v: unexpected %q", write, bad)
 			}
 		}
 	}
@@ -145,17 +143,12 @@ func TestWriteModeAndProjectInstructions(t *testing.T) {
 		t.Fatal(e)
 	}
 	rec, _ := os.ReadFile(record)
-	for _, want := range []string{"acceptEdits", "Bash(go test:*)"} {
-		if !strings.Contains(string(rec), want) {
-			t.Errorf("missing %q", want)
-		}
+	if !strings.Contains(string(rec), "--dangerously-skip-permissions\n") || strings.Contains(string(rec), "acceptEdits") {
+		t.Errorf("write mode must skip permissions without acceptEdits:\n%s", rec)
 	}
 	prompt, err := os.ReadFile(record + ".prompt")
 	if err != nil || !strings.Contains(string(prompt), filepath.Join(work, "AGENTS.md")) || !strings.Contains(string(prompt), "rules") || strings.Contains(string(prompt), "Read-only task") {
 		t.Fatalf("write-mode project instructions: %q err=%v", prompt, err)
-	}
-	if strings.Contains(string(rec), "Bash(git push") || strings.Contains(string(rec), "Bash(rm") {
-		t.Error("write mode must not allow push or rm")
 	}
 }
 

@@ -61,10 +61,13 @@ func TestCodexRunAndResumeAfterDefaultChange(t *testing.T) {
 		t.Fatalf("%+v", r)
 	}
 	args, _ := os.ReadFile(record)
-	for _, want := range []string{"exec\n", `sandbox_mode="read-only"`, `approval_policy="never"`, "--json", "test-model"} {
+	for _, want := range []string{"exec\n", "--dangerously-bypass-approvals-and-sandbox", "--json", "test-model"} {
 		if !strings.Contains(string(args), want) {
 			t.Errorf("missing %q: %s", want, args)
 		}
+	}
+	if strings.Contains(string(args), "read-only") || strings.Contains(string(args), "workspace-write") {
+		t.Errorf("offload must not sandbox Codex: %s", args)
 	}
 	prompt, _ := os.ReadFile(record + ".stdin")
 	if !strings.Contains(string(prompt), "Read-only task") || !strings.Contains(string(prompt), "Task:\ninspect") || strings.Contains(string(args), "inspect") {
@@ -76,7 +79,7 @@ func TestCodexRunAndResumeAfterDefaultChange(t *testing.T) {
 		t.Fatal(err)
 	}
 	args, _ = os.ReadFile(record)
-	if !strings.Contains(string(args), "resume\n") || !strings.Contains(string(args), "codex-session\n-\n") || !strings.Contains(string(args), `sandbox_mode="workspace-write"`) {
+	if !strings.Contains(string(args), "resume\n") || !strings.Contains(string(args), "codex-session\n-\n") || !strings.Contains(string(args), "--dangerously-bypass-approvals-and-sandbox") || strings.Contains(string(args), "sandbox_mode=") || strings.Contains(string(args), "approval_policy=") {
 		t.Fatalf("%s", args)
 	}
 }

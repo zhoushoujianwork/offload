@@ -25,8 +25,8 @@ import (
 // Prompt is appended to the worker's system prompt.
 const Prompt = `You are a worker agent delegated a task by a supervising agent. Work autonomously; do not wait for interactive answers. Report blockers to the supervisor.
 Finish with a concise report: what you did or found, exact file:line references, commands run with their results, and anything unverified. No preamble.
-Nobody can approve permission prompts. Shell is limited to single simple commands: pipes, &&, ;, redirects, heredocs and python -c are refused and waste a turn. Prefer Read, Grep and Glob. When a command is refused, switch tools instead of retrying it.
-rtk-prefixed read commands (rtk ls, rtk read, rtk grep, rtk git log) are allowed when the task asks for them; rtk run, proxy, err, summary and pipe are not.`
+Nobody can answer interactive prompts. offload imposes no command, file or network allowlist on you; the task text and the supervisor's authorization define what you may do, so stay inside that scope. The host operating system, network and credentials still apply and may make a step fail.
+Use Read, Grep and Glob only when they are exposed to you. If Grep or Glob is missing, use a simple rg or rtk grep command and ls or rtk ls, and do not repeat a call to a tool that is unavailable. If a step fails for any reason, say so in the report instead of looping on it.`
 
 // Shared by both backends so neither worker turns an implementation into open-ended research.
 const taskDiscipline = `
@@ -35,24 +35,8 @@ Start with the smallest targeted inspection needed for the next edit or answer. 
 For implementation, move from initial localization to a small patch and focused checks once the path is clear. If a critical API assumption is missing or contradicts the installed API, make one focused feasibility check. If that does not resolve it, stop and return a BLOCKED report rather than expanding the search or guessing a replacement design.
 The BLOCKED report must state the assumption that failed, exact evidence/file:line references, any edits already made, checks run, and the decision or information needed from the supervisor. This is the final report, not an interactive question.
 Keep the final report compact: outcome, changed files or key file:line references, checks run with results, unresolved issues. Do not narrate your actions step by step; the full history stays available to the supervisor. When resumed, treat the follow-up's corrections and acceptance criteria as authoritative and re-read files rather than rely on remembered contents, since earlier context may have been compacted.
-Before another exploratory call, identify what it will resolve. If it only repeats an inconclusive search, return the findings and blocker instead. After a permission denial, switch to an allowed tool; if the required evidence remains inaccessible, report it rather than trying more command variants.
+Before another exploratory call, identify what it will resolve. If it only repeats an inconclusive search, return the findings and blocker instead. If a call fails or is refused by the host, try at most one different approach; if the required evidence remains inaccessible, report it rather than trying more command variants.
 `
-
-// rtk compresses command output to save tokens. Only its read-only subcommands are allowed:
-// rtk run, proxy, err, summary, pipe and test execute arbitrary commands and would bypass the
-// tool lists below, and rtk find accepts find's -exec.
-const (
-	readOnlyTools = "Read Grep Glob Bash(git log:*) Bash(git diff:*) Bash(git show:*) Bash(ls:*) Bash(rg:*) " +
-		"Bash(rtk ls:*) Bash(rtk tree:*) Bash(rtk read:*) Bash(rtk grep:*) Bash(rtk rg:*) Bash(rtk wc:*) " +
-		"Bash(rtk git log:*) Bash(rtk git diff:*) Bash(rtk git show:*) Bash(rtk git status:*) Bash(rtk diff:*) Bash(rtk recall:*)"
-	// Write mode: edits stay inside the working dir (acceptEdits); shell is limited to build/test/inspect.
-	// Deliberately no commit, push, rm, or network tools.
-	writeTools = "Read Grep Glob Edit Write Bash(go build:*) Bash(go test:*) Bash(go vet:*) Bash(gofmt:*) " +
-		"Bash(make:*) Bash(npm test:*) Bash(npm run:*) Bash(pytest:*) Bash(cargo build:*) Bash(cargo test:*) " +
-		"Bash(idf.py build:*) Bash(git status:*) Bash(git diff:*) Bash(ls:*) Bash(rg:*) " +
-		"Bash(rtk ls:*) Bash(rtk read:*) Bash(rtk grep:*) Bash(rtk rg:*) Bash(rtk wc:*) Bash(rtk git status:*) Bash(rtk git diff:*) " +
-		"Bash(rtk go build:*) Bash(rtk go test:*) Bash(rtk go vet:*) Bash(rtk cargo build:*) Bash(rtk cargo test:*) Bash(rtk pytest:*)"
-)
 
 // IdleLimit stops a worker that has produced no output for this long. A hung model request
 // otherwise holds the run until the full timeout. It is a variable only so tests can shorten it.
@@ -148,12 +132,13 @@ func buildArgs(o Opts, promptPath string) []string {
 		args = append(args, "--resume", o.Resume)
 	}
 
+	// offload adds no permission barrier: nobody can answer a prompt in a headless run, so every
+	// normal run skips them, and -w only states the task's intent (see writeWorkerPrompt). Host
+	// OS, network and credential limits still apply. Only the report-only salvage step is
+	// tool-less, by design, so it cannot start new work.
+	args = append(args, "--dangerously-skip-permissions")
 	if o.Salvage {
 		args = append(args, "--tools", "")
-	} else if o.Write {
-		args = append(args, "--permission-mode", "acceptEdits", "--allowedTools", writeTools)
-	} else {
-		args = append(args, "--allowedTools", readOnlyTools)
 	}
 	return append(args, "--append-system-prompt-file", promptPath, o.Task)
 }
@@ -181,6 +166,7 @@ func writeWorkerPrompt(o Opts) (string, error) {
 	}
 	prompt.WriteString(taskDiscipline)
 	if !o.Write {
+		// Task intent for the model only; offload enforces nothing here.
 		prompt.WriteString("\nRead-only task: do not modify files.")
 	}
 	prompt.WriteByte('\n')
@@ -319,10 +305,17 @@ func Run(ctx context.Context, o Opts) (rec history.Record, err error) {
 		// of leaving the supervisor with a progress sketch. Not after the user pressed Ctrl-C.
 		if !o.NoSalvage && o.Profile.BackendName() == "claude" && s.Session != "" && ctx.Err() == nil {
 			pub.phase(live.Salvaging)
-			if report, cost, ok := salvage(ctx, bin, o, promptPath, token, s.Session, pub.keepAlive); ok {
+			report, cost, serr := salvage(ctx, bin, o, promptPath, token, s.Session, pub.keepAlive)
+			if serr == nil {
 				rec.Salvaged, rec.CostUSD = true, cost
 				rec.Error += "; the report is salvaged from what the worker read before it stopped, not a finished run (cost covers only that step)"
 				rec.Result = "[SALVAGED REPORT: " + rec.Error + "]\n\n" + report
+			} else {
+				// Keep the original failure and progress; add why the extra step produced no report.
+				hint := s.resumeHint()
+				rec.Error = strings.TrimSuffix(rec.Error, hint) + "; salvage failed: " +
+					text.Truncate(text.OneLine(serr.Error()), 200) + hint
+				rec.Result = rec.Error + s.progress()
 			}
 		}
 		return rec, nil
@@ -426,20 +419,45 @@ func runAttempt(ctx context.Context, bin string, o Opts, promptPath, token strin
 		stdout: out.String(), stderr: workerErr.String()}
 }
 
-// salvage resumes a stopped session with no tools and returns the report it writes.
-func salvage(ctx context.Context, bin string, o Opts, promptPath, token, session string, tick func(streamSummary, time.Time)) (string, *float64, bool) {
+// salvage resumes a stopped session with no tools and returns the report it writes. The error says
+// why there is no report. It never contains worker stderr, which may echo gateway details. A report
+// from a process that failed is discarded, because it may be cut short or come from a broken run.
+func salvage(ctx context.Context, bin string, o Opts, promptPath, token, session string, tick func(streamSummary, time.Time)) (string, *float64, error) {
 	so := o
 	so.Resume, so.Salvage, so.Write, so.Task = session, true, false, salvageTask
 	a := runAttempt(ctx, bin, so, promptPath, token, SalvageTimeout, tick)
+	switch {
+	case ctx.Err() != nil:
+		return "", nil, errors.New("cancelled during the report step")
+	case errors.Is(a.cause, errIdle):
+		return "", nil, fmt.Errorf("the report step produced no output for %s", IdleLimit)
+	case errors.Is(a.cause, context.DeadlineExceeded):
+		return "", nil, fmt.Errorf("the report step timed out after %s", SalvageTimeout)
+	case a.runErr != nil:
+		var exit *exec.ExitError
+		if errors.As(a.runErr, &exit) {
+			return "", nil, fmt.Errorf("the report step process failed (%s), its output was discarded", exit.ProcessState)
+		}
+		return "", nil, errors.New("the report step process could not run")
+	}
 	r := a.s.Result
-	if r == nil || r.IsError || strings.TrimSpace(r.Result) == "" {
-		return "", nil, false
+	switch {
+	case r == nil:
+		return "", nil, errors.New("the report step ended without a result")
+	case r.IsError:
+		reason := "worker reported an error"
+		if r.Subtype != "" && r.Subtype != "success" {
+			reason = r.Subtype
+		}
+		return "", nil, fmt.Errorf("the report step returned an error (%s)", reason)
+	case strings.TrimSpace(r.Result) == "":
+		return "", nil, errors.New("the report step returned an empty report")
 	}
 	cost := r.CostUSD
 	if cost != nil && !history.ValidCost(*cost) {
 		cost = nil
 	}
-	return r.Result, cost, true
+	return r.Result, cost, nil
 }
 
 // publishEvery is how often a running worker refreshes its live state.
@@ -506,7 +524,7 @@ func (p *publisher) finish(rec history.Record) {
 var Preflight = CheckReachable
 
 // CheckReachable fails fast when the gateway cannot be dialed. Without it, a worker inside a
-// network-less sandbox (e.g. Codex workspace-write) silently retries until the timeout.
+// network-less sandbox inherited from the host silently retries until the timeout.
 func CheckReachable(baseURL string) error {
 	for _, k := range []string{"HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy"} {
 		if os.Getenv(k) != "" {

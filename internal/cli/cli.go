@@ -99,7 +99,7 @@ func cmdRun(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	fs.Usage = func() { fmt.Fprint(stderr, usage); fs.PrintDefaults() }
 	profile := fs.String("p", "", "profile name (default: $OFFLOAD_PROFILE, then config default)")
 	model := fs.String("m", "", "override the profile's model")
-	write := fs.Bool("w", false, "write mode: edit files in -d + build/test commands (default read-only)")
+	write := fs.Bool("w", false, "task intent: the task may modify files (default: told to stay read-only). Instruction only; offload adds no tool or sandbox limits either way")
 	resume := fs.String("r", "", "resume a session id; reuses its original dir unless -d is given")
 	dir := fs.String("d", "", "working directory (default: cwd)")
 	timeout := fs.Duration("t", 30*time.Minute, "timeout")
