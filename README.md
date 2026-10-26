@@ -38,6 +38,7 @@ Run `offload config`, select **Profile**, then **Add profile** to save a bundle 
     "minimax": {
       "base_url": "https://api.minimaxi.com/anthropic",
       "model": "MiniMax-M3",
+      "endpoint": "cc",
       "token_cmd": "security find-generic-password -s offload-minimax -w"
     },
     "codex": {
@@ -55,6 +56,7 @@ Run `offload config`, select **Profile**, then **Add profile** to save a bundle 
     "deepseek": {
       "base_url": "https://api.deepseek.com/anthropic",
       "model": "deepseek-chat",
+      "endpoint": "llm",
       "token_cmd": "printenv DEEPSEEK_API_KEY"
     }
   }
@@ -62,6 +64,8 @@ Run `offload config`, select **Profile**, then **Add profile** to save a bundle 
 ```
 
 `token_cmd` (preferred) prints the token on stdout, so secrets can live in the macOS Keychain, `pass`, 1Password CLI, etc. A literal `token` field also works.
+
+Optional `endpoint` (`cc` for a Claude Code proxy, `llm` for a generic LLM gateway) applies to Claude profiles only. It is an informational label shown by `offload profiles` and in the settings wizard; it does not change requests. Unknown values and Codex profiles with an endpoint are rejected.
 
 ### How switching works
 
@@ -85,7 +89,7 @@ Interrupted Codex runs retain progress and a resume command. Automatic tool-less
 
 ### Choosing a profile
 
-Choose per run with `-p name`, per shell with `OFFLOAD_PROFILE=name`, otherwise through `default` in the config. `offload profiles` lists profiles, with `*` marking the selected default; it never prints tokens.
+Choose per run with `-p name`, per shell with `OFFLOAD_PROFILE=name`, otherwise through `default` in the config. `offload profiles` lists profiles (name, backend, endpoint or `-`, model, base URL), with `*` marking the selected default; it never prints tokens.
 
 ```bash
 offload profiles

@@ -60,6 +60,12 @@ func SaveProfile(path, name string, p Profile, add bool) error {
 	if err := p.ValidateCodexSettings(); err != nil {
 		return err
 	}
+	if !ValidEndpoint(p.Endpoint) {
+		return fmt.Errorf("unknown endpoint %q (want cc or llm)", p.Endpoint)
+	}
+	if p.Endpoint != "" && p.BackendName() != "claude" {
+		return fmt.Errorf("endpoint applies only to claude profiles")
+	}
 	if p.BackendName() == "claude" {
 		u, err := url.Parse(p.BaseURL)
 		if err != nil || u.Hostname() == "" || (u.Scheme != "http" && u.Scheme != "https") {
@@ -89,7 +95,7 @@ func SaveProfile(path, name string, p Profile, add bool) error {
 	if err := json.Unmarshal(encoded, &known); err != nil {
 		return err
 	}
-	for _, key := range []string{"backend", "base_url", "model", "token", "token_cmd", "reasoning_effort", "service_tier"} {
+	for _, key := range []string{"backend", "base_url", "model", "token", "token_cmd", "reasoning_effort", "service_tier", "endpoint"} {
 		delete(profile, key)
 	}
 	for key, value := range known {

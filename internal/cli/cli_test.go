@@ -234,6 +234,26 @@ func TestProfilesMarksActiveAndHidesToken(t *testing.T) {
 	}
 }
 
+func TestProfilesShowsEndpointColumn(t *testing.T) {
+	setup(t, okReply)
+	cfg := `{"default":"a","profiles":{"a":{"base_url":"https://a","model":"ma","endpoint":"cc","token":"secret-a"},"b":{"base_url":"https://b","model":"mb","token":"secret-b"}}}`
+	os.WriteFile(config.Path(), []byte(cfg), 0o600)
+	_, out, _ := runCLI("profiles")
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("profiles: %q", out)
+	}
+	if f := strings.Fields(lines[0]); len(f) < 4 || f[3] != "cc" {
+		t.Fatalf("endpoint column missing for a: %q", lines[0])
+	}
+	if f := strings.Fields(lines[1]); len(f) < 3 || f[2] != "-" {
+		t.Fatalf("empty endpoint not shown as '-' for b: %q", lines[1])
+	}
+	if strings.Contains(out, "secret") {
+		t.Fatalf("token leaked: %q", out)
+	}
+}
+
 func TestConfigErrors(t *testing.T) {
 	work, _ := setup(t, okReply)
 	if code, _, e := runCLI("-p", "missing", "-d", work, "x"); code != 2 || !strings.Contains(e, "unknown profile") {

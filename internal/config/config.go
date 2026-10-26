@@ -18,6 +18,8 @@ type Profile struct {
 	Model           string `json:"model"`
 	ReasoningEffort string `json:"reasoning_effort,omitempty"`
 	ServiceTier     string `json:"service_tier,omitempty"`
+	// Endpoint is the gateway kind: "cc" (Claude Code proxy) or "llm" (generic LLM gateway); claude backend only, informational.
+	Endpoint string `json:"endpoint,omitempty"`
 	// TokenCmd prints the token on stdout (e.g. `security find-generic-password -s offload-minimax -w`).
 	// Preferred over Token so secrets stay out of the config file.
 	TokenCmd string `json:"token_cmd,omitempty"`
@@ -30,6 +32,17 @@ type Config struct {
 	// DelegationMode controls how proactively a supervising agent is instructed to
 	// delegate work via offload: "basic" or "proactive". Empty means unset.
 	DelegationMode string `json:"delegation_mode,omitempty"`
+}
+
+// Gateway kinds accepted in Profile.Endpoint.
+const (
+	EndpointCC  = "cc"
+	EndpointLLM = "llm"
+)
+
+// ValidEndpoint reports whether s is an accepted endpoint value (empty means unset).
+func ValidEndpoint(s string) bool {
+	return s == "" || s == EndpointCC || s == EndpointLLM
 }
 
 // Delegation modes understood by `offload mode` and `install-agent -mode`.
@@ -101,6 +114,12 @@ func (c *Config) Resolve(name string) (string, Profile, error) {
 	}
 	if err := p.ValidateCodexSettings(); err != nil {
 		return name, p, err
+	}
+	if !ValidEndpoint(p.Endpoint) {
+		return name, p, fmt.Errorf("profile %q has unknown endpoint %q (want cc or llm)", name, p.Endpoint)
+	}
+	if p.Endpoint != "" && p.BackendName() != "claude" {
+		return name, p, fmt.Errorf("profile %q: endpoint applies only to claude profiles", name)
 	}
 	return name, p, nil
 }

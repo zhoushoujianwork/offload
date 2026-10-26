@@ -248,6 +248,9 @@ func settingsProfile(p settingsPrompt, cfg *config.Config) error {
 	for i, name := range names {
 		profile := cfg.Profiles[name]
 		label := fmt.Sprintf("%s | %s | %s", name, profile.BackendName(), firstNonEmpty(profile.Model, "(native default)"))
+		if profile.Endpoint != "" {
+			label += " | endpoint: " + profile.Endpoint
+		}
 		if profile.ReasoningEffort != "" {
 			label += " | reasoning: " + profile.ReasoningEffort
 		}
@@ -354,12 +357,24 @@ func settingsWizard(p settingsPrompt, cfg *config.Config, name string, add bool)
 		if err != nil {
 			return err
 		}
+		endpoints := []string{"", config.EndpointCC, config.EndpointLLM}
+		cursor := 0
+		for i, endpoint := range endpoints {
+			if endpoint == profile.Endpoint {
+				cursor = i
+			}
+		}
+		index, err := settingsChoice(p, "Endpoint", []string{"Unset", "cc", "llm"}, cursor)
+		if err != nil {
+			return err
+		}
+		profile.Endpoint = endpoints[index]
 		labels := []string{"Token command", "API token"}
 		keep := profile.TokenCmd != "" || profile.Token != ""
 		if keep {
 			labels = append([]string{"Keep current authentication"}, labels...)
 		}
-		index, err := settingsChoice(p, "Authentication", labels, 0)
+		index, err = settingsChoice(p, "Authentication", labels, 0)
 		if err != nil {
 			return err
 		}

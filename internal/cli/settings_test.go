@@ -242,8 +242,8 @@ func TestSettingsAddBundlesFromMissingConfig(t *testing.T) {
 		backend string
 	}{
 		{"codex", []step{ask(" quick "), choose(0), ask("gpt-test"), choose(1), choose(2)}, "codex"},
-		{"command", []step{ask("quick"), choose(1), ask("https://gateway.example"), ask("m"), choose(0), ask("never-execute-this-command")}, "claude"},
-		{"token", []step{ask("quick"), choose(1), ask("http://localhost:8080"), ask("m"), choose(1), ask("secret-value")}, "claude"},
+		{"command", []step{ask("quick"), choose(1), ask("https://gateway.example"), ask("m"), choose(0), choose(0), ask("never-execute-this-command")}, "claude"},
+		{"token", []step{ask("quick"), choose(1), ask("http://localhost:8080"), ask("m"), choose(2), choose(1), ask("secret-value")}, "claude"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			settingsEnv(t)
@@ -268,8 +268,15 @@ func TestSettingsAddBundlesFromMissingConfig(t *testing.T) {
 			if tc.name == "command" && p.TokenCmd != "never-execute-this-command" {
 				t.Fatal(p)
 			}
-			if tc.name == "token" && (p.Token != "secret-value" || f.calls[6].kind != "secret") {
+			if tc.name == "token" && (p.Token != "secret-value" || f.calls[7].kind != "secret") {
 				t.Fatal(f.calls)
+			}
+			if tc.name == "token" && (p.Endpoint != "llm" || f.calls[5].label != "Endpoint" ||
+				!slices.Equal(f.calls[5].choices, []string{"Unset", "cc", "llm"})) {
+				t.Fatal(p, f.calls[5])
+			}
+			if tc.name != "token" && p.Endpoint != "" {
+				t.Fatal(p)
 			}
 			for _, c := range f.calls {
 				if strings.Contains(c.label, "secret-value") || c.initial == "secret-value" {
@@ -293,8 +300,8 @@ func TestSettingsAddBundlesFromMissingConfig(t *testing.T) {
 func TestSettingsWizardCancellationEveryStage(t *testing.T) {
 	for _, answers := range [][]step{
 		{ask("new"), choose(0), ask("m"), choose(2), choose(1)},
-		{ask("new"), choose(1), ask("https://x"), ask("m"), choose(0), ask("command")},
-		{ask("new"), choose(1), ask("https://x"), ask("m"), choose(1), ask("secret")},
+		{ask("new"), choose(1), ask("https://x"), ask("m"), choose(0), choose(0), ask("command")},
+		{ask("new"), choose(1), ask("https://x"), ask("m"), choose(0), choose(1), ask("secret")},
 	} {
 		for stage := range answers {
 			t.Run(fmt.Sprintf("%d-%d", len(answers), stage), func(t *testing.T) {
@@ -322,7 +329,7 @@ func TestSettingsEditAuthenticationAndUnknownFields(t *testing.T) {
 		t.Run(fmt.Sprint(auth.choice), func(t *testing.T) {
 			settingsEnv(t)
 			writeSettingsConfig(t, `{"default":"a","future":true,"profiles":{"a":{"base_url":"https://x","model":"m","token":"old-token","token_cmd":"old-command","future":{"keep":1}}}}`)
-			steps := []step{choose(0), choose(2), ask("https://y"), ask("new-model"), choose(auth.choice)}
+			steps := []step{choose(0), choose(2), ask("https://y"), ask("new-model"), choose(0), choose(auth.choice)}
 			if auth.choice != 0 {
 				steps = append(steps, ask(auth.value))
 			}
@@ -349,6 +356,55 @@ func TestSettingsEditAuthenticationAndUnknownFields(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestSettingsEditSavesEndpointAndPreselectsCurrent(t *testing.T) {
+	settingsEnv(t)
+	writeSettingsConfig(t, `{"default":"a","profiles":{"a":{"base_url":"https://x","model":"m","token":"tok","endpoint":"llm"}}}`)
+	// Edit current profile, keep model/url, set endpoint to cc, keep authentication.
+	f := &fakePrompt{steps: []step{choose(0), choose(2), ask("https://x"), ask("m"), choose(1), choose(0), choose(2)}}
+	code, out, errOut := runSettingsTest(f)
+	if code != 0 || errOut != "" {
+		t.Fatalf("%d %s %s", code, out, errOut)
+	}
+	var endpointCall *recordedCall
+	for i := range f.calls {
+		if f.calls[i].label == "Endpoint" {
+			endpointCall = &f.calls[i]
+		}
+	}
+	if endpointCall == nil || endpointCall.cursor != 2 || !slices.Equal(endpointCall.choices, []string{"Unset", "cc", "llm"}) {
+		t.Fatalf("endpoint prompt = %+v, want cursor on current llm", endpointCall)
+	}
+	cfg, err := config.Load(config.Path())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p := cfg.Profiles["a"]; p.Endpoint != "cc" || p.Token != "tok" {
+		t.Fatalf("profile = %+v", p)
+	}
+	// Selecting Unset clears the field from the saved JSON.
+	f = &fakePrompt{steps: []step{choose(0), choose(2), ask("https://x"), ask("m"), choose(0), choose(0), choose(2)}}
+	if code, out, errOut := runSettingsTest(f); code != 0 || errOut != "" {
+		t.Fatalf("%d %s %s", code, out, errOut)
+	}
+	b, _ := os.ReadFile(config.Path())
+	if strings.Contains(string(b), "endpoint") {
+		t.Fatalf("endpoint not cleared: %s", b)
+	}
+}
+
+func TestSettingsProfileLabelShowsEndpoint(t *testing.T) {
+	settingsEnv(t)
+	writeSettingsConfig(t, `{"default":"a","profiles":{"a":{"base_url":"https://a","model":"ma","endpoint":"cc"},"b":{"base_url":"https://b","model":"mb"}}}`)
+	f := &fakePrompt{steps: []step{choose(0), failStep(io.EOF), choose(2)}}
+	if code, out, errOut := runSettingsTest(f); code != 0 {
+		t.Fatalf("%d %s %s", code, out, errOut)
+	}
+	want := []string{"a | claude | ma | endpoint: cc", "b | claude | mb"}
+	if got := f.calls[1].choices[:2]; !slices.Equal(got, want) {
+		t.Fatalf("labels = %v, want %v", got, want)
 	}
 }
 

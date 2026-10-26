@@ -316,7 +316,7 @@ func cmdProfiles(stdout, stderr io.Writer) int {
 			mark = "*"
 		}
 		p := cfg.Profiles[n]
-		fmt.Fprintf(stdout, "%s %-12s %-8s %-24s %s\n", mark, n, p.BackendName(), p.Model, p.BaseURL)
+		fmt.Fprintf(stdout, "%s %-12s %-8s %-5s %-24s %s\n", mark, n, p.BackendName(), firstNonEmpty(p.Endpoint, "-"), p.Model, p.BaseURL)
 	}
 	return 0
 }
