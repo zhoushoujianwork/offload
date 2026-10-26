@@ -28,10 +28,17 @@ type Record struct {
 	// CostNote explains why CostUSD is nil. Read derives it for display only; it is never persisted.
 	CostNote   string `json:"-"`
 	DurationMs int64  `json:"duration_ms"` // duration reported by the worker (legacy field)
-	ElapsedMs  *int64 `json:"elapsed_ms"`  // measured end-to-end, including setup; nil for older records
-	Result     string `json:"result"`
-	Error      string `json:"error,omitempty"`
-	Salvaged   bool   `json:"salvaged,omitempty"` // Result is a report written after the worker was stopped
+	ElapsedMs  *int64 `json:"elapsed_ms"`  // measured end-to-end, including queue wait and setup; nil for older records
+	// WaitMs is time spent queued for a worker slot, ExecMs the time from admission to finish
+	// (worker, salvage and cleanup). The -t timeout applies to the worker alone, not to WaitMs.
+	WaitMs *int64 `json:"wait_ms,omitempty"`
+	ExecMs *int64 `json:"exec_ms,omitempty"`
+	// Cleanup is set when worker processes could not be confirmed stopped. Their slot stays
+	// unavailable until they exit.
+	Cleanup  string `json:"cleanup,omitempty"`
+	Result   string `json:"result"`
+	Error    string `json:"error,omitempty"`
+	Salvaged bool   `json:"salvaged,omitempty"` // Result is a report written after the worker was stopped
 }
 
 // Path is the run log location.

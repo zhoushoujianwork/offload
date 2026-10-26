@@ -20,10 +20,31 @@ var (
 
 func describe(s live.State) string {
 	idle := time.Since(s.LastEventAt).Round(time.Second)
-	line := fmt.Sprintf("pid=%d %s tool_calls=%d permission_denials=%d idle=%s session=%s dir=%s task=%q",
-		s.PID, s.Phase, s.ToolCalls, s.Denials, idle, firstNonEmpty(s.Session, "-"), s.Dir, text.Truncate(s.Task, 60))
+	phase := s.Phase
+	if s.Unresolved {
+		phase += "(worker processes alive)"
+	}
+	line := fmt.Sprintf("pid=%d %s", s.PID, phase)
+	if s.PGID > 0 {
+		line += fmt.Sprintf(" pgid=%d", s.PGID)
+	}
+	if s.Slot != nil {
+		line += fmt.Sprintf(" slot=%d", *s.Slot)
+	}
+	if s.Phase == live.Queued {
+		line += fmt.Sprintf(" waited=%s", time.Since(s.StartedAt).Round(time.Second))
+		if s.WaitReason != "" {
+			line += fmt.Sprintf(" wait_reason=%q", s.WaitReason)
+		}
+	} else {
+		line += fmt.Sprintf(" tool_calls=%d permission_denials=%d idle=%s", s.ToolCalls, s.Denials, idle)
+	}
+	line += fmt.Sprintf(" session=%s dir=%s task=%q", firstNonEmpty(s.Session, "-"), s.Dir, text.Truncate(s.Task, 60))
 	if s.LastTool != "" {
 		line += " last=" + text.Truncate(s.LastTool, 80)
+	}
+	if s.Limits != "" {
+		line += " limits=" + s.Limits
 	}
 	return line
 }
@@ -40,9 +61,12 @@ func cmdStatus(stdout, stderr io.Writer) int {
 	}
 	for _, s := range states {
 		line := describe(s)
-		if s.Phase == live.Done {
+		if s.Phase == live.Done && !s.Unresolved {
 			line = fmt.Sprintf("pid=%d done status=%s exit_code=%d tool_calls=%d session=%s task=%q",
 				s.PID, s.Status, s.ExitCode, s.ToolCalls, firstNonEmpty(s.Session, "-"), text.Truncate(s.Task, 60))
+		}
+		if s.Phase == live.Unresolved {
+			line = fmt.Sprintf("pid=%d UNRESOLVED pgid=%d status=%s exit_code=%d: %s", s.PID, s.PGID, s.Status, s.ExitCode, s.WaitReason)
 		}
 		fmt.Fprintln(stdout, line)
 	}
@@ -91,15 +115,25 @@ func (w *watcher) step(states []live.State) int {
 			}
 			w.emit("[offload] started %s", describe(s))
 		}
-		if s.Active() {
+		if s.Active() || s.Unresolved {
 			active++
 		}
 		idle := time.Since(s.LastEventAt)
 		switch {
+		case prev.phase == live.Queued && s.Phase == live.Running:
+			w.emit("[offload] admitted after waiting %s: %s", time.Duration(s.WaitMs)*time.Millisecond, describe(s))
+		case s.Phase != prev.phase && s.Phase == live.Cleaning:
+			w.emit("[offload] stopping the worker's child processes: %s", describe(s))
+		case s.Phase != prev.phase && s.Phase == live.Unresolved:
+			w.emit("[offload] UNRESOLVED worker processes are still running and hold their slot: %s", describe(s))
 		case s.Phase != prev.phase && s.Phase == live.Salvaging:
 			w.emit("[offload] stopped, asking the worker for a report from what it read: %s", describe(s))
 		case s.Phase != prev.phase && s.Phase == live.Lost:
-			w.emit("[offload] LOST (offload died or was killed, no updates): %s", describe(s))
+			if s.Unresolved {
+				w.emit("[offload] LOST (offload died or was killed, no updates) and worker processes are STILL RUNNING: %s", describe(s))
+			} else {
+				w.emit("[offload] LOST (offload died or was killed, no updates; worker processes not found): %s", describe(s))
+			}
 		case s.Phase != prev.phase && s.Phase == live.Done:
 			w.emit("[offload] finished status=%s exit_code=%d tool_calls=%d permission_denials=%d session=%s task=%q",
 				s.Status, s.ExitCode, s.ToolCalls, s.Denials, firstNonEmpty(s.Session, "-"), text.Truncate(s.Task, 60))

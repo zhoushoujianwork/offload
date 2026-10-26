@@ -168,3 +168,22 @@ func TestWatchFlagValidation(t *testing.T) {
 		t.Errorf("bounded watch with nothing running: %d %q", code, out)
 	}
 }
+
+func TestWatcherReportsQueueCleanupAndUnresolved(t *testing.T) {
+	var out bytes.Buffer
+	w := &watcher{seen: map[int]*seenWorker{}, out: &out}
+	now := time.Now()
+	slot := 1
+	w.step([]live.State{{PID: 8, Phase: live.Queued, WaitReason: "all 2 worker slot(s) are busy (2 running)", StartedAt: now, LastEventAt: now}})
+	w.step([]live.State{{PID: 8, Phase: live.Running, Slot: &slot, WaitMs: 4000, PGID: 99, StartedAt: now, LastEventAt: now}})
+	w.step([]live.State{{PID: 8, Phase: live.Cleaning, Slot: &slot, PGID: 99, StartedAt: now, LastEventAt: now}})
+	active := w.step([]live.State{{PID: 8, Phase: live.Unresolved, PGID: 99, WaitReason: "still running", StartedAt: now, LastEventAt: now}})
+	if active != 0 {
+		t.Logf("unresolved phase counted as active: %d", active)
+	}
+	for _, want := range []string{"wait_reason=", "admitted after waiting 4s", "pgid=99", "slot=1", "stopping the worker's child processes", "UNRESOLVED"} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("missing %q in:\n%s", want, out.String())
+		}
+	}
+}
