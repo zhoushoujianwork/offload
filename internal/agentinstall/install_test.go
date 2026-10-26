@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/zhoushoujianwork/offload/internal/config"
 	"github.com/zhoushoujianwork/offload/skills"
 )
 
@@ -362,5 +363,27 @@ func TestInstallAgentDoesNotWarnForEmptyCodexOverride(t *testing.T) {
 		if !bytes.Equal(installTestRead(t, path), original) {
 			t.Fatal("empty override changed")
 		}
+	}
+}
+
+// Policy, bundled skill, and README must describe the same workflow.
+func TestSessionReuseWorkflowAgreesAcrossPolicySkillAndReadme(t *testing.T) {
+	readme, err := os.ReadFile(filepath.Join("..", "..", "README.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	docs := map[string]string{"skill": string(skills.Offload), "readme": string(readme)}
+	for _, mode := range []string{config.ModeBasic, config.ModeProactive} {
+		docs["policy-"+mode] = policyForMode(mode)
+	}
+	for name, doc := range docs {
+		for _, want := range []string{"offload -r", "watch -t", "compaction", "overlapping"} {
+			if !strings.Contains(doc, want) {
+				t.Errorf("%s missing %q", name, want)
+			}
+		}
+	}
+	if !strings.Contains(policyForMode(config.ModeBasic), sessionReusePolicy) || !strings.Contains(policyForMode(config.ModeProactive), sessionReusePolicy) {
+		t.Error("both modes must carry the shared session reuse policy")
 	}
 }

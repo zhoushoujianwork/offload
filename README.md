@@ -191,6 +191,33 @@ Check uncertain API assumptions before handing off a large implementation: use a
 
 Keep short conversations, trivial lookups, architecture choices, sensitive changes, and final review with the supervisor. Workers already launched by offload should finish their assigned task directly instead of delegating again. Default to read-only for inspection; use `-w` explicitly for authorized implementation rather than silently falling back to read-only. Spot-check reports; after authorized `-w` work, inspect the actual diff and independently run relevant checks yourself.
 
+## Lowering parent overhead
+
+Calling offload does not by itself keep the supervising model's usage low. Repeated launches, short status polls, and re-doing the worker's investigation all cost parent turns. The installed policies, the bundled skill, and this section describe the same workflow.
+
+**Reuse a session for related work.** Investigation, implementation, and review corrections for the same task or slice go through `offload -r <session>`. A resume keeps the session's profile and directory. Start a new session for an unrelated task, a different directory or profile, or stale context; do not put every task in one session. Backend compaction means history is neither unlimited nor verbatim, so each follow-up restates the current corrections and acceptance criteria.
+
+```bash
+# 1. investigate (read-only); the session id is in the summary line
+offload -json -d /abs/app "Find where retry limits are applied; file:line | purpose, max 10 rows."
+# 2. implement in the same session once the design is decided
+offload -r <session> -w -json "Design decided: expose maxAttempts (default 3). Only edit internal/http/client.go and client_test.go; run go test ./internal/http."
+# 3. inspect the diff, run scoped checks, send review fixes to the same session
+offload -r <session> -w -json "Review fix: keep backoff unchanged when maxAttempts is 1; add a test. Acceptance: go test ./internal/http passes."
+# 4. unrelated work starts a new session
+offload -w -json -d /abs/docs "..."
+```
+
+- **One run per session; no overlapping follow-ups.** `offload -r` refuses a session that still has an active run (exit 2). Wait with `offload watch -t`, then resume.
+- **Profile safety.** A resume uses the session's recorded profile. If it was renamed or deleted, offload stops with recovery steps instead of falling back to the default provider. Restore the profile, or start a new session with `-p` and restate the context.
+- **Interrupted runs.** Inspect with `offload show <session>` and `git diff` first. Partial edits stay in the tree; the follow-up says what to keep or finish.
+
+**Wait less often.** `offload watch -t 10m` prints events (started, progress, `STALLED`, `LOST`, finished) and returns when all workers end (exit 0) or when the bound passes with workers still active (exit 124, which is not a worker failure). Prefer the host's completion notification for background commands; otherwise use a few long bounded waits within the host's responsiveness limit instead of a status check every few seconds. Waiting is headless and never touches the desktop.
+
+**Don't repeat the worker's work.** The parent keeps requirements, design, tradeoffs, and acceptance; it delegates a coherent slice, inspects targeted evidence or the diff, and runs scoped checks. Workers return a compact report (outcome, changed files or key references, checks, unresolved issues); `offload show` has the full history.
+
+When measuring this, report parent polling/tool turns, parent and worker token usage where available (cached input separately from noncached), elapsed time, and failures. Cost stays unknown when unavailable, and savings are not claimed without a comparable baseline.
+
 ## Usage
 
 ```text
@@ -199,7 +226,8 @@ offload config               open interactive settings (terminal only)
 offload ls [n]                list the last n runs (default 10)
 offload show <session>        print every report of a session
 offload status                what each worker is doing right now
-offload watch                 one line per event (started, progress, STALLED, finished) until all workers end
+offload watch [-t dur]        one line per event (started, progress, STALLED, finished) until all workers end;
+                              with -t, stop after dur and exit 124 if workers are still active
 offload profiles              list profiles (* = the one a run would use)
 offload default [profile]     show or set the saved default profile
 offload mode [basic|proactive] show or set the saved delegation mode

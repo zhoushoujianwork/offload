@@ -19,6 +19,7 @@ import (
 	"github.com/zhoushoujianwork/offload/internal/agentinstall"
 	"github.com/zhoushoujianwork/offload/internal/config"
 	"github.com/zhoushoujianwork/offload/internal/history"
+	"github.com/zhoushoujianwork/offload/internal/live"
 	"github.com/zhoushoujianwork/offload/internal/text"
 	"github.com/zhoushoujianwork/offload/internal/worker"
 )
@@ -31,7 +32,8 @@ usage:
   offload ls [n]                list the last n runs (default 10)
   offload show <session>        print every report of a session
   offload status                what each worker is doing right now
-  offload watch                 one line per event (start, progress, STALLED, finish) until all workers end
+  offload watch [-t dur]        one line per event (start, progress, STALLED, finish) until all workers end;
+                                with -t, stop after dur and exit 124 if workers are still active
   offload profiles              list profiles (* = the one a run would use)
   offload default [profile]     show or set the saved default profile
   offload mode [basic|proactive] show or switch delegation mode and agent rules
@@ -57,8 +59,22 @@ func Run(version string, args []string, stdin io.Reader, stdout, stderr io.Write
 		case "status":
 			return cmdStatus(stdout, stderr)
 		case "watch":
+			fs := flag.NewFlagSet("offload watch", flag.ContinueOnError)
+			fs.SetOutput(stderr)
+			limit := fs.Duration("t", 0, "stop watching after this long (exit 124 if workers are still active); default: until all finish")
+			if err := fs.Parse(args[1:]); err != nil {
+				return 2
+			}
+			if fs.NArg() != 0 || *limit < 0 {
+				return fail(stderr, errors.New("usage: offload watch [-t duration]"))
+			}
 			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 			defer stop()
+			if *limit > 0 {
+				var cancel context.CancelFunc
+				ctx, cancel = context.WithTimeout(ctx, *limit)
+				defer cancel()
+			}
 			return cmdWatch(ctx, stdout, stderr)
 		case "profiles":
 			return cmdProfiles(stdout, stderr)
@@ -112,11 +128,19 @@ func cmdRun(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		rec.ElapsedMs = &elapsed
 		return printRun(rec, logPath, *jsonOutput, stdout, stderr)
 	}
+	if *resume != "" {
+		if s, busy := activeSessionRun(*resume); busy {
+			return failRun(fmt.Errorf("session %s already has an active run (pid %d); do not send overlapping follow-ups to one session. "+
+				"Wait for it (offload watch -t 10m), inspect the result or partial edits with offload show %s and git diff, then resume once",
+				*resume, s.PID, *resume))
+		}
+	}
 	cfg, err := config.Load(config.Path())
 	if err != nil {
 		return failRun(err)
 	}
 	selected := *profile
+	resumedProfile := ""
 	// Resumes retain their original profile even after the default changes.
 	if selected == "" && *resume != "" {
 		rs, readErr := history.Read(logPath)
@@ -125,12 +149,19 @@ func cmdRun(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		}
 		if hit := history.BySession(rs, *resume); len(hit) > 0 {
 			selected = hit[len(hit)-1].Profile
+			resumedProfile = selected
 		}
 	}
 	name, prof, err := cfg.Resolve(selected)
 	rec.Profile, rec.Model = name, firstNonEmpty(*model, prof.Model)
 	rec.Backend = prof.BackendName()
 	if err != nil {
+		if resumedProfile != "" {
+			// Never fall back to the default profile: that would silently change the provider.
+			err = fmt.Errorf("cannot resume session %s: its profile %q is unavailable (%w). Restore that profile in %s to continue the session, "+
+				"or start a new session with -p <profile> and restate the context; offload show %s has the previous reports",
+				*resume, resumedProfile, err, config.Path(), *resume)
+		}
 		return failRun(err)
 	}
 	wd, err := resolveDir(*dir, *resume, logPath)
@@ -144,6 +175,21 @@ func cmdRun(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	defer stop()
 	rec, _ = worker.Run(ctx, o)
 	return printRun(rec, logPath, *jsonOutput, stdout, stderr)
+}
+
+// activeSessionRun finds another offload process still working in the session. The live state is
+// advisory, so this narrows the window for overlapping follow-ups rather than closing it.
+func activeSessionRun(session string) (live.State, bool) {
+	states, err := live.List()
+	if err != nil {
+		return live.State{}, false
+	}
+	for _, s := range states {
+		if s.Active() && s.Session == session && s.PID != os.Getpid() {
+			return s, true
+		}
+	}
+	return live.State{}, false
 }
 
 func printRun(rec history.Record, logPath string, jsonOutput bool, stdout, stderr io.Writer) int {

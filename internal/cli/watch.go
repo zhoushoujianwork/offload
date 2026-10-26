@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"time"
@@ -128,6 +129,11 @@ func cmdWatch(ctx context.Context, stdout, stderr io.Writer) int {
 		}
 		select {
 		case <-ctx.Done():
+			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+				// A bounded wait ended with work still running: not a failure of the worker.
+				fmt.Fprintf(stdout, "[offload] watch limit reached, %d worker(s) still active; run offload status or watch again\n", active)
+				return 124
+			}
 			return 130
 		case <-time.After(watchEvery):
 		}
