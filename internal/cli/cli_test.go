@@ -8,9 +8,11 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/zhoushoujianwork/offload/internal/config"
 	"github.com/zhoushoujianwork/offload/internal/history"
+	"github.com/zhoushoujianwork/offload/internal/live"
 	"github.com/zhoushoujianwork/offload/internal/worker"
 )
 
@@ -246,5 +248,61 @@ func TestConfigErrors(t *testing.T) {
 	}
 	if _, err := (config.Profile{TokenCmd: "true"}).ResolveToken(); err == nil {
 		t.Error("empty token_cmd output should error")
+	}
+}
+
+// A resume must keep the session's profile; if it is gone, fail with guidance instead of
+// silently running on the default provider.
+func TestResumeWithDeletedProfileFailsWithRecovery(t *testing.T) {
+	work, record := setup(t, okReply)
+	if code, _, e := runCLI("-d", work, "first"); code != 0 {
+		t.Fatal(e)
+	}
+	cfg := `{"default":"other","profiles":{"other":{"base_url":"https://other.example/anthropic","model":"m-2","token_cmd":"echo tok-999"}}}`
+	if err := os.WriteFile(config.Path(), []byte(cfg), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	os.Remove(record)
+	code, out, errOut := runCLI("-r", "s-1", "follow up")
+	if code != 2 {
+		t.Fatalf("code=%d out=%q err=%q", code, out, errOut)
+	}
+	for _, want := range []string{`profile "cheap"`, "Restore that profile", "-p <profile>", "offload show s-1"} {
+		if !strings.Contains(out+errOut, want) {
+			t.Errorf("recovery guidance missing %q in %q", want, out+errOut)
+		}
+	}
+	if _, err := os.Stat(record); err == nil {
+		t.Error("worker must not run on a different provider")
+	}
+}
+
+// Overlapping follow-ups to one session are refused; other sessions are unaffected.
+func TestResumeRefusesSessionWithActiveRun(t *testing.T) {
+	work, record := setup(t, okReply)
+	if code, _, e := runCLI("-d", work, "first"); code != 0 {
+		t.Fatal(e)
+	}
+	now := time.Now()
+	if err := live.Publish(live.State{PID: os.Getpid() + 100000, Phase: live.Running, Session: "s-1", Dir: work,
+		StartedAt: now, LastEventAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	os.Remove(record)
+	code, out, errOut := runCLI("-r", "s-1", "second")
+	if code != 2 || !strings.Contains(out+errOut, "already has an active run") {
+		t.Fatalf("code=%d out=%q err=%q", code, out, errOut)
+	}
+	if _, err := os.Stat(record); err == nil {
+		t.Error("worker must not start while the session is busy")
+	}
+	// A finished run no longer blocks the session.
+	done := live.State{PID: os.Getpid() + 100000, Phase: live.Done, Status: "ok", Session: "s-1", Dir: work,
+		StartedAt: now, LastEventAt: now}
+	if err := live.Publish(done); err != nil {
+		t.Fatal(err)
+	}
+	if code, _, e := runCLI("-r", "s-1", "second"); code != 0 {
+		t.Fatalf("resume after completion: %d %s", code, e)
 	}
 }

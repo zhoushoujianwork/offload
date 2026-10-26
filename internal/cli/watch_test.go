@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -133,5 +134,37 @@ func TestSalvagingWorkerIsNotReportedLost(t *testing.T) {
 	<-done
 	if !salvaging || lost {
 		t.Fatalf("salvaging seen=%v lost seen=%v; a refreshed state must not go stale", salvaging, lost)
+	}
+}
+
+// A bounded watch is one long wait instead of many short polls: it returns 124 with a clear
+// line when workers are still active, and still reports their events.
+func TestWatchLimitReturnsWhileWorkerStillActive(t *testing.T) {
+	fastWatch(t)
+	watchEvery = 20 * time.Millisecond
+	setup(t, okReply)
+	now := time.Now()
+	if err := live.Publish(live.State{PID: os.Getpid(), Phase: live.Running, StartedAt: now, LastEventAt: now, Session: "s-w"}); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+	defer cancel()
+	code := cmdWatch(ctx, &out, &out)
+	if code != 124 || !strings.Contains(out.String(), "started pid=") || !strings.Contains(out.String(), "watch limit reached, 1 worker(s) still active") {
+		t.Fatalf("code=%d\n%s", code, out.String())
+	}
+}
+
+func TestWatchFlagValidation(t *testing.T) {
+	setup(t, okReply)
+	if code, _, _ := runCLI("watch", "extra"); code != 2 {
+		t.Errorf("unexpected argument: code=%d", code)
+	}
+	if code, _, _ := runCLI("watch", "-t", "-1s"); code != 2 {
+		t.Errorf("negative bound: code=%d", code)
+	}
+	if code, out, _ := runCLI("watch", "-t", "5s"); code != 0 || !strings.Contains(out, "no active workers") {
+		t.Errorf("bounded watch with nothing running: %d %q", code, out)
 	}
 }

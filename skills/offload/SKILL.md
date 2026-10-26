@@ -75,7 +75,37 @@ Worker errors retain their type and message, such as `error_max_turns`. An empty
 
 Do not wait blind. While a worker runs, `offload status` prints one line per worker (tool calls, permission denials, idle time, last tool call). `offload watch` prints one line per event until every worker has finished: `started`, `progress` (at most once a minute), `STALLED` (no event for 60s), `resumed`, `stopped, asking the worker for a report`, `LOST` (the offload process died), `finished`. Start the worker in the background and run `offload watch` with the host's background or monitor facility, so you are told when something needs a decision instead of polling. On `STALLED`, check `offload status`; the worker stops itself after 10 minutes of silence.
 
+Prefer one long wait over many short polls. `offload watch -t 10m` prints events as they happen and returns when every worker finishes (exit 0), or after the bound with workers still active (exit 124, not a worker failure). Stalls, `LOST`, timeouts, and failures are still printed; on exit 124, look at `offload status` once and wait again. If the host has a completion notification for background commands, use it instead of waiting in the foreground. Without either, make a few long bounded waits (several minutes each, within the host's responsiveness limit) rather than a status check every few seconds. Waiting is headless: never open, focus, or control the user's desktop to check on a worker.
+
 Tool-call activity alone does not prove useful progress, and no edits yet does not prove a worker is stuck. Do not kill a still-active worker merely for elapsed time or call count and then duplicate its work locally. Read its blocker/findings, settle the decision, and resume the existing session with a narrower task. If cancellation is necessary, preserve its progress and resume hint: deliberate cancellation skips automatic salvage, so recover its findings in a report-only resume before restarting the investigation.
+
+## Reuse a session for related work
+
+Each new run pays to rediscover the code. Keep related work in one worker session with `offload -r <session> "..."`: investigation, implementation, and review corrections for the same task or slice. A resume keeps the session's original profile and directory. Start a new session for an unrelated task, a different directory or profile, or when the old context is stale or has drifted. Do not reuse one session for every task, and do not force delegation of trivial work.
+
+Backend compaction means a session's history is not unlimited or verbatim. Every follow-up states the current corrections and acceptance criteria itself instead of assuming the worker remembers them, and the worker re-reads files it needs.
+
+```bash
+# 1. Investigate (read-only). Note the session id from the summary line.
+offload -json -d /abs/app "Find where retry limits are applied; return file:line | purpose, max 10 rows."
+# 2. Implement in the same session, after the parent has decided the design.
+offload -r <session> -w -json "Design decided: expose maxAttempts (default 3). Only edit internal/http/client.go and client_test.go; run go test ./internal/http. Report changed files and check results."
+# 3. Parent inspects the diff and runs scoped checks, then sends review fixes to the same session.
+offload -r <session> -w -json "Review fix: keep the backoff unchanged when maxAttempts is 1; add a test for it. Acceptance: go test ./internal/http passes."
+# 4. A different feature (for example the docs site) gets its own new session.
+offload -w -json -d /abs/docs "..."
+```
+
+Rules for resumes:
+
+- One run per session at a time; never send overlapping follow-ups. `offload -r` refuses a session that still has an active run; wait for it with `offload watch -t`, then resume.
+- A resume uses the session's recorded profile. If that profile was renamed or deleted, offload stops with recovery guidance and does not fall back to the default provider. Restore the profile, or start a new session with `-p` and restate the context (`offload show <session>` has the earlier reports).
+- Inspect an interrupted run first (`offload show <session>`, `git diff`). Partial edits stay in the working tree; the follow-up says what to keep, fix, or finish rather than starting over.
+- `-p` and `-d` on a resume are explicit overrides; use them only when you intend to change them.
+
+## Keep the parent's share small
+
+The parent decides requirements, design, tradeoffs, and acceptance. Delegate a coherent execution slice, then inspect the targeted evidence or diff and run scoped checks; do not redo the worker's investigation. Ask for a compact report: outcome, changed files or key `file:line` references, checks and results, unresolved issues. Skip action-by-action narration; the full history stays in `offload show <session>`. Keep eligible work local only for the concrete exceptions above and briefly say which one applies.
 
 ## Know the limits
 
@@ -99,6 +129,8 @@ Report each external worker's status/exit code, profile/model, session, turns, e
 - `offload mode [basic|proactive]` — show the saved delegation mode (defaults to `proactive` if unset), or set it. Setting it updates the policy/skill installed for both agents (user scope) and persists `delegation_mode` in the config, independent of model/profile selection. Start a new agent session to load the change.
 
 For long tasks, use the host's supported background execution and later collect the actual exit/result; avoid fire-and-forget work.
+
+When evaluating coordination overhead, report parent polling/tool turns, parent and worker token usage where available (cached input separately from noncached), elapsed time, and failures. Cost stays unknown when unavailable, and savings are not claimed without a comparable baseline.
 
 ## Execution boundaries
 
