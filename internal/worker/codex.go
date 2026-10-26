@@ -28,8 +28,21 @@ func buildCodexArgs(o Opts) []string {
 	if o.Write {
 		sandbox = "workspace-write"
 	}
+	if o.ExecutionPolicy == "managed-development" && o.CodexSandbox != "" {
+		sandbox = o.CodexSandbox
+	}
 	// Config overrides also work with exec resume, which has no --sandbox flag.
 	args := []string{"exec", "-c", `approval_policy="never"`, "-c", `sandbox_mode="` + sandbox + `"`}
+	if o.ExecutionPolicy == "managed-development" && sandbox == "workspace-write" {
+		args = append(args, "-c", "sandbox_workspace_write.network_access=true")
+		if len(o.GitRoots) > 0 {
+			roots := make([]string, len(o.GitRoots))
+			for i, r := range o.GitRoots {
+				roots[i] = strconv.Quote(r)
+			}
+			args = append(args, "-c", "sandbox_workspace_write.writable_roots=["+strings.Join(roots, ",")+"]")
+		}
+	}
 	if o.Profile.ReasoningEffort != "" {
 		args = append(args, "-c", "model_reasoning_effort="+strconv.Quote(o.Profile.ReasoningEffort))
 	}

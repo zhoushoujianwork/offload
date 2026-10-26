@@ -64,16 +64,45 @@ var errIdle = errors.New("worker idle")
 // named field, not embedded: an embedded bytes.Buffer would promote ReadFrom, io.Copy would call
 // that directly, and Write (hence the timestamp) would never run.
 type activityWriter struct {
-	mu   sync.Mutex
-	buf  bytes.Buffer
-	last atomic.Int64 // unix nanoseconds of the latest write
+	mu       sync.Mutex
+	lineMu   sync.Mutex // serializes line framing without holding the buffer lock during callbacks
+	buf      bytes.Buffer
+	onLine   func([]byte) error
+	pending  []byte
+	dropping bool
+	last     atomic.Int64 // unix nanoseconds of the latest write
 }
 
 func (w *activityWriter) Write(p []byte) (int, error) {
+	if w.onLine != nil {
+		w.lineMu.Lock()
+		defer w.lineMu.Unlock()
+	}
 	w.last.Store(time.Now().UnixNano())
 	w.mu.Lock()
-	defer w.mu.Unlock()
-	return w.buf.Write(p)
+	n, err := w.buf.Write(p)
+	w.mu.Unlock()
+	if w.onLine != nil {
+		for _, b := range p {
+			if b == '\n' {
+				if !w.dropping {
+					if e := w.onLine(w.pending); e != nil {
+						return n, e
+					}
+				}
+				w.pending = w.pending[:0]
+				w.dropping = false
+			} else if !w.dropping {
+				if len(w.pending) >= 256<<10 {
+					w.pending = w.pending[:0]
+					w.dropping = true
+				} else {
+					w.pending = append(w.pending, b)
+				}
+			}
+		}
+	}
+	return n, err
 }
 
 // Bytes returns a copy, because the live publisher reads while the worker is still writing.
@@ -104,6 +133,18 @@ func watchIdle(ctx context.Context, cancel context.CancelCauseFunc, last *atomic
 
 // Opts is one worker run.
 type Opts struct {
+	RunID            string
+	CallerRunID      string
+	ExecutionPolicy  string
+	InstructionsFile string
+	CodexSandbox     string
+
+	Instructions                  []byte
+	ToolsDisabled                 bool
+	AllowedTools, DisallowedTools string
+	GitRoots                      []string
+	OnLine                        func([]byte) error
+
 	ProfileName string
 	Profile     config.Profile
 	Model       string
@@ -150,12 +191,26 @@ func buildArgs(o Opts, promptPath string) []string {
 
 	if o.Salvage {
 		args = append(args, "--tools", "")
+	} else if o.ToolsDisabled {
+		args = append(args, "--tools", "")
+	} else if o.AllowedTools != "" {
+		// Explicit allowlists must not inherit automatic approval for edits.
+		args = append(args, "--permission-mode", "default", "--allowedTools", strings.ReplaceAll(o.AllowedTools, ",", " "))
+	} else if o.ExecutionPolicy == "managed-development" {
+		args = append(args, "--permission-mode", "acceptEdits", "--allowedTools", "Bash Read Grep Glob Edit Write")
 	} else if o.Write {
 		args = append(args, "--permission-mode", "acceptEdits", "--allowedTools", writeTools)
 	} else {
 		args = append(args, "--allowedTools", readOnlyTools)
 	}
-	return append(args, "--append-system-prompt-file", promptPath, o.Task)
+	if o.DisallowedTools != "" {
+		args = append(args, "--disallowedTools", strings.ReplaceAll(o.DisallowedTools, ",", " "))
+	}
+	args = append(args, "--append-system-prompt-file", promptPath)
+	if o.ExecutionPolicy == "managed-development" {
+		return args // managed task contents travel only through stdin
+	}
+	return append(args, o.Task)
 }
 
 // writeWorkerPrompt combines explicit project instructions and delegated-task constraints.
@@ -174,7 +229,13 @@ func writeWorkerPrompt(o Opts) (string, error) {
 		}
 		fmt.Fprintf(&prompt, "Project instructions from %s:\n%s\n\n", path, contents)
 	}
-	if o.Profile.BackendName() == "codex" {
+	if len(o.Instructions) > 0 {
+		prompt.Write(o.Instructions)
+		prompt.WriteString("\n\n")
+	}
+	if o.ExecutionPolicy == "managed-development" {
+		prompt.WriteString(managedPrompt)
+	} else if o.Profile.BackendName() == "codex" {
 		prompt.WriteString(codexPrompt)
 	} else {
 		prompt.WriteString(Prompt)
@@ -228,12 +289,15 @@ func claudeBin() (string, error) {
 
 // Run executes the worker and always returns a Record describing what happened.
 func Run(ctx context.Context, o Opts) (rec history.Record, err error) {
+	if o.RunID == "" {
+		o.RunID = NewRunID()
+	}
 	started := o.StartedAt
 	if started.IsZero() {
 		started = time.Now()
 	}
 	rec = history.Record{TS: started.Format("2006-01-02 15:04:05"), Profile: o.ProfileName, Model: o.Model,
-		Backend: o.Profile.BackendName(), Dir: o.Dir, Task: o.Task, Status: "error", CostIsEstimate: true}
+		RunID: o.RunID, CallerRunID: o.CallerRunID, ExecutionPolicy: policyName(o.ExecutionPolicy), Backend: o.Profile.BackendName(), Dir: o.Dir, Task: o.Task, Status: "error", CostIsEstimate: true}
 	var pub *publisher
 	defer func() {
 		elapsed := time.Since(started).Milliseconds()
@@ -247,11 +311,22 @@ func Run(ctx context.Context, o Opts) (rec history.Record, err error) {
 			code = 124
 		}
 		rec.ExitCode = &code
+		if rec.Status != "ok" && rec.ErrorKind == "" {
+			rec.ErrorKind = "execution"
+		}
+		if rec.Status == "ok" {
+			rec.ErrorKind = ""
+		}
 		// Publish only after the exit code is final, or watch/status would show 0 for a failure.
 		if pub != nil {
 			pub.finish(rec)
 		}
 	}()
+	if err = Validate(&o); err != nil {
+		rec.ErrorKind = ErrorKind(err)
+		return rec, err
+	}
+	rec.ErrorKind = "configuration"
 	promptPath, err := writeWorkerPrompt(o)
 	if err != nil {
 		return rec, err
@@ -259,6 +334,7 @@ func Run(ctx context.Context, o Opts) (rec history.Record, err error) {
 	defer os.Remove(promptPath)
 	var token, bin string
 	if o.Profile.BackendName() == "codex" {
+		rec.ErrorKind = "launch"
 		bin, err = codexBin()
 		if err != nil {
 			return rec, fmt.Errorf("codex CLI not found: %w", err)
@@ -268,6 +344,7 @@ func Run(ctx context.Context, o Opts) (rec history.Record, err error) {
 		if err != nil {
 			return rec, err
 		}
+		rec.ErrorKind = "launch"
 		bin, err = claudeBin()
 		if err != nil {
 			return rec, fmt.Errorf("claude CLI not found: %w", err)
@@ -276,9 +353,23 @@ func Run(ctx context.Context, o Opts) (rec history.Record, err error) {
 			return rec, err
 		}
 	}
+	rec.ErrorKind = "launch"
 	pub = newPublisher(o, started)
 	a := runAttempt(ctx, bin, o, promptPath, token, o.Timeout, pub.update)
 	s := a.s
+	rec.ErrorKind = "execution"
+	var launchErr *exec.Error
+	var pathErr *os.PathError
+	if errors.As(a.runErr, &launchErr) || errors.As(a.runErr, &pathErr) {
+		rec.ErrorKind = "launch"
+	}
+	// NotifyContext may expose a signal-specific Cause; Err remains context.Canceled.
+	if errors.Is(a.cause, context.Canceled) || errors.Is(ctx.Err(), context.Canceled) {
+		rec.ErrorKind = "canceled"
+	}
+	if errors.Is(a.cause, errEventsIO) {
+		rec.ErrorKind = "events_io"
+	}
 	if o.Profile.BackendName() == "codex" {
 		defer func() {
 			applyCodexAccounting(&rec, s, a.baseline, a.baselineError, o, a.runErr == nil && a.cause == nil)
@@ -288,6 +379,7 @@ func Run(ctx context.Context, o Opts) (rec history.Record, err error) {
 	stopped := errors.Is(a.cause, errIdle) || errors.Is(a.cause, context.DeadlineExceeded)
 	if stopped {
 		rec.Status = "timeout"
+		rec.ErrorKind = "timeout"
 		rec.Error = "timed out after " + o.Timeout.String()
 		if errors.Is(a.cause, errIdle) {
 			rec.Error = "worker produced no output for " + IdleLimit.String()
@@ -317,7 +409,7 @@ func Run(ctx context.Context, o Opts) (rec history.Record, err error) {
 		rec.Result = rec.Error + s.progress()
 		// A stopped worker has usually read plenty. Ask it for the report without tools instead
 		// of leaving the supervisor with a progress sketch. Not after the user pressed Ctrl-C.
-		if !o.NoSalvage && o.Profile.BackendName() == "claude" && s.Session != "" && ctx.Err() == nil {
+		if o.ExecutionPolicy != "managed-development" && !o.NoSalvage && o.Profile.BackendName() == "claude" && s.Session != "" && ctx.Err() == nil {
 			pub.phase(live.Salvaging)
 			if report, cost, ok := salvage(ctx, bin, o, promptPath, token, s.Session, pub.keepAlive); ok {
 				rec.Salvaged, rec.CostUSD = true, cost
@@ -333,7 +425,7 @@ func Run(ctx context.Context, o Opts) (rec history.Record, err error) {
 	if rec.CostUSD != nil && !history.ValidCost(*rec.CostUSD) {
 		rec.CostUSD = nil
 	}
-	if !res.IsError && a.runErr == nil {
+	if !res.IsError && a.runErr == nil && a.cause == nil {
 		rec.Status = "ok"
 	} else {
 		for _, message := range res.Errors {
@@ -398,8 +490,20 @@ func runAttempt(ctx context.Context, bin string, o Opts, promptPath, token strin
 		cmd = exec.CommandContext(ctx, bin, buildArgs(o, promptPath)...)
 		cmd.Dir = o.Dir
 		cmd.Env = childEnv(os.Environ(), o, token)
+		if o.ExecutionPolicy == "managed-development" {
+			cmd.Stdin = strings.NewReader(o.Task)
+		}
 	}
 	out := &activityWriter{}
+	if o.OnLine != nil {
+		out.onLine = func(line []byte) error {
+			if err := o.OnLine(line); err != nil {
+				cancelCause(errEventsIO)
+				return fmt.Errorf("%w: %v", errEventsIO, err)
+			}
+			return nil
+		}
+	}
 	out.last.Store(time.Now().UnixNano())
 	var workerErr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = out, &workerErr

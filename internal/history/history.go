@@ -12,6 +12,10 @@ import (
 
 // Record is one line of the run log.
 type Record struct {
+	RunID            string           `json:"run_id,omitempty"`
+	CallerRunID      string           `json:"caller_run_id,omitempty"`
+	ExecutionPolicy  string           `json:"execution_policy,omitempty"`
+	ErrorKind        string           `json:"error_kind,omitempty"`
 	TS               string           `json:"ts"`
 	Status           string           `json:"status"` // ok | error | timeout
 	ExitCode         *int             `json:"exit_code"`

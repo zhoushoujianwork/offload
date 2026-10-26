@@ -153,3 +153,72 @@ Report these as **API baseline est.**, an API-equivalent short-context/30m cache
 Fresh runs use zero baseline. Resumes subtract the latest valid native rollout cumulative token snapshot captured before subprocess launch from `$CODEX_HOME/sessions` (default `~/.codex/sessions`), after validating UUID and session metadata. Missing/corrupt baselines, regressions, incomplete counters and interruptions yield unavailable run usage/cost. Preserve tokens even when rates are unavailable; never sum cumulative snapshots or bill full resumed session totals.
 
 JSON/history preserve optional `usage`, `cumulative_usage`, `usage_source`, `usage_scope`, `usage_unavailable`, `cost_unavailable`, `cost_basis`, `service_tier` and `pricing` (model/tier/rates/source/date/assumptions). Historical values never recompute. `ls` uses `N/A` for missing cost and a single limitations footer; `show` provides full provenance. Stderr explicitly labels computed Codex estimates. Old Codex history remains unavailable. Claude reported cost behavior is unchanged.
+
+## Direct supervisor integration
+
+Supervisors can invoke offload directly without an interactive launcher:
+
+```sh
+offload -json -w -execution-policy managed-development \
+  -instructions-file /absolute/private/operator.md \
+  -caller-run-id clawflow:run-123 \
+  -events-file /absolute/new/run-123.ndjson \
+  -p codex -codex-sandbox workspace-write -d /absolute/repo "Implement the assigned task"
+```
+
+`-execution-policy default` preserves existing prompts and permissions. The opt-in
+`managed-development` policy requires `-w`, disables salvage even on resume, and
+permits task-authorized tests, commits, pushes and PR operations through clawflow.
+It prohibits unsolicited merges, force pushes, destructive or unrelated changes,
+and recursive delegation. Supplied operator outcome markers are preserved; offload
+does not add a semantic outcome marker. ClawFlow remains responsible for interpreting
+its own outcome contract.
+
+`-instructions-file` must be an absolute, non-symlink regular file of at most
+256 KiB. The opened descriptor is validated and reads are bounded. Its bytes are
+appended verbatim to the private prompt before worker discipline; contents never
+appear in argv. The caller owns this file and its confidentiality.
+
+Managed Claude uses `acceptEdits` with Bash, Read, Grep, Glob, Edit and Write.
+`-tools-disabled`, `-allowed-tools Read,Grep` and `-disallowed-tools Bash,Write`
+forward explicit Claude restrictions; an explicit allowlist replaces the managed
+broad allowlist and uses default permission mode rather than automatic edit approval.
+Combining `-tools-disabled` with `-allowed-tools` is rejected. Deny restrictions
+remain effective. Managed Claude tasks travel through stdin; default mode retains
+its existing task argument behavior. Codex rejects otherwise valid explicit tool
+constraints before launch with `error_kind: "unsupported_tools"`.
+
+`-codex-sandbox` is optional and requires managed development, `-w`, and Codex.
+`workspace-write` enables sandbox network access and adds canonical Git directory
+and common directory paths to writable roots. This also applies to resumed runs.
+The default sandbox selection is unchanged. Explicit `danger-full-access` is a
+trusted-machine mode that disables Codex sandbox containment; offload never selects
+it automatically or elevates after a permission denial. Approval remains `never`
+for both fresh and resumed Codex runs. SIGINT and SIGTERM cancel the worker; the
+supervisor owns process-group lifecycle. `-no-salvage` remains available in default
+mode; managed mode always disables salvage.
+
+`-caller-run-id` matches `[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}`. Every invocation gets
+an independent generated `run_id`. With `-json`, stdout contains one final history
+record only (diagnostics go to stderr), including normal setup/flag errors once
+`-json` has been parsed. Additive record fields are `run_id`, `caller_run_id`
+(when supplied), `backend`, `execution_policy`, and `error_kind` (on failure).
+Existing `status`, `exit_code`, session, report, usage and cost fields retain their
+meaning. No authentication classification is inferred from provider prose.
+Error kinds are `configuration`, `unsupported_tools`, `launch`, `execution`,
+`timeout`, `canceled`, and `events_io`. Exit codes remain 0 for success, 1 for
+worker failure/cancellation, 2 for setup or event-file errors, and 124 for timeout.
+
+`-events-file` must be absolute and nonexistent; exclusive creation rejects existing
+files and symlinks before provider launch and uses mode 0600. It contains bounded
+NDJSON with common fields `schema_version: 1`, `type` (`start`, `progress`, `final`),
+`run_id`, `caller_run_id`, `seq` (increasing from 1), UTC `timestamp`, `session`,
+`backend`, and `model`. Unknown metadata may be empty. Progress contains only
+allowlisted `native_type` and optional coarse `tool_category` (`shell`, `file`,
+`web`, `mcp`, `other`); prompts, arguments, text and command output are excluded. Unknown
+native types become `other`. Native lines over 256 KiB are skipped, incomplete
+trailing lines produce no progress, and at most 10,000 progress events are written
+in addition to start/final. Final adds `status`, `exit_code`, and `error_kind`
+(empty on success). Event I/O failure cancels the worker and returns `events_io`
+in final stdout JSON; a failed event destination cannot guarantee a final event.
+The supervisor must parse the final record even when the process exits nonzero.

@@ -34,6 +34,7 @@ func setup(t *testing.T, reply string) (work, record string) {
 	fake := filepath.Join(tmp, "claude")
 	script := "#!/bin/sh\n" +
 		"{ printf '%s\\n' \"$@\"; echo \"ENV token=$ANTHROPIC_AUTH_TOKEN base=$ANTHROPIC_BASE_URL model=$ANTHROPIC_MODEL key=$ANTHROPIC_API_KEY hdr=$ANTHROPIC_CUSTOM_HEADERS pwd=$(pwd -P)\"; } > " + record + "\n" +
+		"cat > '" + record + ".stdin'\n" +
 		"prompt_file=''; inline_prompt=0; previous=''\n" +
 		"for arg in \"$@\"; do\n" +
 		"  [ \"$previous\" = '--append-system-prompt-file' ] && prompt_file=$arg\n" +
