@@ -101,6 +101,29 @@ OFFLOAD_PROFILE=deepseek offload -d /absolute/path/app "Find retry entry points,
 
 `-m` overrides the selected profile's model for that run.
 
+## Worker limits
+
+Independent `offload` invocations share a per-user, machine-wide worker limit. Runs over the limit wait in a queue before any backend starts; `offload status` and `watch` show them as `queued` with the reason. Interrupting or sending SIGTERM to a queued run cancels it without launching a backend.
+
+```json
+{
+  "limits": {
+    "max_workers": 2,
+    "go_max_procs": 2,
+    "go_parallelism": 1
+  }
+}
+```
+
+- `max_workers`: workers allowed at once across all terminals and projects. Unset, it defaults to a quarter of the logical CPUs (at least 1), so an 8-CPU machine gets 2. `-1` turns the limit off. `OFFLOAD_MAX_WORKERS` overrides it for one invocation. Tune it for your machine; the default is a starting point, not a measured optimum.
+- `go_max_procs` and `go_parallelism`: defaults added to the worker's environment as `GOMAXPROCS` and `-p=N` in `GOFLAGS` (defaults 2 and 1; `-1` disables). A `GOMAXPROCS` or `-p` you already set is kept, and other `GOFLAGS` are preserved. These are Go build settings, **not** CPU or memory limits: they do not constrain `xcodebuild`, other build tools, or a worker that overrides its environment.
+- A worker holds its slot through the run, any salvage step, and cleanup. It leads its own process group; on completion, `-t` timeout, the 10-minute idle limit, Ctrl-C or SIGTERM, offload sends SIGTERM to the group, then SIGKILL after 5 seconds, and releases the slot only once the group is empty. It never signals processes outside that group and never kills by executable name.
+- Wait and execution time are reported separately (`wait=` and `exec=` in the summary line, `wait_ms` and `exec_ms` in `-json`). `-t` applies to execution only; time spent queued does not count against it. `elapsed` is the total.
+- Only one process can drive a resumed session: of two simultaneous `-r` runs, the second is refused.
+- If worker processes cannot be stopped, the run is reported with `cleanup=unresolved` and its slot stays unavailable until they exit. If offload itself is killed (SIGKILL, crash), the slot is not reused while the recorded process group is alive, and `status` shows the worker as `lost` with `(worker processes alive)` rather than finished. A recycled PID is told apart by process start time.
+
+These limits cover offload workers only. Builds and tests that a supervising agent starts itself bypass the queue, so one heavy build at a time across a whole workflow still needs a serial validation policy in the supervisor.
+
 ## Delegation mode
 
 Delegation mode controls how proactively the installed policy tells a supervising agent to hand work to offload. It is independent of the provider `profile`/model selection above and does not change worker permissions (`-w` still opts in to edits).
@@ -254,7 +277,7 @@ offload version
   -json        emit one JSON run record instead of report-only stdout
 ```
 
-- **stdout**: the final report by default, or one record with `-json`. **stderr**: one summary line with status, exit code, profile/model, turns, estimated cost, elapsed time, and session.
+- **stdout**: the final report by default, or one record with `-json`. **stderr**: one summary line with status, exit code, profile/model, turns, estimated cost, elapsed time (plus `wait=` and `exec=` for a run that was admitted through the worker queue), and session.
 - **Exit codes**: 0 ok, 1 worker error, 2 usage/config error or unreachable gateway, 124 timeout.
 - **History**: runs, including failures, are appended to `$XDG_STATE_HOME/offload/runs.jsonl` (default `~/.local/state/offload/runs.jsonl`). Use `ls` for per-run metrics, `show` for reports and metrics, or `-r` to resume a session.
 
@@ -321,6 +344,7 @@ Before launching Claude, a reachability preflight attempts a TCP connection to t
 
 - The worker is headless, so permission prompts cannot be approved. With Claude, compound shell commands (pipes, `&&`, heredocs, `python -c`) are refused and burn a turn. Read-only `rtk` forms (`rtk ls`, `rtk read`, `rtk grep`, `rtk git log`, ...) are allowed; `rtk run`, `proxy`, `err`, `summary`, `pipe`, `test` and `find` are not; `permission_denials=N` in the summary line counts them.
 - A Claude worker stopped by `-t`, by 10 minutes of silence, or ending without a result is asked once, with all tools off, for a report from what it already read. The result starts with `[SALVAGED REPORT ...]`, the summary line shows `salvaged=true`, and `-json` has `"salvaged": true`. Its `cost_usd` covers only that step. It is partial and unverified. `-no-salvage` skips the step; if nothing could be salvaged you get the progress and an `offload -r <session>` command. For such runs `turns` counts tool calls.
+- Process-group cleanup is Unix only (macOS, Linux, BSD). A descendant that detaches with `setsid` or double-forks out of the worker's group is not stopped, and offload cannot see it. On other platforms only the worker process itself is stopped and the machine-wide queue and session lock are not enforced. No pressure-aware admission exists yet: the limit is static.
 - A worker that prints nothing for 10 minutes (a hung model request) is stopped without waiting for `-t`; the idle limit is fixed. Large tasks are slow (20-40s per turn). Split broad audits instead of raising `-t`; keep `-t` at its default unless the task needs more.
 - Requires network access and writes state outside the project (`~/.claude` or `$CODEX_HOME`, plus the offload history directory). Use host-approved permissions; when offloading is unavailable, report the failure and continue with local tools or native subagents.
 - Some gateways reject Claude Code's `anthropic-beta: claude-code-*` header and cannot be used as workers.
@@ -335,6 +359,8 @@ internal/worker/           Claude/Codex worker runs: args, env, prompt, stream-j
 internal/config/           gateway profiles and token lookup
 internal/history/          the run log (runs.jsonl) and its Record type
 internal/live/             per-process live state files that status and watch read
+internal/slots/            machine-wide worker slots and session locks (flock)
+internal/proc/             worker process groups: signal, liveness, PID-reuse check
 internal/agentinstall/     install-agent: skill copy and the managed policy block
 internal/text/             small string helpers
 skills/                    the embedded SKILL.md (skills/embed.go exposes it)

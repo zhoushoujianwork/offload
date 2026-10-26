@@ -14,12 +14,14 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/zhoushoujianwork/offload/internal/agentinstall"
 	"github.com/zhoushoujianwork/offload/internal/config"
 	"github.com/zhoushoujianwork/offload/internal/history"
 	"github.com/zhoushoujianwork/offload/internal/live"
+	"github.com/zhoushoujianwork/offload/internal/slots"
 	"github.com/zhoushoujianwork/offload/internal/text"
 	"github.com/zhoushoujianwork/offload/internal/worker"
 )
@@ -129,6 +131,19 @@ func cmdRun(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return printRun(rec, logPath, *jsonOutput, stdout, stderr)
 	}
 	if *resume != "" {
+		// The lock closes the race the live-state check below only narrows: of two simultaneous
+		// resumes, one fails to take it. It is held until this process exits.
+		lock, _, lockErr := slots.LockSession(slots.Dir(), *resume)
+		switch {
+		case errors.Is(lockErr, slots.ErrSessionBusy):
+			pid := slots.HolderPID(slots.Dir(), *resume)
+			return failRun(fmt.Errorf("session %s already has an active run (pid %d); do not send overlapping follow-ups to one session. "+
+				"Wait for it (offload watch -t 10m), inspect the result or partial edits with offload show %s and git diff, then resume once",
+				*resume, pid, *resume))
+		case lockErr != nil:
+			return failRun(fmt.Errorf("lock session %s: %w", *resume, lockErr))
+		}
+		defer lock.Release()
 		if s, busy := activeSessionRun(*resume); busy {
 			return failRun(fmt.Errorf("session %s already has an active run (pid %d); do not send overlapping follow-ups to one session. "+
 				"Wait for it (offload watch -t 10m), inspect the result or partial edits with offload show %s and git diff, then resume once",
@@ -172,10 +187,17 @@ func cmdRun(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		}
 		return failRun(err)
 	}
+	maxWorkers, err := cfg.Limits.EffectiveMaxWorkers()
+	if err != nil {
+		return failRun(err)
+	}
 	o := worker.Opts{ProfileName: name, Profile: prof, Model: firstNonEmpty(*model, prof.Model), Write: *write,
-		Resume: *resume, Dir: wd, Task: task, Timeout: *timeout, StartedAt: started, NoSalvage: *noSalvage}
+		Resume: *resume, Dir: wd, Task: task, Timeout: *timeout, StartedAt: started, NoSalvage: *noSalvage,
+		MaxWorkers: maxWorkers, Limits: cfg.Limits}
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	// SIGTERM is what a supervisor's own cancellation or a timeout wrapper sends; handle it like Ctrl-C
+	// so the worker's process group is stopped instead of orphaned.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	rec, _ = worker.Run(ctx, o)
 	return printRun(rec, logPath, *jsonOutput, stdout, stderr)
@@ -219,8 +241,11 @@ func printRun(rec history.Record, logPath string, jsonOutput bool, stdout, stder
 	if rec.Denials > 0 {
 		errText = fmt.Sprintf(" permission_denials=%d", rec.Denials) + errText
 	}
-	fmt.Fprintf(stderr, "[offload] %s exit_code=%s %s/%s turns=%d estimated_cost=%s elapsed=%s session=%s%s%s\n",
-		rec.Status, exitText(rec), rec.Profile, rec.Model, rec.Turns, costText(rec), elapsedText(rec),
+	if rec.Cleanup != "" {
+		errText += " cleanup=" + text.OneLine(rec.Cleanup)
+	}
+	fmt.Fprintf(stderr, "[offload] %s exit_code=%s %s/%s turns=%d estimated_cost=%s elapsed=%s%s session=%s%s%s\n",
+		rec.Status, exitText(rec), rec.Profile, rec.Model, rec.Turns, costText(rec), elapsedText(rec), waitText(rec),
 		firstNonEmpty(rec.Session, "-"), errText, warning)
 	if rec.ExitCode != nil {
 		return *rec.ExitCode
@@ -240,6 +265,15 @@ func elapsedText(rec history.Record) string {
 		return "unknown"
 	}
 	return fmt.Sprintf("%.3fs", float64(*rec.ElapsedMs)/1000)
+}
+
+// waitText splits elapsed into queue wait and execution when the run was admitted. The -t timeout
+// covers only the execution part.
+func waitText(rec history.Record) string {
+	if rec.WaitMs == nil || rec.ExecMs == nil {
+		return ""
+	}
+	return fmt.Sprintf(" wait=%.3fs exec=%.3fs", float64(*rec.WaitMs)/1000, float64(*rec.ExecMs)/1000)
 }
 
 func exitText(rec history.Record) string {

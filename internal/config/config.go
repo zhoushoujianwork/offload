@@ -30,6 +30,8 @@ type Config struct {
 	// DelegationMode controls how proactively a supervising agent is instructed to
 	// delegate work via offload: "basic" or "proactive". Empty means unset.
 	DelegationMode string `json:"delegation_mode,omitempty"`
+	// Limits caps concurrent workers and sets build defaults for their child processes.
+	Limits Limits `json:"limits,omitempty"`
 }
 
 // Delegation modes understood by `offload mode` and `install-agent -mode`.

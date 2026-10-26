@@ -19,6 +19,8 @@ import (
 	"github.com/zhoushoujianwork/offload/internal/config"
 	"github.com/zhoushoujianwork/offload/internal/history"
 	"github.com/zhoushoujianwork/offload/internal/live"
+	"github.com/zhoushoujianwork/offload/internal/proc"
+	"github.com/zhoushoujianwork/offload/internal/slots"
 	"github.com/zhoushoujianwork/offload/internal/text"
 )
 
@@ -60,31 +62,6 @@ var IdleLimit = 10 * time.Minute
 
 var errIdle = errors.New("worker idle")
 
-// activityWriter collects the worker's stdout and remembers when it last wrote. The buffer is a
-// named field, not embedded: an embedded bytes.Buffer would promote ReadFrom, io.Copy would call
-// that directly, and Write (hence the timestamp) would never run.
-type activityWriter struct {
-	mu   sync.Mutex
-	buf  bytes.Buffer
-	last atomic.Int64 // unix nanoseconds of the latest write
-}
-
-func (w *activityWriter) Write(p []byte) (int, error) {
-	w.last.Store(time.Now().UnixNano())
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	return w.buf.Write(p)
-}
-
-// Bytes returns a copy, because the live publisher reads while the worker is still writing.
-func (w *activityWriter) Bytes() []byte {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	return bytes.Clone(w.buf.Bytes())
-}
-
-func (w *activityWriter) String() string { return string(w.Bytes()) }
-
 // watchIdle cancels ctx with errIdle once nothing was written for limit.
 func watchIdle(ctx context.Context, cancel context.CancelCauseFunc, last *atomic.Int64, limit time.Duration) {
 	t := time.NewTicker(limit / 10)
@@ -115,6 +92,11 @@ type Opts struct {
 	StartedAt   time.Time
 	NoSalvage   bool // do not ask a stopped worker for a report from what it already read
 	Salvage     bool // internal: this run is the tool-less report of a stopped worker
+
+	// MaxWorkers is the machine-wide worker limit; <= 0 disables admission control. Limits adds
+	// build defaults to the worker's environment.
+	MaxWorkers int
+	Limits     config.Limits
 }
 
 // claudeResult is the subset of `claude -p --output-format json` we use.
@@ -224,7 +206,18 @@ func claudeBin() (string, error) {
 	return exec.LookPath("claude")
 }
 
+// StopGrace is how long a stopped worker's process group gets to exit after SIGTERM before it is
+// killed; KillWait bounds the wait for the kernel after SIGKILL. Variables only so tests can shorten them.
+var (
+	StopGrace = 5 * time.Second
+	KillWait  = 3 * time.Second
+)
+
 // Run executes the worker and always returns a Record describing what happened.
+//
+// The run first waits for a worker slot, so at most MaxWorkers run on the machine. It keeps the
+// slot through the worker, any salvage step and cleanup of the worker's process group, and gives
+// it up only once those processes are confirmed gone.
 func Run(ctx context.Context, o Opts) (rec history.Record, err error) {
 	started := o.StartedAt
 	if started.IsZero() {
@@ -233,9 +226,16 @@ func Run(ctx context.Context, o Opts) (rec history.Record, err error) {
 	rec = history.Record{TS: started.Format("2006-01-02 15:04:05"), Profile: o.ProfileName, Model: o.Model,
 		Backend: o.Profile.BackendName(), Dir: o.Dir, Task: o.Task, Status: "error", CostIsEstimate: true}
 	var pub *publisher
+	var slot *slots.Slot
+	var admitted time.Time
+	var leftover *proc.Group // worker processes that survived cleanup
 	defer func() {
 		elapsed := time.Since(started).Milliseconds()
 		rec.ElapsedMs = &elapsed
+		if !admitted.IsZero() {
+			wait, exec := admitted.Sub(started).Milliseconds(), time.Since(admitted).Milliseconds()
+			rec.WaitMs, rec.ExecMs = &wait, &exec
+		}
 		code := 1
 		if err != nil {
 			code, rec.Error, rec.Result = 2, err.Error(), err.Error()
@@ -245,9 +245,24 @@ func Run(ctx context.Context, o Opts) (rec history.Record, err error) {
 			code = 124
 		}
 		rec.ExitCode = &code
+		// Give the slot up only after cleanup. A group that is still alive keeps the slot file
+		// recording it, so the capacity stays unavailable.
+		if leftover != nil && !leftover.Alive() {
+			leftover = nil
+		}
+		if !slot.Release() && leftover == nil {
+			leftover = &proc.Group{}
+		}
+		if leftover != nil {
+			rec.Cleanup = "unresolved: worker processes are still running"
+			if leftover.PGID > 1 {
+				rec.Cleanup += fmt.Sprintf(" in process group %d; stop them with: kill -TERM -- -%d", leftover.PGID, leftover.PGID)
+			}
+			rec.Cleanup += "; their worker slot stays unavailable until they exit"
+		}
 		// Publish only after the exit code is final, or watch/status would show 0 for a failure.
 		if pub != nil {
-			pub.finish(rec)
+			pub.finish(rec, leftover)
 		}
 	}()
 	promptPath, err := writeWorkerPrompt(o)
@@ -275,7 +290,22 @@ func Run(ctx context.Context, o Opts) (rec history.Record, err error) {
 		}
 	}
 	pub = newPublisher(o, started)
-	a := runAttempt(ctx, bin, o, promptPath, token, o.Timeout, pub.update)
+	slot, err = slots.Acquire(ctx, slots.Options{Dir: slots.Dir(), Max: o.MaxWorkers, OnWait: pub.waiting})
+	if err != nil {
+		if ctx.Err() != nil {
+			return rec, errors.New("cancelled while waiting for a worker slot; no worker was started")
+		}
+		return rec, fmt.Errorf("acquire worker slot: %w", err)
+	}
+	admitted = time.Now()
+	pub.admitted(slot.Index(), admitted.Sub(started))
+	hooks := hooks{started: func(g proc.Group) { slot.Track(g); pub.group(g) }, cleaning: func() { pub.phase(live.Cleaning) }, cleaned: slot.Clear}
+
+	a := runAttempt(ctx, bin, o, promptPath, token, o.Timeout, pub.update, hooks)
+	pub.phase(live.Running)
+	if a.leftover != nil {
+		leftover = a.leftover
+	}
 	s := a.s
 	rec.Session, rec.Turns, rec.Denials = s.Session, s.ToolCalls, s.Denials
 	stopped := errors.Is(a.cause, errIdle) || errors.Is(a.cause, context.DeadlineExceeded)
@@ -301,6 +331,9 @@ func Run(ctx context.Context, o Opts) (rec history.Record, err error) {
 			return rec, nil
 		}
 		rec.Error = "worker ended without a result"
+		if errors.Is(a.cause, context.Canceled) {
+			rec.Error = "interrupted before the worker finished"
+		}
 		if a.runErr != nil {
 			rec.Error += ": " + a.runErr.Error()
 		}
@@ -309,10 +342,15 @@ func Run(ctx context.Context, o Opts) (rec history.Record, err error) {
 		rec.Error += s.resumeHint()
 		rec.Result = rec.Error + s.progress()
 		// A stopped worker has usually read plenty. Ask it for the report without tools instead
-		// of leaving the supervisor with a progress sketch. Not after the user pressed Ctrl-C.
-		if !o.NoSalvage && o.Profile.BackendName() == "claude" && s.Session != "" && ctx.Err() == nil {
+		// of leaving the supervisor with a progress sketch. Not after the user pressed Ctrl-C,
+		// and not while the first worker's processes are still alive.
+		if !o.NoSalvage && o.Profile.BackendName() == "claude" && s.Session != "" && ctx.Err() == nil && leftover == nil {
 			pub.phase(live.Salvaging)
-			if report, cost, ok := salvage(ctx, bin, o, promptPath, token, s.Session, pub.keepAlive); ok {
+			report, cost, ok, left := salvage(ctx, bin, o, promptPath, token, s.Session, pub.keepAlive, hooks)
+			if left != nil {
+				leftover = left
+			}
+			if ok {
 				rec.Salvaged, rec.CostUSD = true, cost
 				rec.Error += "; the report is salvaged from what the worker read before it stopped, not a finished run (cost covers only that step)"
 				rec.Result = "[SALVAGED REPORT: " + rec.Error + "]\n\n" + report
@@ -360,37 +398,63 @@ type attempt struct {
 	cause          error
 	runErr         error
 	stdout, stderr string
+	// leftover is the worker's process group when processes in it could not be stopped.
+	leftover *proc.Group
+}
+
+// hooks lets the caller record the worker's process group while it is the slot's responsibility.
+type hooks struct {
+	started  func(proc.Group)
+	cleaning func()
+	cleaned  func()
 }
 
 // runAttempt starts one worker process and waits for it. It stops early on the timeout or when the
 // worker goes silent, and calls tick every publishEvery with what the worker has done so far.
+//
+// The worker leads its own process group. When the attempt ends, by itself or by cancellation, the
+// whole group is stopped (SIGTERM, then SIGKILL after StopGrace), so build and test children do not
+// outlive the run. A descendant that left the group with setsid is not reachable this way.
 func runAttempt(ctx context.Context, bin string, o Opts, promptPath, token string, timeout time.Duration,
-	tick func(streamSummary, time.Time)) attempt {
+	tick func(streamSummary, time.Time), h hooks) attempt {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	ctx, cancelCause := context.WithCancelCause(ctx)
 	defer cancelCause(nil)
 	var cmd *exec.Cmd
-	parse := parseStream
+	var parser eventParser = &claudeParser{}
+	// Not CommandContext: that kills only the worker process and never its children.
 	if o.Profile.BackendName() == "codex" {
-		cmd = exec.CommandContext(ctx, bin, buildCodexArgs(o)...)
+		cmd = exec.Command(bin, buildCodexArgs(o)...)
 		cmd.Dir = o.Dir
-		cmd.Env = os.Environ()
+		cmd.Env = o.Limits.ApplyEnv(os.Environ())
 		prompt, err := os.ReadFile(promptPath)
 		if err != nil {
 			return attempt{runErr: err}
 		}
 		cmd.Stdin = strings.NewReader(string(prompt) + "\nTask:\n" + o.Task)
-		parse = parseCodexStream
+		parser = &codexParser{}
 	} else {
-		cmd = exec.CommandContext(ctx, bin, buildArgs(o, promptPath)...)
+		cmd = exec.Command(bin, buildArgs(o, promptPath)...)
 		cmd.Dir = o.Dir
-		cmd.Env = childEnv(os.Environ(), o, token)
+		cmd.Env = o.Limits.ApplyEnv(childEnv(os.Environ(), o, token))
 	}
-	out := &activityWriter{}
-	out.last.Store(time.Now().UnixNano())
-	var workerErr bytes.Buffer
+	proc.Prepare(cmd)
+	out := newActivityWriter(parser)
+	var workerErr cappedBuffer
 	cmd.Stdout, cmd.Stderr = out, &workerErr
+	// Do not wait indefinitely for a worker descendant to close inherited pipes.
+	cmd.WaitDelay = 100 * time.Millisecond
+	if err := cmd.Start(); err != nil {
+		return attempt{runErr: err}
+	}
+	group := proc.Started(cmd)
+	if h.started != nil {
+		h.started(group)
+	}
+	waited := make(chan error, 1)
+	go func() { waited <- cmd.Wait() }()
+
 	go watchIdle(ctx, cancelCause, &out.last, IdleLimit)
 	if tick != nil {
 		go func() {
@@ -401,32 +465,112 @@ func runAttempt(ctx context.Context, bin string, o Opts, promptPath, token strin
 				case <-ctx.Done():
 					return
 				case <-t.C:
-					tick(parse(out.Bytes()), time.Unix(0, out.last.Load()))
+					tick(out.summary(), time.Unix(0, out.last.Load()))
 				}
 			}
 		}()
 	}
-	// Do not wait indefinitely for a worker descendant to close inherited pipes.
-	cmd.WaitDelay = 100 * time.Millisecond
-	runErr := cmd.Run()
-	return attempt{s: parse(out.Bytes()), cause: context.Cause(ctx), runErr: runErr,
-		stdout: out.String(), stderr: workerErr.String()}
+
+	var runErr error
+	select {
+	case runErr = <-waited:
+	case <-ctx.Done():
+		// Timeout, idle limit or interrupt: stop the group, then collect the worker's exit.
+		group.Term()
+		select {
+		case runErr = <-waited:
+		case <-time.After(StopGrace):
+			group.Kill()
+			select {
+			case runErr = <-waited:
+			case <-time.After(KillWait):
+			}
+		}
+	}
+	cause := context.Cause(ctx)
+	if h.cleaning != nil && group.Alive() {
+		h.cleaning()
+	}
+	out.finish()
+	a := attempt{s: out.summary(), cause: cause, runErr: runErr, stdout: out.String(), stderr: workerErr.String()}
+	if !stopGroup(group) {
+		g := group
+		a.leftover = &g
+	} else if h.cleaned != nil {
+		h.cleaned()
+	}
+	return a
+}
+
+// stopGroup makes sure no process is left in the worker's group, escalating from SIGTERM to
+// SIGKILL, and reports whether the group is confirmed gone. A normal exit usually leaves nothing
+// to stop. It never signals anything outside the group offload created.
+func stopGroup(g proc.Group) bool {
+	if !proc.Supported {
+		return true // nothing is tracked; see Known limits
+	}
+	if !g.Alive() {
+		return true
+	}
+	g.Term()
+	if waitGone(g, StopGrace) {
+		return true
+	}
+	g.Kill()
+	return waitGone(g, KillWait)
+}
+
+func waitGone(g proc.Group, d time.Duration) bool {
+	deadline := time.Now().Add(d)
+	for {
+		if !g.Alive() {
+			return true
+		}
+		if time.Now().After(deadline) {
+			return false
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// cappedBuffer keeps the start of what the worker wrote to stderr; the rest is dropped.
+type cappedBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+const maxStderrKept = 64 << 10
+
+func (b *cappedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if room := maxStderrKept - b.buf.Len(); room > 0 {
+		b.buf.Write(p[:min(room, len(p))])
+	}
+	return len(p), nil
+}
+
+func (b *cappedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
 }
 
 // salvage resumes a stopped session with no tools and returns the report it writes.
-func salvage(ctx context.Context, bin string, o Opts, promptPath, token, session string, tick func(streamSummary, time.Time)) (string, *float64, bool) {
+func salvage(ctx context.Context, bin string, o Opts, promptPath, token, session string,
+	tick func(streamSummary, time.Time), h hooks) (string, *float64, bool, *proc.Group) {
 	so := o
 	so.Resume, so.Salvage, so.Write, so.Task = session, true, false, salvageTask
-	a := runAttempt(ctx, bin, so, promptPath, token, SalvageTimeout, tick)
+	a := runAttempt(ctx, bin, so, promptPath, token, SalvageTimeout, tick, h)
 	r := a.s.Result
 	if r == nil || r.IsError || strings.TrimSpace(r.Result) == "" {
-		return "", nil, false
+		return "", nil, false, a.leftover
 	}
 	cost := r.CostUSD
 	if cost != nil && !history.ValidCost(*cost) {
 		cost = nil
 	}
-	return r.Result, cost, true
+	return r.Result, cost, true, a.leftover
 }
 
 // publishEvery is how often a running worker refreshes its live state.
@@ -439,13 +583,46 @@ type publisher struct {
 }
 
 func newPublisher(o Opts, started time.Time) *publisher {
-	// A resumed run is already in its session; publishing that now lets activeSessionRun refuse an
-	// overlapping follow-up before the first stream event arrives.
-	p := &publisher{st: live.State{PID: os.Getpid(), Phase: live.Running, Dir: o.Dir, Session: o.Resume,
+	// Queued first: the run holds no slot and has started no backend. A resumed run is already in
+	// its session, so activeSessionRun can refuse an overlapping follow-up from the start.
+	p := &publisher{st: live.State{PID: os.Getpid(), Phase: live.Queued, Dir: o.Dir, Session: o.Resume,
 		Task: text.Truncate(text.OneLine(o.Task), 200), Profile: o.ProfileName, Model: o.Model,
-		StartedAt: started, LastEventAt: started}}
+		StartedAt: started, LastEventAt: started, Limits: limitsSummary(o)}}
 	live.Publish(p.st)
 	return p
+}
+
+func limitsSummary(o Opts) string {
+	return o.Limits.Summary(max(o.MaxWorkers, 0))
+}
+
+// waiting is called while the run is queued. It refreshes the state so the queue stays visible
+// and the run is never reported lost.
+func (p *publisher) waiting(w slots.Wait) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.st.WaitReason = w.Reason()
+	p.st.WaitMs = time.Since(p.st.StartedAt).Milliseconds()
+	live.Publish(p.st)
+}
+
+// admitted marks the move from queue to running. LastEventAt restarts here so queue time is not
+// counted as worker idle time.
+func (p *publisher) admitted(slot int, waited time.Duration) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.st.Phase, p.st.WaitReason, p.st.WaitMs, p.st.LastEventAt = live.Running, "", waited.Milliseconds(), time.Now()
+	if slot >= 0 {
+		p.st.Slot = &slot
+	}
+	live.Publish(p.st)
+}
+
+func (p *publisher) group(g proc.Group) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.st.PGID, p.st.PGIDStart = g.PGID, g.Start
+	live.Publish(p.st)
 }
 
 func (p *publisher) update(s streamSummary, last time.Time) {
@@ -476,10 +653,19 @@ func (p *publisher) phase(phase string) {
 	live.Publish(p.st)
 }
 
-func (p *publisher) finish(rec history.Record) {
+// finish publishes the final state. A non-nil leftover means worker processes survived cleanup, so
+// the state is Unresolved rather than Done and keeps the group id for status and for slot recovery.
+func (p *publisher) finish(rec history.Record, leftover *proc.Group) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.st.Phase, p.st.Status, p.st.ToolCalls, p.st.Denials = live.Done, rec.Status, rec.Turns, rec.Denials
+	p.st.WaitReason = ""
+	if leftover != nil {
+		p.st.Phase = live.Unresolved
+		p.st.WaitReason = rec.Cleanup
+	} else {
+		p.st.PGID, p.st.PGIDStart = 0, ""
+	}
 	if rec.Session != "" {
 		p.st.Session = rec.Session
 	}
