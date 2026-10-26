@@ -220,6 +220,15 @@ offload version
 - **Exit codes**: 0 ok, 1 worker error, 2 usage/config error or unreachable gateway, 124 timeout.
 - **History**: runs, including failures, are appended to `$XDG_STATE_HOME/offload/runs.jsonl` (default `~/.local/state/offload/runs.jsonl`). Use `ls` for per-run metrics, `show` for reports and metrics, or `-r` to resume a session.
 
+`offload ls 3` shows the last three runs in append order. Each compact four-line summary includes status, elapsed time, backend-dependent turns, estimated cost, project basename, profile, a task excerpt, and the full session ID. Unknown metrics remain explicit. Use `offload show <session>` for the full project path and report.
+
+```text
+2026-10-26T10:00:00Z | OK | 1m47s | 4 turns | est. $0.0123
+  app | cheap / m-1
+  Review the retry logic
+  Session: 12345678-1234-1234-1234-123456789abc
+```
+
 ### Cost and elapsed time
 
 Codex does not provide a USD cost; its `cost_usd` is `null`. For Claude, `cost_usd` comes from the worker's reported estimate; `cost_is_estimate` is `true`. It excludes the parent Codex/Claude agent and any native subagent coordination. Actual provider bills and total savings are unverified. Missing cost is `null` in JSON and `unknown` in text; a reported zero is valid. Old history still loads, with unavailable cost, exit code, or elapsed time shown as `unknown`.

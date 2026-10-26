@@ -224,30 +224,6 @@ func resolveDir(dir, resume, logPath string) (string, error) {
 	return abs, nil
 }
 
-func cmdList(args []string, stdout, stderr io.Writer) int {
-	n := 10
-	if len(args) > 0 {
-		v, err := strconv.Atoi(args[0])
-		if err != nil || v < 1 {
-			return fail(stderr, fmt.Errorf("ls: bad count %q", args[0]))
-		}
-		n = v
-	}
-	rs, err := history.Read(history.Path())
-	if err != nil {
-		return fail(stderr, err)
-	}
-	if len(rs) > n {
-		rs = rs[len(rs)-n:]
-	}
-	for _, r := range rs {
-		fmt.Fprintf(stdout, "%s  %-7s exit_code=%s %s/%s turns=%d estimated_cost=%s elapsed=%s session=%s %s | %s\n",
-			r.TS, r.Status, exitText(r), r.Profile, r.Model, r.Turns, costText(r), elapsedText(r),
-			firstNonEmpty(r.Session, "-"), r.Dir, text.Truncate(text.OneLine(r.Task), 60))
-	}
-	return 0
-}
-
 func cmdShow(args []string, stdout, stderr io.Writer) int {
 	if len(args) != 1 {
 		return fail(stderr, errors.New("usage: offload show <session>"))

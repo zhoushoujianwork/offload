@@ -66,10 +66,21 @@ func TestJSONRunReportsMeasuredElapsedAndEstimatedCost(t *testing.T) {
 	if err != nil || len(rs) != 1 || rs[0].ElapsedMs == nil || *rs[0].ElapsedMs != *rec.ElapsedMs {
 		t.Fatalf("history: %+v, %v", rs, err)
 	}
-	for _, args := range [][]string{{"ls"}, {"show", "s-1"}} {
-		code, output, stderr := runCLI(args...)
-		if code != 0 || !strings.Contains(output, "estimated_cost=$0.0100") || !strings.Contains(output, "elapsed=") || !strings.Contains(output, "exit_code=0") {
+	for _, tc := range []struct {
+		args []string
+		want []string
+	}{
+		{[]string{"ls"}, []string{" | OK | " + listElapsed(rec.ElapsedMs), "est. $0.0100", "Session: s-1"}},
+		{[]string{"show", "s-1"}, []string{"estimated_cost=$0.0100", "elapsed=", "exit_code=0"}},
+	} {
+		code, output, stderr := runCLI(tc.args...)
+		if code != 0 {
 			t.Fatalf("history output=%q code=%d err=%q", output, code, stderr)
+		}
+		for _, want := range tc.want {
+			if !strings.Contains(output, want) {
+				t.Errorf("%v: missing %q in %q", tc.args, want, output)
+			}
 		}
 	}
 }
