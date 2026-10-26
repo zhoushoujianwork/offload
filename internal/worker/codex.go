@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 
 	"github.com/zhoushoujianwork/offload/internal/text"
@@ -29,6 +30,12 @@ func buildCodexArgs(o Opts) []string {
 	}
 	// Config overrides also work with exec resume, which has no --sandbox flag.
 	args := []string{"exec", "-c", `approval_policy="never"`, "-c", `sandbox_mode="` + sandbox + `"`}
+	if o.Profile.ReasoningEffort != "" {
+		args = append(args, "-c", "model_reasoning_effort="+strconv.Quote(o.Profile.ReasoningEffort))
+	}
+	if o.Profile.ServiceTier != "" {
+		args = append(args, "-c", "service_tier="+strconv.Quote(o.Profile.ServiceTier))
+	}
 	if o.Resume != "" {
 		args = append(args, "resume")
 	}

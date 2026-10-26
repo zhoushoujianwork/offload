@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -110,6 +111,12 @@ func (f *fakePrompt) Ask(label, initial string) (string, error) {
 	return s.text, nil
 }
 
+func (f *fakePrompt) Secret(label string) (string, error) {
+	value, err := f.Ask(label, "")
+	f.calls[len(f.calls)-1].kind = "secret"
+	return value, err
+}
+
 // settingsEnv isolates HOME/CODEX_HOME/CLAUDE_CONFIG_DIR/XDG dirs so install-agent
 // writes and config reads/writes never touch the real machine.
 func settingsEnv(t *testing.T) string {
@@ -149,7 +156,7 @@ func assertNoANSI(t *testing.T, s string) {
 
 func TestSettingsModeChangePersistsAndInstallsRules(t *testing.T) {
 	home := settingsEnv(t)
-	f := &fakePrompt{steps: []step{choose(0), choose(0), choose(3)}}
+	f := &fakePrompt{steps: []step{choose(1), choose(0), choose(2)}}
 	code, out, errOut := runSettingsTest(f)
 	if code != 0 {
 		t.Fatalf("code=%d out=%q err=%q", code, out, errOut)
@@ -184,7 +191,7 @@ func TestSettingsModeChangePersistsAndInstallsRules(t *testing.T) {
 	if !slices.Equal(f.calls[1].choices, []string{"Less offload", "More offload"}) {
 		t.Fatalf("unclear assistance choices: %v", f.calls[1].choices)
 	}
-	if f.calls[2].choices[0] != "Offload level: Less offload" {
+	if f.calls[2].choices[1] != "Offload level: Less offload" {
 		t.Fatalf("scope not reflected in menu: %v", f.calls[2].choices)
 	}
 }
@@ -197,7 +204,7 @@ func TestSettingsDefaultProfileSortedHighlightedIgnoresEnvOverride(t *testing.T)
 		"c":{"base_url":"https://c","model":"mc","token":"tok-c"}}}`)
 	t.Setenv("OFFLOAD_PROFILE", "c")
 
-	f := &fakePrompt{steps: []step{choose(1), choose(0), choose(3)}}
+	f := &fakePrompt{steps: []step{choose(0), choose(0), choose(2)}}
 	code, out, errOut := runSettingsTest(f)
 	if code != 0 {
 		t.Fatalf("code=%d out=%q err=%q", code, out, errOut)
@@ -209,10 +216,10 @@ func TestSettingsDefaultProfileSortedHighlightedIgnoresEnvOverride(t *testing.T)
 		t.Fatalf("unexpected save confirmation: %q", out)
 	}
 	sub := f.calls[1]
-	if sub.label != "Default profile" {
+	if sub.label != "Profile" {
 		t.Fatalf("submenu label = %q", sub.label)
 	}
-	wantChoices := []string{"a | claude | ma", "b | claude | mb", "c | claude | mc"}
+	wantChoices := []string{"a | claude | ma", "b | claude | mb", "c | claude | mc", "Add profile", "Edit current profile", "Back"}
 	if !slices.Equal(sub.choices, wantChoices) {
 		t.Fatalf("choices = %v, want %v", sub.choices, wantChoices)
 	}
@@ -228,75 +235,120 @@ func TestSettingsDefaultProfileSortedHighlightedIgnoresEnvOverride(t *testing.T)
 	}
 }
 
-func TestSettingsModelEditPreservesSecretsAndSupportsCodexBlank(t *testing.T) {
-	settingsEnv(t)
-	writeSettingsConfig(t, `{"default":"claude1","profiles":{
-		"codex1":{"backend":"codex","model":"o3","token":"tok-codex"},
-		"claude1":{"backend":"claude","base_url":"https://x","model":"m1","token_cmd":"echo tok"}}}`)
-	// Sorted order: claude1 (index 0), codex1 (index 1).
-	f := &fakePrompt{steps: []step{
-		choose(2), choose(1), ask(""), // codex1 -> blank model allowed
-		choose(2), choose(0), ask("m2"), // claude1 -> nonblank model required
-		choose(3),
-	}}
-	code, out, errOut := runSettingsTest(f)
-	if code != 0 {
-		t.Fatalf("code=%d out=%q err=%q", code, out, errOut)
+func TestSettingsAddBundlesFromMissingConfig(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		steps   []step
+		backend string
+	}{
+		{"codex", []step{ask(" quick "), choose(0), ask("gpt-test"), choose(1), choose(2)}, "codex"},
+		{"command", []step{ask("quick"), choose(1), ask("https://gateway.example"), ask("m"), choose(0), ask("never-execute-this-command")}, "claude"},
+		{"token", []step{ask("quick"), choose(1), ask("http://localhost:8080"), ask("m"), choose(1), ask("secret-value")}, "claude"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			settingsEnv(t)
+			steps := append([]step{choose(0)}, tc.steps...)
+			steps = append(steps, choose(2))
+			f := &fakePrompt{steps: steps}
+			code, out, errOut := runSettingsTest(f)
+			if code != 0 || errOut != "" {
+				t.Fatalf("%d %s %s", code, out, errOut)
+			}
+			cfg, err := config.Load(config.Path())
+			if err != nil {
+				t.Fatal(err)
+			}
+			p := cfg.Profiles["quick"]
+			if cfg.Default != "quick" || p.Backend != tc.backend {
+				t.Fatalf("%+v", cfg)
+			}
+			if tc.name == "codex" && (p.ReasoningEffort != "low" || p.ServiceTier != "priority") {
+				t.Fatal(p)
+			}
+			if tc.name == "command" && p.TokenCmd != "never-execute-this-command" {
+				t.Fatal(p)
+			}
+			if tc.name == "token" && (p.Token != "secret-value" || f.calls[6].kind != "secret") {
+				t.Fatal(f.calls)
+			}
+			for _, c := range f.calls {
+				if strings.Contains(c.label, "secret-value") || c.initial == "secret-value" {
+					t.Fatal(c)
+				}
+			}
+			if strings.Contains(out+errOut, "secret-value") {
+				t.Fatal("secret echoed")
+			}
+			if len(f.calls[0].choices) != 3 || !slices.Equal(f.calls[0].choices, []string{"Profile: (not configured)", "Offload level: More offload (less caller-model work)", "Exit"}) {
+				t.Fatal(f.calls[0])
+			}
+			st, _ := os.Stat(config.Path())
+			if st.Mode().Perm() != 0600 {
+				t.Fatal(st.Mode())
+			}
+		})
 	}
-	if strings.Contains(out, "Model saved") {
-		t.Fatalf("unexpected save confirmations: %q", out)
-	}
-	cfg, err := config.Load(config.Path())
-	if err != nil {
-		t.Fatal(err)
-	}
-	codex1 := cfg.Profiles["codex1"]
-	if codex1.Model != "" || codex1.Token != "tok-codex" || codex1.BackendName() != "codex" {
-		t.Fatalf("codex1 = %+v, want blank model with secrets/backend preserved", codex1)
-	}
-	claude1 := cfg.Profiles["claude1"]
-	if claude1.Model != "m2" || claude1.BaseURL != "https://x" || claude1.TokenCmd != "echo tok" {
-		t.Fatalf("claude1 = %+v, want model=m2 with base_url/token_cmd preserved", claude1)
-	}
-	// The Ask prompt must never surface secrets.
-	for _, c := range f.calls {
-		if strings.Contains(c.label, "tok-codex") || strings.Contains(c.label, "echo tok") {
-			t.Fatalf("secret leaked into prompt label: %q", c.label)
+}
+
+func TestSettingsWizardCancellationEveryStage(t *testing.T) {
+	for _, answers := range [][]step{
+		{ask("new"), choose(0), ask("m"), choose(2), choose(1)},
+		{ask("new"), choose(1), ask("https://x"), ask("m"), choose(0), ask("command")},
+		{ask("new"), choose(1), ask("https://x"), ask("m"), choose(1), ask("secret")},
+	} {
+		for stage := range answers {
+			t.Run(fmt.Sprintf("%d-%d", len(answers), stage), func(t *testing.T) {
+				settingsEnv(t)
+				f := &fakePrompt{steps: append(append([]step{choose(0)}, answers[:stage]...), failStep(io.EOF), choose(2))}
+				code, _, errOut := runSettingsTest(f)
+				if code != 0 || errOut != "" {
+					t.Fatalf("%d %s", code, errOut)
+				}
+				if _, err := os.Stat(config.Path()); !os.IsNotExist(err) {
+					t.Fatalf("created config: %v", err)
+				}
+			})
 		}
 	}
 }
 
-func TestSettingsInvalidModelReportsErrorAndMenuStaysUsable(t *testing.T) {
-	settingsEnv(t)
-	original := `{"default":"claude1","profiles":{"claude1":{"backend":"claude","base_url":"https://x","model":"m1","token_cmd":"echo tok"}}}`
-	writeSettingsConfig(t, original)
-	f := &fakePrompt{steps: []step{choose(2), choose(0), ask(""), choose(3)}}
-	code, out, errOut := runSettingsTest(f)
-	if code != 0 {
-		t.Fatalf("code=%d out=%q err=%q", code, out, errOut)
-	}
-	if !strings.Contains(errOut, "offload:") || !strings.Contains(errOut, "needs base_url and model") {
-		t.Fatalf("missing actionable error: %q", errOut)
-	}
-	b, err := os.ReadFile(config.Path())
-	if err != nil {
-		t.Fatal(err)
-	}
-	var got, want map[string]any
-	if err := json.Unmarshal(b, &got); err != nil {
-		t.Fatal(err)
-	}
-	if err := json.Unmarshal([]byte(original), &want); err != nil {
-		t.Fatal(err)
-	}
-	gb, _ := json.Marshal(got)
-	wb, _ := json.Marshal(want)
-	if string(gb) != string(wb) {
-		t.Fatalf("config mutated after failed save: %s", b)
-	}
-	// Menu kept running after the error: Exit still ran as the final queued step.
-	if f.pos != len(f.steps) {
-		t.Fatalf("not all steps consumed: pos=%d of %d", f.pos, len(f.steps))
+func TestSettingsEditAuthenticationAndUnknownFields(t *testing.T) {
+	for _, auth := range []struct {
+		choice                int
+		value, token, command string
+	}{
+		{0, "", "old-token", "old-command"}, {1, "new-command", "", "new-command"}, {2, "new-token", "new-token", ""},
+	} {
+		t.Run(fmt.Sprint(auth.choice), func(t *testing.T) {
+			settingsEnv(t)
+			writeSettingsConfig(t, `{"default":"a","future":true,"profiles":{"a":{"base_url":"https://x","model":"m","token":"old-token","token_cmd":"old-command","future":{"keep":1}}}}`)
+			steps := []step{choose(0), choose(2), ask("https://y"), ask("new-model"), choose(auth.choice)}
+			if auth.choice != 0 {
+				steps = append(steps, ask(auth.value))
+			}
+			steps = append(steps, choose(2))
+			f := &fakePrompt{steps: steps}
+			code, out, errOut := runSettingsTest(f)
+			if code != 0 || errOut != "" {
+				t.Fatalf("%d %s %s", code, out, errOut)
+			}
+			cfg, _ := config.Load(config.Path())
+			p := cfg.Profiles["a"]
+			if cfg.Default != "a" || p.Token != auth.token || p.TokenCmd != auth.command || p.Model != "new-model" || p.BaseURL != "https://y" || p.Backend != "" {
+				t.Fatal(cfg)
+			}
+			b, _ := os.ReadFile(config.Path())
+			var fields map[string]any
+			json.Unmarshal(b, &fields)
+			if fields["future"] != true || fields["profiles"].(map[string]any)["a"].(map[string]any)["future"] == nil {
+				t.Fatal(string(b))
+			}
+			for _, call := range f.calls {
+				if call.initial == "old-token" || call.initial == "old-command" || strings.Contains(call.label, "old-token") {
+					t.Fatal(call)
+				}
+			}
+		})
 	}
 }
 
@@ -304,7 +356,7 @@ func TestSettingsCancellationReturnsToParentWithoutWrites(t *testing.T) {
 	t.Run("submenu cancel", func(t *testing.T) {
 		settingsEnv(t)
 		writeSettingsConfig(t, `{"default":"a","profiles":{"a":{"base_url":"https://a","model":"ma"},"b":{"base_url":"https://b","model":"mb"}}}`)
-		f := &fakePrompt{steps: []step{choose(1), failStep(io.EOF), choose(3)}}
+		f := &fakePrompt{steps: []step{choose(0), failStep(io.EOF), choose(2)}}
 		code, _, errOut := runSettingsTest(f)
 		if code != 0 {
 			t.Fatalf("code=%d err=%q", code, errOut)
@@ -321,7 +373,7 @@ func TestSettingsCancellationReturnsToParentWithoutWrites(t *testing.T) {
 		settingsEnv(t)
 		original := `{"default":"a","profiles":{"a":{"base_url":"https://a","model":"ma"}}}`
 		writeSettingsConfig(t, original)
-		f := &fakePrompt{steps: []step{choose(2), choose(0), failStep(io.EOF), choose(3)}}
+		f := &fakePrompt{steps: []step{choose(0), choose(2), failStep(io.EOF), choose(2)}}
 		code, _, errOut := runSettingsTest(f)
 		if code != 0 {
 			t.Fatalf("code=%d err=%q", code, errOut)
@@ -342,24 +394,6 @@ func TestSettingsMainMenuEOFExitsCleanlyNoMutations(t *testing.T) {
 	}
 	if _, err := os.Stat(config.Path()); !os.IsNotExist(err) {
 		t.Fatalf("config created on EOF: %v", err)
-	}
-}
-
-func TestSettingsEmptyConfigReportsNoProfilesWithoutCreatingOne(t *testing.T) {
-	settingsEnv(t)
-	f := &fakePrompt{steps: []step{choose(2), choose(3)}}
-	code, out, errOut := runSettingsTest(f)
-	if code != 0 {
-		t.Fatalf("code=%d out=%q err=%q", code, out, errOut)
-	}
-	if !strings.Contains(errOut, "no profiles configured") || !strings.Contains(errOut, config.Path()) {
-		t.Fatalf("missing actionable no-profiles error: %q", errOut)
-	}
-	if !slices.Contains(f.calls[0].choices, "Default profile: (not configured)") {
-		t.Fatalf("menu missing default-profile placeholder: %q", out)
-	}
-	if _, err := os.Stat(config.Path()); !os.IsNotExist(err) {
-		t.Fatalf("config created while listing profiles: %v", err)
 	}
 }
 
@@ -436,5 +470,116 @@ func TestNoArgPipedTaskKeepsRunningTaskNotSettings(t *testing.T) {
 	}
 	if !strings.Contains(string(rec), "piped task") {
 		t.Fatalf("piped task text missing from worker invocation: %q", rec)
+	}
+}
+
+func TestTerminalSettingsSecretIsMasked(t *testing.T) {
+	var out bytes.Buffer
+	p := terminalSettingsPrompt{in: io.NopCloser(strings.NewReader("private-token\r")), out: settingsWriter{&out}}
+	value, err := p.Secret("API token")
+	if err != nil || value != "private-token" {
+		t.Fatalf("secret prompt error: %v", err)
+	}
+	if strings.Contains(out.String(), "private-token") || !strings.Contains(out.String(), "*") {
+		t.Fatal("secret was not masked")
+	}
+}
+
+func TestSettingsRejectedWizardKeepsMenuUsable(t *testing.T) {
+	for _, answers := range [][]step{
+		{ask(" ")}, {ask(" a ")},
+		{ask("new"), choose(1), ask("file:///tmp"), ask("m"), choose(1), ask("secret")},
+		{ask("new"), choose(1), ask("https://x"), ask(" "), choose(1), ask("secret")},
+	} {
+		t.Run(fmt.Sprint(len(answers), answers[0].text), func(t *testing.T) {
+			settingsEnv(t)
+			original := `{"default":"a","profiles":{"a":{"backend":"codex"}}}`
+			writeSettingsConfig(t, original)
+			steps := append(append([]step{choose(0), choose(1)}, answers...), choose(2))
+			f := &fakePrompt{steps: steps}
+			code, _, errOut := runSettingsTest(f)
+			if code != 0 || errOut == "" || f.pos != len(steps) {
+				t.Fatalf("%d %q %d", code, errOut, f.pos)
+			}
+			b, _ := os.ReadFile(config.Path())
+			if string(b) != original {
+				t.Fatal("rejected wizard wrote config")
+			}
+		})
+	}
+}
+
+func TestSettingsEditCancellationEveryStage(t *testing.T) {
+	for _, answers := range [][]step{
+		{ask("model"), choose(2), choose(1)},
+		{ask("https://y"), ask("model"), choose(1), ask("new-command")},
+		{ask("https://y"), ask("model"), choose(2), ask("new-token")},
+	} {
+		for stage := range answers {
+			t.Run(fmt.Sprint(len(answers), stage, answers[len(answers)-1]), func(t *testing.T) {
+				settingsEnv(t)
+				original := `{"default":"a","profiles":{"a":{"backend":"claude","base_url":"https://x","model":"m","token":"old"}},"future":true}`
+				if len(answers) == 3 {
+					original = `{"default":"a","profiles":{"a":{"backend":"codex","model":"m","reasoning_effort":"ultra","service_tier":"priority"}},"future":true}`
+				}
+				writeSettingsConfig(t, original)
+				steps := append(append([]step{choose(0), choose(2)}, answers[:stage]...), failStep(io.EOF), choose(2))
+				f := &fakePrompt{steps: steps}
+				code, _, errOut := runSettingsTest(f)
+				if code != 0 || errOut != "" {
+					t.Fatalf("%d %q", code, errOut)
+				}
+				b, _ := os.ReadFile(config.Path())
+				if string(b) != original {
+					t.Fatal("cancelled edit wrote config")
+				}
+			})
+		}
+	}
+}
+
+func TestSettingsSwitchBundlesPreservesProfiles(t *testing.T) {
+	settingsEnv(t)
+	original := `{"default":"quick","future":true,"profiles":{"quick":{"backend":"codex","model":"same","reasoning_effort":"low","service_tier":"default","extra":1},"deep":{"backend":"codex","model":"same","reasoning_effort":"xhigh","service_tier":"priority","extra":2}}}`
+	writeSettingsConfig(t, original)
+	f := &fakePrompt{steps: []step{choose(0), choose(0), choose(2)}}
+	code, _, errOut := runSettingsTest(f)
+	if code != 0 || errOut != "" {
+		t.Fatalf("%d %s", code, errOut)
+	}
+	want := []string{"deep | codex | same | reasoning: xhigh | Fast", "quick | codex | same | reasoning: low | Standard", "Add profile", "Edit current profile", "Back"}
+	if !slices.Equal(f.calls[1].choices, want) || f.calls[1].cursor != 1 {
+		t.Fatal(f.calls[1])
+	}
+	b, _ := os.ReadFile(config.Path())
+	var before, after map[string]any
+	json.Unmarshal([]byte(original), &before)
+	json.Unmarshal(b, &after)
+	before["default"] = "deep"
+	a, _ := json.Marshal(before)
+	z, _ := json.Marshal(after)
+	if !bytes.Equal(a, z) {
+		t.Fatal("bundle switching changed other fields")
+	}
+}
+
+func TestSettingsEditPreservesAdvancedReasoning(t *testing.T) {
+	for _, effort := range []string{"max", "ultra"} {
+		t.Run(effort, func(t *testing.T) {
+			settingsEnv(t)
+			writeSettingsConfig(t, `{"default":"a","profiles":{"a":{"backend":"codex","model":"m","reasoning_effort":"`+effort+`","service_tier":"priority"}}}`)
+			f := &fakePrompt{steps: []step{choose(0), choose(2), ask("m"), choose(5), choose(2), choose(2)}}
+			code, _, errOut := runSettingsTest(f)
+			if code != 0 || errOut != "" {
+				t.Fatalf("%d %s", code, errOut)
+			}
+			if f.calls[3].cursor != 5 {
+				t.Fatal("existing reasoning is not selected")
+			}
+			cfg, err := config.Load(config.Path())
+			if err != nil || cfg.Profiles["a"].ReasoningEffort != effort {
+				t.Fatalf("reasoning changed: %v", err)
+			}
+		})
 	}
 }

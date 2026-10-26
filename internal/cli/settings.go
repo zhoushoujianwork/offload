@@ -20,6 +20,7 @@ type settingsPrompt interface {
 	Choose(label string, choices []string, cursor int) (int, error)
 	Slider(cursor int) (int, error)
 	Ask(label, initial string) (string, error)
+	Secret(label string) (string, error)
 }
 
 type terminalSettingsPrompt struct {
@@ -100,6 +101,11 @@ func (p terminalSettingsPrompt) Ask(label, initial string) (string, error) {
 	return s.Run()
 }
 
+func (p terminalSettingsPrompt) Secret(label string) (string, error) {
+	s := promptui.Prompt{Label: label, Mask: '*', HideEntered: true, Stdin: p.in, Stdout: p.out}
+	return s.Run()
+}
+
 func terminalStream(stream any) bool {
 	f, ok := stream.(*os.File)
 	return ok && readline.IsTerminal(int(f.Fd()))
@@ -152,8 +158,7 @@ func runSettings(p settingsPrompt, stdout, stderr io.Writer) int {
 		if err != nil {
 			return fail(stderr, err)
 		}
-		choices := []string{"Offload level: " + offloadLevelLabel(mode), "Default profile: " + firstNonEmpty(cfg.Default, "(not configured)"),
-			"Profile model", "Exit"}
+		choices := []string{"Profile: " + firstNonEmpty(cfg.Default, "(not configured)"), "Offload level: " + offloadLevelLabel(mode), "Exit"}
 		selected, err := settingsChoice(p, "Settings", choices, cursor)
 		if settingsCancelled(err) {
 			return 0
@@ -164,12 +169,10 @@ func runSettings(p settingsPrompt, stdout, stderr io.Writer) int {
 		cursor = selected
 		switch selected {
 		case 0:
-			err = settingsMode(p, mode, stderr)
+			err = settingsProfile(p, cfg)
 		case 1:
-			err = settingsProfile(p, cfg, false)
+			err = settingsMode(p, mode, stderr)
 		case 2:
-			err = settingsProfile(p, cfg, true)
-		case 3:
 			return 0
 		}
 		if err != nil && !settingsCancelled(err) {
@@ -195,57 +198,160 @@ func settingsMode(p settingsPrompt, current string, stderr io.Writer) error {
 	return nil // RunMode reports any install/persistence failure; keep the menu available.
 }
 
-func settingsProfile(p settingsPrompt, cfg *config.Config, editModel bool) error {
+func settingsProfile(p settingsPrompt, cfg *config.Config) error {
 	names := make([]string, 0, len(cfg.Profiles))
 	for name := range cfg.Profiles {
 		names = append(names, name)
 	}
 	sort.Strings(names)
 	if len(names) == 0 {
-		return fmt.Errorf("no profiles configured; add profiles to %s", config.Path())
+		return settingsWizard(p, cfg, "", true)
 	}
-	labels := make([]string, len(names))
+	labels := make([]string, 0, len(names)+3)
 	cursor := 0
 	for i, name := range names {
 		profile := cfg.Profiles[name]
-		model := profile.Model
-		if model == "" {
-			model = "(not set)"
-			if profile.BackendName() == "codex" {
-				model = "(Codex default)"
-			}
+		label := fmt.Sprintf("%s | %s | %s", name, profile.BackendName(), firstNonEmpty(profile.Model, "(native default)"))
+		if profile.ReasoningEffort != "" {
+			label += " | reasoning: " + profile.ReasoningEffort
 		}
-		labels[i] = fmt.Sprintf("%s | %s | %s", name, profile.BackendName(), model)
+		if profile.ServiceTier != "" {
+			speed := "Standard"
+			if profile.ServiceTier == "priority" {
+				speed = "Fast"
+			}
+			label += " | " + speed
+		}
+		labels = append(labels, label)
 		if name == cfg.Default {
 			cursor = i
 		}
 	}
-	label := "Default profile"
-	if editModel {
-		label = "Profile to edit"
+	labels = append(labels, "Add profile")
+	_, _, currentErr := cfg.Resolve(cfg.Default)
+	canEdit := cfg.Default != "" && currentErr == nil
+	if canEdit {
+		labels = append(labels, "Edit current profile")
 	}
-	index, err := settingsChoice(p, label, labels, cursor)
+	labels = append(labels, "Back")
+	index, err := settingsChoice(p, "Profile", labels, cursor)
 	if err != nil {
 		return err
 	}
-	name := names[index]
-	if !editModel {
-		if err := config.SetDefault(config.Path(), name); err != nil {
-			return err
-		}
-		return nil
+	if index < len(names) {
+		return config.SetDefault(config.Path(), names[index])
 	}
-	profile := cfg.Profiles[name]
-	label = "Model for " + name + " (required)"
-	if profile.BackendName() == "codex" {
-		label = "Model for " + name + " (empty uses Codex default)"
+	if index == len(names) {
+		return settingsWizard(p, cfg, "", true)
 	}
-	model, err := p.Ask(label, profile.Model)
-	if err != nil {
-		return err
-	}
-	if err := config.SetModel(config.Path(), name, strings.TrimSpace(model)); err != nil {
-		return err
+	if canEdit && index == len(names)+1 {
+		return settingsWizard(p, cfg, cfg.Default, false)
 	}
 	return nil
+}
+
+func settingsWizard(p settingsPrompt, cfg *config.Config, name string, add bool) error {
+	profile := cfg.Profiles[name]
+	var err error
+	if add {
+		profile = config.Profile{}
+		name, err = p.Ask("Profile name", "")
+		if err != nil {
+			return err
+		}
+		name = strings.TrimSpace(name)
+		if name == "" {
+			return errors.New("profile name must not be empty")
+		}
+		if _, exists := cfg.Profiles[name]; exists {
+			return errors.New("profile already exists")
+		}
+		index, err := settingsChoice(p, "Backend", []string{"Codex", "Claude gateway"}, 0)
+		if err != nil {
+			return err
+		}
+		profile.Backend = []string{"codex", "claude"}[index]
+	}
+	if profile.BackendName() == "codex" {
+		profile.Model, err = p.Ask("Model (empty inherits Codex default)", profile.Model)
+		if err != nil {
+			return err
+		}
+		efforts := []string{"", "low", "medium", "high", "xhigh"}
+		cursor := 0
+		for i, effort := range efforts {
+			if effort == profile.ReasoningEffort {
+				cursor = i
+			}
+		}
+		labels := []string{"Inherit", "Low", "Medium", "High", "Extra high"}
+		if profile.ReasoningEffort == "max" || profile.ReasoningEffort == "ultra" {
+			efforts = append(efforts, profile.ReasoningEffort)
+			labels = append(labels, "Current: "+profile.ReasoningEffort)
+			cursor = len(efforts) - 1
+		}
+
+		index, err := settingsChoice(p, "Reasoning", labels, cursor)
+		if err != nil {
+			return err
+		}
+		profile.ReasoningEffort = efforts[index]
+		tiers := []string{"", "default", "priority"}
+		cursor = 0
+		for i, tier := range tiers {
+			if tier == profile.ServiceTier {
+				cursor = i
+			}
+		}
+		index, err = settingsChoice(p, "Speed", []string{"Inherit", "Standard", "Fast"}, cursor)
+		if err != nil {
+			return err
+		}
+		profile.ServiceTier = tiers[index]
+	} else {
+		profile.BaseURL, err = p.Ask("Base URL", profile.BaseURL)
+		if err != nil {
+			return err
+		}
+		profile.BaseURL = strings.TrimSpace(profile.BaseURL)
+		profile.Model, err = p.Ask("Model (required)", profile.Model)
+		if err != nil {
+			return err
+		}
+		labels := []string{"Token command", "API token"}
+		keep := profile.TokenCmd != "" || profile.Token != ""
+		if keep {
+			labels = append([]string{"Keep current authentication"}, labels...)
+		}
+		index, err := settingsChoice(p, "Authentication", labels, 0)
+		if err != nil {
+			return err
+		}
+		if !keep || index != 0 {
+			if keep {
+				index--
+			}
+			var value string
+			if index == 0 {
+				value, err = p.Ask("Token command", "")
+			} else {
+				value, err = p.Secret("API token")
+			}
+			if err != nil {
+				return err
+			}
+			value = strings.TrimSpace(value)
+			if value == "" {
+				return errors.New("authentication is required")
+			}
+			profile.Token, profile.TokenCmd = "", ""
+			if index == 0 {
+				profile.TokenCmd = value
+			} else {
+				profile.Token = value
+			}
+		}
+	}
+	profile.Model = strings.TrimSpace(profile.Model)
+	return config.SaveProfile(config.Path(), name, profile, add)
 }

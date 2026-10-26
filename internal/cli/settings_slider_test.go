@@ -59,7 +59,7 @@ func TestSettingsSliderExplainsCallerWork(t *testing.T) {
 func TestSettingsSliderCancelDoesNotSave(t *testing.T) {
 	settingsEnv(t)
 	writeSettingsConfig(t, `{"delegation_mode":"basic","profiles":{}}`)
-	f := &fakePrompt{steps: []step{choose(0), failStep(readline.ErrInterrupt), choose(3)}}
+	f := &fakePrompt{steps: []step{choose(1), failStep(readline.ErrInterrupt), choose(2)}}
 	code, _, errOut := runSettingsTest(f)
 	mode, err := config.LoadMode(config.Path())
 	if code != 0 || errOut != "" || err != nil || mode != config.ModeBasic {
@@ -77,13 +77,13 @@ func TestSettingsModeInstallErrorRemainsVisible(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(skill, "SKILL.md"), []byte("user-owned skill"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	f := &fakePrompt{steps: []step{choose(0), choose(1), choose(3)}}
+	f := &fakePrompt{steps: []step{choose(1), choose(1), choose(2)}}
 	code, out, errOut := runSettingsTest(f)
 	mode, err := config.LoadMode(config.Path())
 	if code != 0 || !strings.Contains(errOut, "unmanaged skill") || err != nil || mode != config.ModeBasic {
 		t.Fatalf("install failure hidden or mode changed: code=%d stderr=%q mode=%q err=%v", code, errOut, mode, err)
 	}
-	if strings.Contains(out, "Delegation mode:") || f.calls[2].choices[0] != "Offload level: Less offload" {
+	if strings.Contains(out, "Delegation mode:") || f.calls[2].choices[1] != "Offload level: Less offload" {
 		t.Fatalf("failed change shown as applied: stdout=%q calls=%v", out, f.calls)
 	}
 }

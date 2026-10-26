@@ -29,7 +29,7 @@ To install from a source checkout, run `go install .` in that checkout. If an ol
 
 ## Configuration
 
-`~/.config/offload/config.json` (chmod 600):
+Run `offload config`, select **Profile**, then **Add profile** to save a bundle and use it immediately. This also works before a configuration file exists. Or create `~/.config/offload/config.json` (chmod 600):
 
 ```json
 {
@@ -41,7 +41,16 @@ To install from a source checkout, run `go install .` in that checkout. If an ol
       "token_cmd": "security find-generic-password -s offload-minimax -w"
     },
     "codex": {
-      "backend": "codex"
+      "backend": "codex",
+      "model": "gpt-6.1-sol",
+      "reasoning_effort": "low",
+      "service_tier": "default"
+    },
+    "codex-deep": {
+      "backend": "codex",
+      "model": "gpt-6.1-sol",
+      "reasoning_effort": "xhigh",
+      "service_tier": "priority"
     },
     "deepseek": {
       "base_url": "https://api.deepseek.com/anthropic",
@@ -68,7 +77,7 @@ Profiles select a `backend`: `claude` (the default for existing profiles) or `co
 
 ### Codex workers
 
-A profile with `"backend": "codex"` runs `codex exec --json`. It uses your existing Codex authentication, provider, and configuration, including `CODEX_HOME`. The optional `model` field or `-m` selects a model; omit both to use the Codex default. Gateway fields (`base_url`, `token`, `token_cmd`) apply only to Claude profiles. `OFFLOAD_CODEX` can override the Codex executable.
+A profile with `"backend": "codex"` runs `codex exec --json`. It uses your existing Codex authentication, provider, and configuration, including `CODEX_HOME`. The optional `model` field or `-m` selects a model; omit both to use the Codex default. Log in with the native Codex CLI before running a Codex profile. Optional `reasoning_effort` and `service_tier` override native settings for that worker only; omitted or empty values inherit them. The wizard offers Inherit/Low/Medium/High/Extra high reasoning and Inherit/Standard/Fast speed (`default`/`priority`). Fast is not a token or cost savings guarantee. Gateway fields (`base_url`, `token`, `token_cmd`) apply only to Claude profiles. `OFFLOAD_CODEX` can override the Codex executable.
 
 Codex runs with approval policy `never`, using the `read-only` sandbox by default and `workspace-write` with `-w`. These are Codex sandbox policies, separate from the Claude tool approval lists below. Instructions and the task are sent over stdin. Codex also discovers its own agent instructions. JSONL events supply the report, session ID, and live tool progress; `turns` counts tool calls. Codex does not report a USD cost, so offload shows `unknown` (`null` in JSON).
 
@@ -124,9 +133,9 @@ Use the up/down arrow keys to choose an item and Enter to confirm. Each change i
 
 The **Offload level** setting uses a horizontal slider. Press Left/Right to choose **Less offload** (`basic`) or **More offload** (`proactive`), then Enter to apply. More offload shifts more work away from the caller model: it also delegates implementation, tests, and documentation after the main agent designs the change. Less offload covers research, code lookup, and mechanical changes. The main agent always owns design and final review. Actual caller token savings depend on the task and coordination overhead; this is a work-sharing setting, not a measured savings percentage. Existing mode values and CLI commands remain compatible.
 
-You can also select a default profile or edit an existing profile's model. Profile and model changes take effect on the next task. Profiles show their execution backend and model, without displaying credentials. Long menu items shorten to fit the terminal width. An `OFFLOAD_PROFILE` shell override is shown separately from the saved default.
+The main menu contains **Profile**, **Offload level**, and **Exit**. Profile lists saved bundles with their backend, model, and explicit reasoning/speed settings. Enter on a saved bundle immediately selects it for the next task. **Add profile** collects a new bundle; **Edit current profile** updates the saved default's backend-specific fields while keeping its name and backend. There is no separate model setting. Long menu items shorten to fit the terminal width. An `OFFLOAD_PROFILE` shell override is shown separately and still takes precedence.
 
-Model edits preserve the profile's provider settings and credentials. Leave a Codex model empty to use its native default; Claude profiles require a model. The menu lists profiles defined in `config.json`; if none exist, it shows the configuration path so you can add them.
+Codex models may be empty to inherit the native default. Claude gateway profiles require an HTTP(S) base URL, model, and token command or masked API token. Configuration never executes the token command. Editing can keep current authentication without displaying it, or replace it. A completed wizard saves the entire bundle atomically; Ctrl-C at any step leaves configuration unchanged.
 
 Mode changes also update the installed Codex and Claude instructions. Start a new agent session to load them. The interactive menu hides successful installation/save logs and returns to the current settings; errors remain visible. Piped task input and existing non-interactive commands continue to work as before.
 

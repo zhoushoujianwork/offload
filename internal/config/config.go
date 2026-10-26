@@ -13,9 +13,11 @@ import (
 
 // Profile selects a worker backend and its model/configuration.
 type Profile struct {
-	Backend string `json:"backend,omitempty"` // claude (default) or codex
-	BaseURL string `json:"base_url"`
-	Model   string `json:"model"`
+	Backend         string `json:"backend,omitempty"` // claude (default) or codex
+	BaseURL         string `json:"base_url"`
+	Model           string `json:"model"`
+	ReasoningEffort string `json:"reasoning_effort,omitempty"`
+	ServiceTier     string `json:"service_tier,omitempty"`
 	// TokenCmd prints the token on stdout (e.g. `security find-generic-password -s offload-minimax -w`).
 	// Preferred over Token so secrets stay out of the config file.
 	TokenCmd string `json:"token_cmd,omitempty"`
@@ -96,6 +98,9 @@ func (c *Config) Resolve(name string) (string, Profile, error) {
 	}
 	if p.BackendName() == "claude" && (p.BaseURL == "" || p.Model == "") {
 		return name, p, fmt.Errorf("profile %q needs base_url and model", name)
+	}
+	if err := p.ValidateCodexSettings(); err != nil {
+		return name, p, err
 	}
 	return name, p, nil
 }

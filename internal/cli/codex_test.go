@@ -145,3 +145,29 @@ func TestCodexFailureAndTimeout(t *testing.T) {
 		})
 	}
 }
+
+func TestCodexBundleOverridesReachWorker(t *testing.T) {
+	work, record := setupCodex(t, codexReply)
+	cfg, err := config.Load(config.Path())
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := cfg.Profiles["codex"]
+	p.ReasoningEffort = "high"
+	p.ServiceTier = "default"
+	if err := config.SaveProfile(config.Path(), "codex", p, false); err != nil {
+		t.Fatal(err)
+	}
+	if code, _, errOut := runCLI("-p", "codex", "-m", "override", "-d", work, "inspect"); code != 0 {
+		t.Fatal(errOut)
+	}
+	b, err := os.ReadFile(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"-c\nmodel_reasoning_effort=\"high\"\n", "-c\nservice_tier=\"default\"\n", "-m\noverride\n"} {
+		if !strings.Contains(string(b), want) {
+			t.Fatalf("missing %q in %s", want, b)
+		}
+	}
+}
