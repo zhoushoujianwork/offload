@@ -232,6 +232,7 @@ func Run(ctx context.Context, o Opts) (rec history.Record, err error) {
 	}
 	rec = history.Record{TS: started.Format("2006-01-02 15:04:05"), Profile: o.ProfileName, Model: o.Model,
 		Backend: o.Profile.BackendName(), Dir: o.Dir, Task: o.Task, Status: "error", CostIsEstimate: true}
+	var pub *publisher
 	defer func() {
 		elapsed := time.Since(started).Milliseconds()
 		rec.ElapsedMs = &elapsed
@@ -244,6 +245,10 @@ func Run(ctx context.Context, o Opts) (rec history.Record, err error) {
 			code = 124
 		}
 		rec.ExitCode = &code
+		// Publish only after the exit code is final, or watch/status would show 0 for a failure.
+		if pub != nil {
+			pub.finish(rec)
+		}
 	}()
 	promptPath, err := writeWorkerPrompt(o)
 	if err != nil {
@@ -269,8 +274,7 @@ func Run(ctx context.Context, o Opts) (rec history.Record, err error) {
 			return rec, err
 		}
 	}
-	pub := newPublisher(o, started)
-	defer func() { pub.finish(rec) }()
+	pub = newPublisher(o, started)
 	a := runAttempt(ctx, bin, o, promptPath, token, o.Timeout, pub.update)
 	s := a.s
 	rec.Session, rec.Turns, rec.Denials = s.Session, s.ToolCalls, s.Denials
@@ -435,7 +439,9 @@ type publisher struct {
 }
 
 func newPublisher(o Opts, started time.Time) *publisher {
-	p := &publisher{st: live.State{PID: os.Getpid(), Phase: live.Running, Dir: o.Dir,
+	// A resumed run is already in its session; publishing that now lets activeSessionRun refuse an
+	// overlapping follow-up before the first stream event arrives.
+	p := &publisher{st: live.State{PID: os.Getpid(), Phase: live.Running, Dir: o.Dir, Session: o.Resume,
 		Task: text.Truncate(text.OneLine(o.Task), 200), Profile: o.ProfileName, Model: o.Model,
 		StartedAt: started, LastEventAt: started}}
 	live.Publish(p.st)
@@ -445,7 +451,10 @@ func newPublisher(o Opts, started time.Time) *publisher {
 func (p *publisher) update(s streamSummary, last time.Time) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	p.st.Session, p.st.ToolCalls, p.st.Denials, p.st.LastEventAt = s.Session, s.ToolCalls, s.Denials, last
+	if s.Session != "" {
+		p.st.Session = s.Session
+	}
+	p.st.ToolCalls, p.st.Denials, p.st.LastEventAt = s.ToolCalls, s.Denials, last
 	if n := len(s.LastTools); n > 0 {
 		p.st.LastTool = s.LastTools[n-1]
 	}
@@ -470,7 +479,10 @@ func (p *publisher) phase(phase string) {
 func (p *publisher) finish(rec history.Record) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	p.st.Phase, p.st.Status, p.st.Session, p.st.ToolCalls, p.st.Denials = live.Done, rec.Status, rec.Session, rec.Turns, rec.Denials
+	p.st.Phase, p.st.Status, p.st.ToolCalls, p.st.Denials = live.Done, rec.Status, rec.Turns, rec.Denials
+	if rec.Session != "" {
+		p.st.Session = rec.Session
+	}
 	if rec.ExitCode != nil {
 		p.st.ExitCode = *rec.ExitCode
 	}

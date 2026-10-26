@@ -377,7 +377,7 @@ func TestSessionReuseWorkflowAgreesAcrossPolicySkillAndReadme(t *testing.T) {
 		docs["policy-"+mode] = policyForMode(mode)
 	}
 	for name, doc := range docs {
-		for _, want := range []string{"offload -r", "watch -t", "compaction", "overlapping"} {
+		for _, want := range []string{"offload -r", "watch -t", "compaction", "overlapping", "offload show", "STALLED"} {
 			if !strings.Contains(doc, want) {
 				t.Errorf("%s missing %q", name, want)
 			}

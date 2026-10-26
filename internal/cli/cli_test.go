@@ -306,3 +306,96 @@ func TestResumeRefusesSessionWithActiveRun(t *testing.T) {
 		t.Fatalf("resume after completion: %d %s", code, e)
 	}
 }
+
+// A resume keeps the session's profile even when the default changes, and its directory even
+// when run from elsewhere or with a different Claude profile available.
+func TestResumeKeepsProfileAndDirectory(t *testing.T) {
+	work, record := setup(t, okReply)
+	if code, _, e := runCLI("-d", work, "first"); code != 0 {
+		t.Fatal(e)
+	}
+	cfg := `{"default":"other","profiles":{` +
+		`"cheap":{"base_url":"https://gw.example/anthropic","model":"m-1","token_cmd":"echo tok-123"},` +
+		`"other":{"base_url":"https://other.example/anthropic","model":"m-2","token_cmd":"echo tok-999"}}}`
+	if err := os.WriteFile(config.Path(), []byte(cfg), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(t.TempDir())
+	if code, _, e := runCLI("-r", "s-1", "second"); code != 0 {
+		t.Fatal(e)
+	}
+	rec, _ := os.ReadFile(record)
+	for _, want := range []string{"base=https://gw.example/anthropic model=m-1", "pwd=" + work} {
+		if !strings.Contains(string(rec), want) {
+			t.Errorf("resume lost %q:\n%s", want, rec)
+		}
+	}
+	rs, _ := history.Read(history.Path())
+	if len(rs) != 2 || rs[1].Profile != "cheap" || rs[1].Dir != work {
+		t.Fatalf("history of the resumed run: %+v", rs)
+	}
+}
+
+// If the session's directory is gone, say how to recover instead of running somewhere else.
+func TestResumeWithMissingDirectoryFailsWithRecovery(t *testing.T) {
+	work, record := setup(t, okReply)
+	if code, _, e := runCLI("-d", work, "first"); code != 0 {
+		t.Fatal(e)
+	}
+	if err := os.RemoveAll(work); err != nil {
+		t.Fatal(err)
+	}
+	os.Remove(record)
+	code, out, errOut := runCLI("-r", "s-1", "second")
+	if code != 2 {
+		t.Fatalf("code=%d out=%q err=%q", code, out, errOut)
+	}
+	for _, want := range []string{"cannot resume session s-1", "not a directory", "pass -d", "offload show s-1"} {
+		if !strings.Contains(out+errOut, want) {
+			t.Errorf("recovery guidance missing %q in %q", want, out+errOut)
+		}
+	}
+	if _, err := os.Stat(record); err == nil {
+		t.Error("worker must not run in a different directory")
+	}
+}
+
+// A resumed run is registered under its session at once, before the worker has emitted its
+// first event, so a second follow-up started right away can be refused.
+func TestResumedRunHoldsItsSessionFromTheStart(t *testing.T) {
+	work, _ := setup(t, okReply)
+	if code, _, e := runCLI("-d", work, "first"); code != 0 {
+		t.Fatal(e)
+	}
+	t.Setenv("FAKE_SLEEP", "3")
+	done := make(chan struct{})
+	go func() { defer close(done); runCLI("-r", "s-1", "second") }()
+	defer func() { <-done }()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		states, _ := live.List()
+		held := false
+		for _, s := range states {
+			held = held || (s.Active() && s.Session == "s-1" && s.ToolCalls == 0)
+		}
+		if held {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("resumed run never held its session")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// The live state of a finished run must carry the real exit code, not the zero value.
+func TestLiveStateRecordsFailureExitCode(t *testing.T) {
+	work, _ := setup(t, `{"type":"result","result":"API Error: 401","is_error":true,"session_id":"s-e"}`)
+	if code, _, _ := runCLI("-d", work, "x"); code != 1 {
+		t.Fatalf("code=%d", code)
+	}
+	states, _ := live.List()
+	if len(states) != 1 || states[0].Phase != live.Done || states[0].Status != "error" || states[0].ExitCode != 1 {
+		t.Fatalf("%+v", states)
+	}
+}

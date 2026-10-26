@@ -166,6 +166,10 @@ func cmdRun(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	}
 	wd, err := resolveDir(*dir, *resume, logPath)
 	if err != nil {
+		if *resume != "" && *dir == "" {
+			err = fmt.Errorf("cannot resume session %s: %w. Restore that directory to continue the session, or pass -d to run elsewhere "+
+				"(the session's files may not be visible there); offload show %s has the previous reports", *resume, err, *resume)
+		}
 		return failRun(err)
 	}
 	o := worker.Opts{ProfileName: name, Profile: prof, Model: firstNonEmpty(*model, prof.Model), Write: *write,
