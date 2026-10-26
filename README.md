@@ -99,7 +99,9 @@ Delegation mode controls how proactively the installed policy tells a supervisin
 | Mode | Behavior |
 |---|---|
 | `basic` | Mainly delegates research, code localization, summaries, and bounded mechanical edits. Whole-feature implementation stays with the main agent unless the user explicitly requests delegation. |
-| `proactive` (default) | Also proactively delegates bounded feature/bugfix implementation, its tests, and docs, once the main agent has decided the design and acceptance criteria. |
+| `proactive` (default) | Also delegates bounded feature/bugfix implementation, its tests, and docs: the main agent decides requirements, interfaces, behavior, allowed files, and acceptance checks, then actually invokes `offload -w`. |
+
+In both modes, actually invoking offload is the default before substantial bounded supporting work, to reduce the supervising model's token use: cross-file localization, bounded evidence gathering, comparisons, and bulk summaries go to a worker before the same material is read locally. One quick orientation lookup is fine; when it expands, delegate. Scope may be narrowed after that orientation, and an open-ended overall objective is not a reason to keep all bounded research local. Otherwise eligible execution work stays local only for a concrete tiny known-file check, a user restriction, a security boundary, or an unavailable worker, with a brief stated reason. Trivial tasks need no call, and savings are not claimed without measurement.
 
 Both modes keep architecture/design decisions, important tradeoffs, and final independent review with the supervising agent, and keep the existing permission, monitoring, resume, and no-recursive-worker rules.
 
@@ -157,7 +159,7 @@ Codex's current skill locations are documented in [Build skills](https://learn.c
 
 ### Main agent and subagent workflow
 
-The installed policy asks main agents and native subagents to consider offload before doing substantial work themselves, throughout execution, according to the active delegation mode. In **proactive** mode this includes bounded implementation once the design is decided; in **basic** mode it mainly covers research, localization, summaries, and bounded mechanical edits, without proactively handing off a whole feature's implementation. In both modes, the main agent owns requirements, architecture/design, tradeoffs, task decomposition, and final review/acceptance. If a worker finds the design, scope, or architecture needs to change, it reports findings/options back instead of redesigning on its own. Call the CLI directly when another coordination layer adds no value. For parallel work or independent review, a native Codex subagent can launch the external worker:
+The installed policy asks main agents and native subagents to actually invoke offload before doing substantial bounded supporting work themselves, according to the active delegation mode. In **proactive** mode this includes bounded implementation once the design is decided; in **basic** mode it mainly covers research, localization, summaries, and bounded mechanical edits, without proactively handing off a whole feature's implementation. In both modes, the main agent owns requirements, architecture/design, tradeoffs, task decomposition, and final review/acceptance. If a worker finds the design, scope, or architecture needs to change, it reports findings/options back instead of redesigning on its own. Prefer calling the CLI directly, without native subagent overhead, and avoid duplicating work an active worker is already doing. For parallel work or independent review, a native Codex subagent can launch the external worker:
 
 ```text
 Main agent → optional native subagent → offload → selected Claude/Codex profile
@@ -178,7 +180,7 @@ In **basic** mode, keep whole-feature implementation in the main agent; `-w` is 
 
 Check uncertain API assumptions before handing off a large implementation: use a scoped read-only probe of the installed API or a minimal reproduction, then delegate one coherent slice with known entry points and acceptance checks. Both worker backends are instructed to return a **BLOCKED** report after an inconclusive focused feasibility check, including evidence, edits made, checks run, and the decision needed from the supervisor. This is a model instruction, not a hard tool-call limit; timeout and cancellation behavior are unchanged. Avoid killing a still-active worker solely because it has not edited yet and then duplicating its investigation locally. Refine the task using its findings and resume the existing session; deliberate cancellation skips automatic salvage, so recover a report with a report-only resume if needed.
 
-Keep short conversations, trivial lookups, architecture choices, sensitive changes, and final review with the supervisor, and keep trivial tasks in the main agent when delegation overhead would exceed the work saved. Workers already launched by offload should finish their assigned task directly instead of delegating again. Default to read-only for inspection; use `-w` explicitly for authorized implementation rather than silently falling back to read-only. Spot-check reports; after authorized `-w` work, inspect the actual diff and independently run relevant checks yourself.
+Keep short conversations, trivial lookups, architecture choices, sensitive changes, and final review with the supervisor. Workers already launched by offload should finish their assigned task directly instead of delegating again. Default to read-only for inspection; use `-w` explicitly for authorized implementation rather than silently falling back to read-only. Spot-check reports; after authorized `-w` work, inspect the actual diff and independently run relevant checks yourself.
 
 ## Usage
 
