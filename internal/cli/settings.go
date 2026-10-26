@@ -12,6 +12,7 @@ import (
 
 	"github.com/chzyer/readline"
 	"github.com/manifoldco/promptui"
+	"github.com/manifoldco/promptui/screenbuf"
 	"github.com/zhoushoujianwork/offload/internal/agentinstall"
 	"github.com/zhoushoujianwork/offload/internal/config"
 )
@@ -101,9 +102,44 @@ func (p terminalSettingsPrompt) Ask(label, initial string) (string, error) {
 	return s.Run()
 }
 
+// Secret reads a masked value with readline directly. promptui.Prompt reads its cursor
+// from the caller goroutine while readline's listener goroutine may still update it,
+// which is a data race for secret input.
 func (p terminalSettingsPrompt) Secret(label string) (string, error) {
-	s := promptui.Prompt{Label: label, Mask: '*', HideEntered: true, Stdin: p.in, Stdout: p.out}
-	return s.Run()
+	c := &readline.Config{Prompt: label + ": ", Stdin: p.in, Stdout: p.out, Stderr: p.out,
+		EnableMask: true, MaskRune: '*', HistoryLimit: -1, UniqueEditLine: true,
+		InterruptPrompt: "\n", EOFPrompt: "\n"}
+	if err := c.Init(); err != nil {
+		return "", err
+	}
+	c.Stdin = readline.NewCancelableStdin(c.Stdin)
+	rl, err := readline.NewEx(c)
+	if err != nil {
+		return "", err
+	}
+	defer rl.Close()
+	// Mirror promptui's masked echo, but keep the input in the readline goroutine's
+	// own arguments so nothing is shared with the caller.
+	screen := screenbuf.New(rl)
+	c.SetListener(func(input []rune, _ int, key rune) ([]rune, int, bool) {
+		switch key {
+		case readline.CharEnter, readline.CharCtrlJ, readline.CharInterrupt, readline.CharDelete:
+			// Readline may already have unblocked the caller; don't write during cleanup.
+			return nil, 0, false
+		}
+		screen.Reset()
+		screen.WriteString(label + ": " + strings.Repeat("*", len(input)))
+		screen.Flush()
+		return nil, 0, false // leave readline's buffer untouched
+	})
+	value, err := rl.Readline()
+	if err == readline.ErrInterrupt {
+		return "", promptui.ErrInterrupt
+	}
+	if err == io.EOF {
+		return "", promptui.ErrEOF
+	}
+	return value, err
 }
 
 func terminalStream(stream any) bool {
