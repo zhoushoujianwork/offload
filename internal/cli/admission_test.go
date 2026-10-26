@@ -142,15 +142,73 @@ func TestConcurrentInvocationsNeverExceedLimit(t *testing.T) {
 // A queued run that is cancelled never launches a backend, and says so.
 func TestCancelledQueuedRunNeverLaunchesBackend(t *testing.T) {
 	needUnix(t)
-	work, record := setup(t, okReply)
 	bin := offloadBin(t)
-	env := []string{"OFFLOAD_MAX_WORKERS=1"}
-	first := start(t, bin, append(env, "FAKE_SLEEP=20"), "-d", work, "holder")
-	waitFor(t, "holder running", 10*time.Second, func() bool { return phases(t)[live.Running] == 1 })
-	os.Remove(record)
+	for _, delayed := range []bool{false, true} {
+		name := "immediate_holder"
+		if delayed {
+			name = "delayed_holder"
+		}
+		t.Run(name, func(t *testing.T) {
+			testCancelledQueuedRun(t, bin, delayed)
+		})
+	}
+}
 
-	queued := start(t, bin, env, "-json", "-d", work, "queued")
+func testCancelledQueuedRun(t *testing.T, bin string, delayed bool) {
+	t.Helper()
+	work, record := setup(t, okReply)
+	gate := filepath.Join(t.TempDir(), "holder-start")
+	if delayed {
+		fake := os.Getenv("OFFLOAD_CLAUDE")
+		script, err := os.ReadFile(fake)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// Hold the holder before it writes the shared record, even though Running is already published.
+		prefix := "#!/bin/sh\n" +
+			"if [ -n \"$FAKE_START_GATE\" ]; then\n" +
+			"  touch \"$FAKE_START_GATE.ready\"\n" +
+			"  while [ ! -e \"$FAKE_START_GATE\" ]; do sleep 0.02; done\n" +
+			"fi\n"
+		if err := os.WriteFile(fake, []byte(strings.Replace(string(script), "#!/bin/sh\n", prefix, 1)), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	env := []string{"OFFLOAD_MAX_WORKERS=1"}
+	holderEnv := append([]string{}, env...)
+	holderEnv = append(holderEnv, "FAKE_SLEEP=20")
+	if delayed {
+		holderEnv = append(holderEnv, "FAKE_START_GATE="+gate)
+	}
+	first := start(t, bin, holderEnv, "-d", work, "holder")
+	t.Cleanup(func() {
+		first.cmd.Process.Signal(syscall.SIGTERM)
+		first.wait(t)
+	})
+	waitFor(t, "holder running", 10*time.Second, func() bool { return phases(t)[live.Running] == 1 })
+	if delayed {
+		waitFor(t, "holder blocked before recording startup", 10*time.Second, func() bool {
+			_, err := os.Stat(gate + ".ready")
+			return err == nil
+		})
+		if _, err := os.Stat(record); !os.IsNotExist(err) {
+			t.Fatalf("holder recorded startup before gate release: %v", err)
+		}
+	}
+
+	// Only the queued invocation can write this launch marker; the holder may still write the shared record.
+	queuedMark := filepath.Join(t.TempDir(), "queued-start")
+	queued := start(t, bin, append(env, "FAKE_MARK="+queuedMark), "-json", "-d", work, "queued")
 	waitFor(t, "queued", 10*time.Second, func() bool { return phases(t)[live.Queued] == 1 })
+	if delayed {
+		if err := os.WriteFile(gate, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		waitFor(t, "holder record after queue observation", 10*time.Second, func() bool {
+			_, err := os.Stat(record)
+			return err == nil
+		})
+	}
 	queued.cmd.Process.Signal(syscall.SIGTERM)
 	if code := queued.wait(t); code != 2 {
 		t.Fatalf("code=%d", code)
@@ -158,11 +216,11 @@ func TestCancelledQueuedRunNeverLaunchesBackend(t *testing.T) {
 	if !strings.Contains(queued.out.String(), "cancelled while waiting for a worker slot") {
 		t.Errorf("output: %s", queued.out.String())
 	}
-	if _, err := os.Stat(record); err == nil {
+	if _, err := os.Stat(queuedMark); err == nil {
 		t.Fatal("a cancelled queued run started a backend")
+	} else if !os.IsNotExist(err) {
+		t.Fatal(err)
 	}
-	first.cmd.Process.Signal(syscall.SIGTERM)
-	first.wait(t)
 }
 
 // Queue wait must not count against the worker's -t timeout.
