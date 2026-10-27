@@ -43,6 +43,9 @@ func cmdList(args []string, stdout, stderr io.Writer) int {
 			status += " (exit=" + exitText(r) + ")"
 		}
 		cost := listCost(r)
+		if r.Usage != nil {
+			cost += " | " + compactUsage(r)
+		}
 		profile := firstNonEmpty(r.Profile, "profile unavailable")
 		if r.Model != "" && !strings.Contains(strings.ToLower(profile), strings.ToLower(r.Model)) {
 			profile += " / " + r.Model
@@ -55,6 +58,7 @@ func cmdList(args []string, stdout, stderr io.Writer) int {
 			listLine(r.TS), listLine(status), listElapsed(r.ElapsedMs), r.Turns, cost,
 			listLine(project), listLine(profile), settingsLine(r.Task, 100), firstNonEmpty(r.Session, "unavailable"))
 	}
+	fmt.Fprintln(stdout, "\nN/A: see offload show <session> for details. API baseline estimates assume short context/30m cache writes; exclude long-context, regional/tool surcharges and subscription accounting; actual delivery may differ.")
 	return 0
 }
 
@@ -62,9 +66,12 @@ func cmdList(args []string, stdout, stderr io.Writer) int {
 // A recorded zero stays $0.0000; unavailable is never shown as zero.
 func listCost(r history.Record) string {
 	if r.CostUSD != nil {
+		if r.CostBasis == "api_baseline" {
+			return costText(r)
+		}
 		return "est. " + costText(r)
 	}
-	return "cost unavailable (" + firstNonEmpty(r.CostNote, history.CostNoteNotReport) + ")"
+	return "N/A"
 }
 
 // Sanitize metadata without shortening profile names or model identifiers.

@@ -79,7 +79,7 @@ Profiles select a `backend`: `claude` (the default for existing profiles) or `co
 
 A profile with `"backend": "codex"` runs `codex exec --json`. It uses your existing Codex authentication, provider, and configuration, including `CODEX_HOME`. The optional `model` field or `-m` selects a model; omit both to use the Codex default. Log in with the native Codex CLI before running a Codex profile. Optional `reasoning_effort` and `service_tier` override native settings for that worker only; omitted or empty values inherit them. The wizard offers Inherit/Low/Medium/High/Extra high reasoning and Inherit/Standard/Fast speed (`default`/`priority`). Fast is not a token or cost savings guarantee. Gateway fields (`base_url`, `token`, `token_cmd`) apply only to Claude profiles. `OFFLOAD_CODEX` can override the Codex executable.
 
-Codex runs with approval policy `never`, using the `read-only` sandbox by default and `workspace-write` with `-w`. These are Codex sandbox policies, separate from the Claude tool approval lists below. Instructions and the task are sent over stdin. Codex also discovers its own agent instructions. JSONL events supply the report, session ID, and live tool progress; `turns` counts tool calls. Codex reports token usage but no USD cost, so offload shows `unknown` (`null` in JSON), and `offload ls` explains it as `cost unavailable (Codex does not report USD cost)`. offload never prices tokens itself.
+Codex runs with approval policy `never`, using the `read-only` sandbox by default and `workspace-write` with `-w`. These are Codex sandbox policies, separate from the Claude tool approval lists below. Instructions and the task are sent over stdin. Codex also discovers its own agent instructions. JSONL events supply the report, session ID, and live tool progress; `turns` counts tool calls. Codex reports cumulative token usage. offload preserves run-scoped tokens and can calculate the limited API baseline estimate described below; this is separate from native billing.
 
 Interrupted Codex runs retain progress and a resume command. Automatic tool-less salvage is supported only for Claude.
 
@@ -292,7 +292,11 @@ offload version
 
 ### Cost and elapsed time
 
-Codex does not provide a USD cost; its `cost_usd` is `null`. For Claude, `cost_usd` comes from the worker's reported estimate; `cost_is_estimate` is `true`. It excludes the parent Codex/Claude agent and any native subagent coordination. Actual provider bills and total savings are unverified. Missing cost is `null` in JSON and `unknown` in the summary line; a reported zero is valid and shown as `$0.0000`. `offload ls` marks recorded values `est.` and, when cost is missing, prints the reason: `cost unavailable (Codex does not report USD cost)`, `(worker did not report cost)`, `(legacy zero is ambiguous)` or `(invalid value recorded)`. The reason is derived when history is read and is not stored or added to JSON. A legacy record without `cost_is_estimate` whose cost is `0` cannot be told apart from a missing cost, so it is treated as unavailable; a legacy non-zero cost is kept as an estimate. Old history still loads, with unavailable cost, exit code, or elapsed time shown as `unknown`.
+For Claude, `cost_usd` remains the worker-reported estimate. For Codex, offload estimates only an explicitly selected `gpt-6.1-sol` with explicit `service_tier` `default` or `priority`. The [model reference](https://developers.openai.com/api/docs/models/gpt-6.1-sol), verified 2026-10-26, supplies USD per million tokens: standard input 2, cached input 0.10, 30m cache-write input 2.50, output 10; priority/Fast doubles all four. The formula is `((input-cached-write)*input_rate + cached*cached_rate + write*write_rate + output*output_rate)/1e6`. Input includes cached/write tokens, and reasoning output is already included in output.
+
+Codex values are labeled **API baseline est.**, an API-equivalent short-context/30m cache-write baseline, not actual billing. They exclude long-context (>272k per request), regional and tool surcharges and subscription accounting; actual service delivery may differ. Aggregated run input cannot establish individual request context size, so offload does not infer long-context rates from run totals. Model, tier, rate snapshot, reference source/date, assumptions, usage source/scope and missing reasons are persisted; historical estimates never recompute from current rates.
+
+Fresh Codex runs start at zero; resumed runs subtract the native session rollout baseline captured before launch under `$CODEX_HOME/sessions` (default `~/.codex/sessions`). Missing/corrupt baselines, invalid or regressed counters, and interrupted runs produce no run usage/cost estimate. Tokens remain available when only pricing is unsupported or inherited. JSON exposes optional `usage`, `cumulative_usage`, `usage_source`, `usage_scope`, `usage_unavailable`, `cost_unavailable`, `cost_basis`, `service_tier` and `pricing` fields. `offload ls` shows compact token counts, `N/A` for missing costs, and one explanatory footer; `offload show <session>` gives the breakdown and provenance. Stderr marks computed Codex estimates as `API baseline est.`. Missing cost remains `null` in JSON and `unknown` in stderr; measured zero is valid. Legacy history loads unchanged: ambiguous unmarked zero remains unavailable, nonzero Claude estimates are preserved, and old Codex records stay `N/A`. All estimates exclude parent-agent/native-subagent coordination; actual bills and savings remain unverified.
 
 `elapsed_ms` measures wall-clock time from CLI entry, including setup and credential retrieval. `duration_ms` preserves the worker-reported duration. The `-t` timeout begins after prompt setup, credential/executable resolution, and the reachability preflight, so elapsed time can exceed it.
 
@@ -371,3 +375,72 @@ Run `gofmt -l .`, `go vet ./...` and `go test -race ./...` before pushing; CI ru
 ## License
 
 MIT
+
+## Direct supervisor integration
+
+Supervisors can invoke offload directly without an interactive launcher:
+
+```sh
+offload -json -w -execution-policy managed-development \
+  -instructions-file /absolute/private/operator.md \
+  -caller-run-id clawflow:run-123 \
+  -events-file /absolute/new/run-123.ndjson \
+  -p codex -codex-sandbox workspace-write -d /absolute/repo "Implement the assigned task"
+```
+
+`-execution-policy default` preserves existing prompts and permissions. The opt-in
+`managed-development` policy requires `-w`, disables salvage even on resume, and
+permits task-authorized tests, commits, pushes and PR operations through clawflow.
+It prohibits unsolicited merges, force pushes, destructive or unrelated changes,
+and recursive delegation. Supplied operator outcome markers are preserved; offload
+does not add a semantic outcome marker. ClawFlow remains responsible for interpreting
+its own outcome contract.
+
+`-instructions-file` must be an absolute, non-symlink regular file of at most
+256 KiB. The opened descriptor is validated and reads are bounded. Its bytes are
+appended verbatim to the private prompt before worker discipline; contents never
+appear in argv. The caller owns this file and its confidentiality.
+
+Managed Claude uses `acceptEdits` with Bash, Read, Grep, Glob, Edit and Write.
+`-tools-disabled`, `-allowed-tools Read,Grep` and `-disallowed-tools Bash,Write`
+forward explicit Claude restrictions; an explicit allowlist replaces the managed
+broad allowlist and uses default permission mode rather than automatic edit approval.
+Combining `-tools-disabled` with `-allowed-tools` is rejected. Deny restrictions
+remain effective. Managed Claude tasks travel through stdin; default mode retains
+its existing task argument behavior. Codex rejects otherwise valid explicit tool
+constraints before launch with `error_kind: "unsupported_tools"`.
+
+`-codex-sandbox` is optional and requires managed development, `-w`, and Codex.
+`workspace-write` enables sandbox network access and adds canonical Git directory
+and common directory paths to writable roots. This also applies to resumed runs.
+The default sandbox selection is unchanged. Explicit `danger-full-access` is a
+trusted-machine mode that disables Codex sandbox containment; offload never selects
+it automatically or elevates after a permission denial. Approval remains `never`
+for both fresh and resumed Codex runs. SIGINT and SIGTERM cancel the worker; the
+supervisor owns process-group lifecycle. `-no-salvage` remains available in default
+mode; managed mode always disables salvage.
+
+`-caller-run-id` matches `[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}`. Every invocation gets
+an independent generated `run_id`. With `-json`, stdout contains one final history
+record only (diagnostics go to stderr), including normal setup/flag errors once
+`-json` has been parsed. Additive record fields are `run_id`, `caller_run_id`
+(when supplied), `backend`, `execution_policy`, and `error_kind` (on failure).
+Existing `status`, `exit_code`, session, report, usage and cost fields retain their
+meaning. No authentication classification is inferred from provider prose.
+Error kinds are `configuration`, `unsupported_tools`, `launch`, `execution`,
+`timeout`, `canceled`, and `events_io`. Exit codes remain 0 for success, 1 for
+worker failure/cancellation, 2 for setup or event-file errors, and 124 for timeout.
+
+`-events-file` must be absolute and nonexistent; exclusive creation rejects existing
+files and symlinks before provider launch and uses mode 0600. It contains bounded
+NDJSON with common fields `schema_version: 1`, `type` (`start`, `progress`, `final`),
+`run_id`, `caller_run_id`, `seq` (increasing from 1), UTC `timestamp`, `session`,
+`backend`, and `model`. Unknown metadata may be empty. Progress contains only
+allowlisted `native_type` and optional coarse `tool_category` (`shell`, `file`,
+`web`, `mcp`, `other`); prompts, arguments, text and command output are excluded. Unknown
+native types become `other`. Native lines over 256 KiB are skipped, incomplete
+trailing lines produce no progress, and at most 10,000 progress events are written
+in addition to start/final. Final adds `status`, `exit_code`, and `error_kind`
+(empty on success). Event I/O failure cancels the worker and returns `events_io`
+in final stdout JSON; a failed event destination cannot guarantee a final event.
+The supervisor must parse the final record even when the process exits nonzero.

@@ -70,7 +70,7 @@ func Run(version string, args []string, stdin io.Reader, stdout, stderr io.Write
 			if fs.NArg() != 0 || *limit < 0 {
 				return fail(stderr, errors.New("usage: offload watch [-t duration]"))
 			}
-			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 			defer stop()
 			if *limit > 0 {
 				var cancel context.CancelFunc
@@ -107,28 +107,72 @@ func cmdRun(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	timeout := fs.Duration("t", 30*time.Minute, "timeout")
 	noSalvage := fs.Bool("no-salvage", false, "skip automatic report salvage for stopped Claude workers")
 	jsonOutput := fs.Bool("json", false, "print one structured run result instead of plain report")
-	if err := fs.Parse(args); err != nil {
-		return 2
-	}
+	executionPolicy := fs.String("execution-policy", "default", "default or managed-development (requires -w)")
+	instructionsFile := fs.String("instructions-file", "", "absolute private operator instructions file (<=256KiB)")
+	codexSandbox := fs.String("codex-sandbox", "", "managed Codex sandbox: workspace-write or danger-full-access")
+	callerRunID := fs.String("caller-run-id", "", "supervisor correlation ID (1-128 safe characters)")
+	eventsFile := fs.String("events-file", "", "absolute exclusive-create sanitized NDJSON events file")
+	toolsDisabled := fs.Bool("tools-disabled", false, "disable all worker tools (Claude only)")
+	allowedTools := fs.String("allowed-tools", "", "explicit comma-separated Claude tool allowlist")
+	disallowedTools := fs.String("disallowed-tools", "", "explicit comma-separated Claude tool denylist")
+	parseErr := fs.Parse(args)
 	task := strings.Join(fs.Args(), " ")
-	if task == "" && !isTerminal(stdin) {
+	if parseErr == nil && task == "" && !isTerminal(stdin) {
 		b, _ := io.ReadAll(stdin)
 		task = strings.TrimSpace(string(b))
 	}
-	if task == "" {
-		fs.Usage()
-		return 2
-	}
 
 	logPath := history.Path()
-	rec := history.Record{TS: started.Format("2006-01-02 15:04:05"), Status: "error", Profile: *profile,
+	rec := history.Record{RunID: worker.NewRunID(), CallerRunID: *callerRunID, ExecutionPolicy: *executionPolicy, Session: *resume, TS: started.Format("2006-01-02 15:04:05"), Status: "error", Profile: *profile,
 		Model: *model, Dir: *dir, Task: task, CostIsEstimate: true}
+	var events *eventWriter
+	var eventFile *os.File
+	eventsStarted := false
+	finish := func() int {
+		if events != nil {
+			var err error
+			if !eventsStarted {
+				err = events.emit("start", "", "", &rec)
+				eventsStarted = true
+			}
+			if err == nil {
+				err = events.emit("final", "", "", &rec)
+			}
+			if closeErr := eventFile.Close(); err == nil {
+				err = closeErr
+			}
+			if err != nil {
+				code := 2
+				rec.Status = "error"
+				rec.ExitCode = &code
+				rec.ErrorKind = "events_io"
+				rec.Error = err.Error()
+				rec.Result = err.Error()
+			}
+		}
+		return printRun(rec, logPath, *jsonOutput, stdout, stderr)
+	}
 	failRun := func(err error) int {
 		code := 2
+		rec.ErrorKind = worker.ErrorKind(err)
 		rec.ExitCode, rec.Error, rec.Result = &code, err.Error(), err.Error()
 		elapsed := time.Since(started).Milliseconds()
 		rec.ElapsedMs = &elapsed
-		return printRun(rec, logPath, *jsonOutput, stdout, stderr)
+		return finish()
+	}
+	if parseErr != nil {
+		return failRun(parseErr)
+	}
+	if task == "" {
+		fs.Usage()
+		return failRun(errors.New("task required"))
+	}
+	if *eventsFile != "" {
+		var err error
+		events, eventFile, err = openEvents(*eventsFile, rec)
+		if err != nil {
+			return failRun(err)
+		}
 	}
 	if *resume != "" {
 		// The lock closes the race the live-state check below only narrows: of two simultaneous
@@ -193,14 +237,29 @@ func cmdRun(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	}
 	o := worker.Opts{ProfileName: name, Profile: prof, Model: firstNonEmpty(*model, prof.Model), Write: *write,
 		Resume: *resume, Dir: wd, Task: task, Timeout: *timeout, StartedAt: started, NoSalvage: *noSalvage,
+		RunID: rec.RunID, CallerRunID: *callerRunID, ExecutionPolicy: *executionPolicy, InstructionsFile: *instructionsFile, CodexSandbox: *codexSandbox,
+		ToolsDisabled: *toolsDisabled, AllowedTools: *allowedTools, DisallowedTools: *disallowedTools,
 		MaxWorkers: maxWorkers, Limits: cfg.Limits}
+	if events != nil {
+		if err := events.emit("start", "", "", &rec); err != nil {
+			rec.ErrorKind = "events_io"
+			code := 2
+			rec.ExitCode = &code
+			rec.Error = err.Error()
+			rec.Result = err.Error()
+			eventsStarted = true
+			return finish()
+		}
+		eventsStarted = true
+		o.OnLine = events.progress
+	}
 
 	// SIGTERM is what a supervisor's own cancellation or a timeout wrapper sends; handle it like Ctrl-C
 	// so the worker's process group is stopped instead of orphaned.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	rec, _ = worker.Run(ctx, o)
-	return printRun(rec, logPath, *jsonOutput, stdout, stderr)
+	return finish()
 }
 
 // activeSessionRun finds another offload process still working in the session. The live state is
@@ -256,6 +315,9 @@ func printRun(rec history.Record, logPath string, jsonOutput bool, stdout, stder
 func costText(rec history.Record) string {
 	if rec.CostUSD == nil {
 		return "unknown"
+	}
+	if rec.CostBasis == "api_baseline" {
+		return fmt.Sprintf("API baseline est. $%.4f", *rec.CostUSD)
 	}
 	return fmt.Sprintf("$%.4f", *rec.CostUSD)
 }
@@ -321,8 +383,10 @@ func cmdShow(args []string, stdout, stderr io.Writer) int {
 		return fail(stderr, fmt.Errorf("no run with session %s", args[0]))
 	}
 	for _, r := range hit {
-		fmt.Fprintf(stdout, "## %s %s %s/%s %s\nexit_code=%s turns=%d estimated_cost=%s elapsed=%s session=%s\n> %s\n\n%s\n\n",
-			r.TS, r.Status, r.Profile, r.Model, r.Dir, exitText(r), r.Turns, costText(r), elapsedText(r), r.Session, r.Task, r.Result)
+		fmt.Fprintf(stdout, "## %s %s %s/%s %s\nexit_code=%s turns=%d estimated_cost=%s elapsed=%s session=%s\n",
+			r.TS, r.Status, r.Profile, r.Model, r.Dir, exitText(r), r.Turns, costText(r), elapsedText(r), r.Session)
+		showCostDetails(stdout, r)
+		fmt.Fprintf(stdout, "> %s\n\n%s\n\n", r.Task, r.Result)
 	}
 	return 0
 }
