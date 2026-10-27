@@ -110,6 +110,7 @@ func TestCodexBaselineRejectsCorruption(t *testing.T) {
 }
 
 func TestCodexAccountingAvailabilityAndLatest(t *testing.T) {
+	t.Setenv("CODEX_HOME", t.TempDir())
 	o := Opts{Model: "gpt-6.1-sol", Profile: config.Profile{ServiceTier: "default"}}
 	zero := `{"input_tokens":0,"cached_input_tokens":0,"cache_write_input_tokens":0,"output_tokens":0}`
 	for _, tc := range []struct {
@@ -150,6 +151,7 @@ func TestCodexAccountingAvailabilityAndLatest(t *testing.T) {
 }
 
 func TestCodexReferencePricing(t *testing.T) {
+	t.Setenv("CODEX_HOME", t.TempDir())
 	for _, tier := range []string{"default", "priority", "", "unknown"} {
 		for _, model := range []string{"gpt-6.1-sol", "", "other", "gpt-6.1-sol-variant"} {
 			t.Run(model+"/"+tier, func(t *testing.T) {

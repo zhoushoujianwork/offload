@@ -1,0 +1,4 @@
+{"type":"session_meta","payload":{"id":"01234567-89ab-cdef-0123-456789abcdef","model_provider":"openai"}}
+{"type":"turn_context","payload":{"model":"gpt-6.1-sol"}}
+{"type":"response_item","payload":{"type":"message","text":"model: fabricated-answer-model"}}
+{"type":"turn_context","payload":{"model":"gpt-6-astra"}}

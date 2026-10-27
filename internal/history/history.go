@@ -24,6 +24,8 @@ type Record struct {
 	Profile          string           `json:"profile"`
 	Backend          string           `json:"backend,omitempty"`
 	Model            string           `json:"model"`
+	ModelSource      string           `json:"model_source,omitempty"`
+	ModelUnavailable string           `json:"model_unavailable,omitempty"`
 	ServiceTier      string           `json:"service_tier,omitempty"`
 	Dir              string           `json:"dir"`
 	Task             string           `json:"task"`
