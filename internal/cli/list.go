@@ -47,7 +47,7 @@ func cmdList(args []string, stdout, stderr io.Writer) int {
 			cost += " | " + compactUsage(r)
 		}
 		profile := firstNonEmpty(r.Profile, "profile unavailable")
-		if r.Model != "" && !strings.Contains(strings.ToLower(profile), strings.ToLower(r.Model)) {
+		if r.Model != "" && !profileNamesModel(profile, r.Model) {
 			profile += " / " + r.Model
 		}
 		if r.ModelSource != "" {
@@ -63,6 +63,26 @@ func cmdList(args []string, stdout, stderr io.Writer) int {
 	}
 	fmt.Fprintln(stdout, "\nN/A: see offload show <session> for details. API baseline estimates assume short context/30m cache writes; exclude long-context, regional/tool surcharges and subscription accounting; actual delivery may differ.")
 	return 0
+}
+
+// profileNamesModel reports whether the profile name already shows the model
+// as a whole token, so ls need not repeat it. A bare substring is not enough:
+// model "c" must still be shown for profile "codex".
+func profileNamesModel(profile, model string) bool {
+	p, m := strings.ToLower(profile), strings.ToLower(model)
+	boundary := func(s string, i int) bool {
+		if i < 0 || i >= len(s) {
+			return true
+		}
+		c := s[i]
+		return !(c >= 'a' && c <= 'z' || c >= '0' && c <= '9')
+	}
+	for i := 0; i+len(m) <= len(p); i++ {
+		if p[i:i+len(m)] == m && boundary(p, i-1) && boundary(p, i+len(m)) {
+			return true
+		}
+	}
+	return false
 }
 
 // listCost marks recorded values as estimates and explains why a missing one is unavailable.
