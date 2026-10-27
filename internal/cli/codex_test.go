@@ -174,9 +174,11 @@ func TestCodexBundleOverridesReachWorker(t *testing.T) {
 
 func TestCodexResolvedModelReporting(t *testing.T) {
 	for name, content := range map[string]string{
-		"plain":                  "model = 'native-model'\n",
-		"inline comment":         "model = 'native-model' # documentation: \"\"\"\n",
-		"multiline instructions": "model = 'native-model'\ndeveloper_instructions = \"\"\"\nBe concise.\n\"\"\"\n",
+		"plain":                   "model = 'native-model'\n",
+		"multiline model":         "model = \"\"\"native-model\"\"\"\n",
+		"multiline literal model": "model = '''\nnative-model'''\n",
+		"inline comment":          "model = 'native-model' # documentation: \"\"\"\n",
+		"multiline instructions":  "model = 'native-model'\ndeveloper_instructions = \"\"\"\nBe concise.\n\"\"\"\n",
 	} {
 		t.Run(name, func(t *testing.T) {
 			work, _ := setupCodex(t, codexReply)

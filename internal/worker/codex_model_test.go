@@ -105,6 +105,36 @@ func TestCodexConfigMultilineSettings(t *testing.T) {
 	}
 }
 
+func TestCodexConfigModelStrings(t *testing.T) {
+	for _, tc := range []struct{ name, value, want string }{
+		{"basic multiline", `"""config-model"""`, "config-model"},
+		{"literal multiline", "'''config-model'''", "config-model"},
+		{"initial newline", "\"\"\"\nconfig-model\"\"\"", "config-model"},
+		{"literal initial newline", "'''\nconfig-model'''", "config-model"},
+		{"continuation", "\"\"\"config-\\  \n  \n  model\"\"\"", "config-model"},
+		{"unicode", `"""config-\u006d\U0000006fdel"""`, "config-model"},
+		{"literal backslash", "'''config-\\model'''", "config-\\model"},
+		{"preserve whitespace", "\"\"\"config-  \n model\"\"\"", "config-  \n model"},
+		{"closing quotes", `"""config-model"""""`, `config-model""`},
+		{"literal closing quotes", "'''config-model'''''", "config-model''"},
+		{"escaped quote", `"""config-\"model""" # comment`, `config-"model`},
+		{"embedded quotes", `"""config-""model"""`, `config-""model`},
+		{"unterminated", `"""config-model`, ""},
+		{"invalid escape", `"""config-\x6dodel"""`, ""},
+		{"trailing value", `"""config-model""" invalid`, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("CODEX_HOME", t.TempDir())
+			if err := os.WriteFile(filepath.Join(codexHome(), "config.toml"), []byte("model = "+tc.value+"\n"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			if got := codexConfigModel(); got != tc.want {
+				t.Fatalf("got %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestCodexSubscriptionNeverEstimatesCost(t *testing.T) {
 	t.Setenv("CODEX_HOME", t.TempDir())
 	for _, auth := range []string{`{"auth_mode":"chatgpt"}`, `{"tokens":{"access_token":"fixture"},"OPENAI_API_KEY":null}`} {

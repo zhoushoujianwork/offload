@@ -83,9 +83,8 @@ func codexSessionModel(session string) string {
 	return model
 }
 
-// Read only a root-level single-line TOML string. Never interpret nested provider
-// or profile settings as the default model. Unsupported syntax stays unknown.
-var codexModelSetting = regexp.MustCompile(`^(?:model|"model"|'model')\s*=\s*("(?:[^"\\]|\\.)*"|'[^']*')\s*(?:#.*)?$`)
+// Read only the root model, excluding nested provider and profile settings.
+var codexModelSetting = regexp.MustCompile(`^(?:model|"model"|'model')\s*=\s*(.*)$`)
 
 func codexConfigModel() string {
 	home := codexHome()
@@ -113,26 +112,105 @@ func codexConfigModel() string {
 		if strings.HasPrefix(line, "[") {
 			break
 		}
-		m := codexModelSetting.FindStringSubmatch(line)
+		m := codexModelSetting.FindStringSubmatch(strings.TrimLeft(sc.Text(), " \t"))
 		if m == nil {
 			continue
 		}
 		if model != "" {
 			return ""
 		}
-		if m[1][0] == '\'' {
-			model = m[1][1 : len(m[1])-1]
-		} else {
-			model, err = strconv.Unquote(m[1])
-			if err != nil {
-				return ""
-			}
+		value := m[1]
+		for multiline != "" && sc.Scan() {
+			line := sc.Text()
+			value += "\n" + line
+			multiline = codexConfigMultiline(line, multiline)
+		}
+		var ok bool
+		model, ok = codexConfigString(value)
+		if !ok {
+			return ""
 		}
 	}
 	if sc.Err() != nil || multiline != "" {
 		return ""
 	}
 	return model
+}
+
+// Decode TOML basic and literal strings, including multiline forms and continuations.
+func codexConfigString(value string) (string, bool) {
+	if len(value) == 0 || (value[0] != '"' && value[0] != '\'') {
+		return "", false
+	}
+	quote := value[0]
+	delimiter := string(quote)
+	multiline := strings.HasPrefix(value, strings.Repeat(delimiter, 3))
+	if multiline {
+		delimiter = strings.Repeat(delimiter, 3)
+	}
+	value = value[len(delimiter):]
+	if multiline {
+		value = strings.TrimPrefix(value, "\n")
+	}
+	var result strings.Builder
+	for i := 0; i < len(value); {
+		if strings.HasPrefix(value[i:], delimiter) {
+			i += len(delimiter)
+			if multiline {
+				for n := 0; n < 2 && i < len(value) && value[i] == quote; n++ {
+					result.WriteByte(quote)
+					i++
+				}
+			}
+			rest := strings.TrimSpace(value[i:])
+			return result.String(), rest == "" || strings.HasPrefix(rest, "#")
+		}
+		if quote == '"' && value[i] == '\\' {
+			start := i
+			i++
+			if i == len(value) {
+				return "", false
+			}
+			if multiline {
+				end := i
+				for end < len(value) && (value[end] == ' ' || value[end] == '\t') {
+					end++
+				}
+				if end < len(value) && value[end] == '\n' {
+					i = end + 1
+					for i < len(value) && strings.ContainsRune(" \t\n", rune(value[i])) {
+						i++
+					}
+					continue
+				}
+			}
+			switch value[i] {
+			case 'b', 't', 'n', 'f', 'r', '"', '\\':
+				i++
+			case 'u':
+				i += 5
+			case 'U':
+				i += 9
+			default:
+				return "", false
+			}
+			if i > len(value) {
+				return "", false
+			}
+			decoded, err := strconv.Unquote(`"` + value[start:i] + `"`)
+			if err != nil {
+				return "", false
+			}
+			result.WriteString(decoded)
+			continue
+		}
+		if value[i] < 0x20 && value[i] != '\t' && !(multiline && value[i] == '\n') {
+			return "", false
+		}
+		result.WriteByte(value[i])
+		i++
+	}
+	return "", false
 }
 
 func codexConfigMultiline(line, delimiter string) string {
