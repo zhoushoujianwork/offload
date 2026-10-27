@@ -173,33 +173,41 @@ func TestCodexBundleOverridesReachWorker(t *testing.T) {
 }
 
 func TestCodexResolvedModelReporting(t *testing.T) {
-	work, _ := setupCodex(t, codexReply)
-	t.Setenv("CODEX_HOME", t.TempDir())
-	if err := os.WriteFile(filepath.Join(os.Getenv("CODEX_HOME"), "config.toml"), []byte("model = 'native-model'\n"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	if err := config.SaveProfile(config.Path(), "codex", config.Profile{Backend: "codex"}, false); err != nil {
-		t.Fatal(err)
-	}
-	code, out, stderr := runCLI("-json", "-p", "codex", "-d", work, "inspect")
-	if code != 0 {
-		t.Fatalf("%d %s %s", code, out, stderr)
-	}
-	var rec history.Record
-	if err := json.Unmarshal([]byte(out), &rec); err != nil {
-		t.Fatal(err)
-	}
-	if rec.Model != "native-model" || rec.ModelSource != "config" {
-		t.Fatalf("%+v", rec)
-	}
-	rs, err := history.Read(history.Path())
-	if err != nil || len(rs) != 1 || rs[0].Model != rec.Model || rs[0].ModelSource != rec.ModelSource {
-		t.Fatalf("%+v %v", rs, err)
-	}
-	for _, args := range [][]string{{"ls"}, {"show", rec.Session}} {
-		code, out, stderr = runCLI(args...)
-		if code != 0 || !strings.Contains(out, "native-model") || !strings.Contains(out, "config") {
-			t.Fatalf("%v: %d %s %s", args, code, out, stderr)
-		}
+	for name, content := range map[string]string{
+		"plain":                  "model = 'native-model'\n",
+		"inline comment":         "model = 'native-model' # documentation: \"\"\"\n",
+		"multiline instructions": "model = 'native-model'\ndeveloper_instructions = \"\"\"\nBe concise.\n\"\"\"\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			work, _ := setupCodex(t, codexReply)
+			t.Setenv("CODEX_HOME", t.TempDir())
+			if err := os.WriteFile(filepath.Join(os.Getenv("CODEX_HOME"), "config.toml"), []byte(content), 0600); err != nil {
+				t.Fatal(err)
+			}
+			if err := config.SaveProfile(config.Path(), "codex", config.Profile{Backend: "codex"}, false); err != nil {
+				t.Fatal(err)
+			}
+			code, out, stderr := runCLI("-json", "-p", "codex", "-d", work, "inspect")
+			if code != 0 {
+				t.Fatalf("%d %s %s", code, out, stderr)
+			}
+			var rec history.Record
+			if err := json.Unmarshal([]byte(out), &rec); err != nil {
+				t.Fatal(err)
+			}
+			if rec.Model != "native-model" || rec.ModelSource != "config" {
+				t.Fatalf("%+v", rec)
+			}
+			rs, err := history.Read(history.Path())
+			if err != nil || len(rs) != 1 || rs[0].Model != rec.Model || rs[0].ModelSource != rec.ModelSource {
+				t.Fatalf("%+v %v", rs, err)
+			}
+			for _, args := range [][]string{{"ls"}, {"show", rec.Session}} {
+				code, out, stderr = runCLI(args...)
+				if code != 0 || !strings.Contains(out, "native-model") || !strings.Contains(out, "config") {
+					t.Fatalf("%v: %d %s %s", args, code, out, stderr)
+				}
+			}
+		})
 	}
 }

@@ -99,17 +99,19 @@ func codexConfigModel() string {
 	defer f.Close()
 	sc := bufio.NewScanner(f)
 	model := ""
+	multiline := ""
 	for sc.Scan() {
 		line := strings.TrimSpace(sc.Text())
+		inMultiline := multiline != ""
+		multiline = codexConfigMultiline(line, multiline)
+		if inMultiline {
+			continue
+		}
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
 		if strings.HasPrefix(line, "[") {
 			break
-		}
-		// Avoid reading apparent keys inside multiline string values.
-		if strings.Contains(line, `"""`) || strings.Contains(line, "'''") {
-			return ""
 		}
 		m := codexModelSetting.FindStringSubmatch(line)
 		if m == nil {
@@ -127,10 +129,55 @@ func codexConfigModel() string {
 			}
 		}
 	}
-	if sc.Err() != nil {
+	if sc.Err() != nil || multiline != "" {
 		return ""
 	}
 	return model
+}
+
+func codexConfigMultiline(line, delimiter string) string {
+	for i := 0; i < len(line); {
+		if delimiter != "" {
+			if delimiter == `"""` && line[i] == '\\' {
+				i += 2
+			} else if strings.HasPrefix(line[i:], delimiter) {
+				quote := delimiter[0]
+				i += 3
+				for i < len(line) && line[i] == quote {
+					i++
+				}
+				delimiter = ""
+			} else {
+				i++
+			}
+			continue
+		}
+		switch line[i] {
+		case '#':
+			return ""
+		case '\'', '"':
+			quote := line[i]
+			if i+2 < len(line) && line[i+1] == quote && line[i+2] == quote {
+				delimiter = line[i : i+3]
+				i += 3
+				continue
+			}
+			i++
+			for i < len(line) {
+				if quote == '"' && line[i] == '\\' {
+					i += 2
+				} else if line[i] == quote {
+					i++
+					break
+				} else {
+					i++
+				}
+			}
+		default:
+			i++
+		}
+	}
+	return delimiter
 }
 
 // Native authentication belongs to Codex; inspect only the authentication mode,

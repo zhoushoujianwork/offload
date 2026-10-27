@@ -71,6 +71,7 @@ func TestCodexConfigDefaultHome(t *testing.T) {
 		{"[profiles.other]\nmodel = 'wrong'\n", ""},
 		{"model = 123\n", ""},
 		{"instructions = '''\nmodel = 'wrong'\n'''\n", ""},
+		{"model = 'valid'\ninstructions = '''\nunterminated\n", ""},
 	} {
 		if err := os.WriteFile(filepath.Join(codexHome(), "config.toml"), []byte(tc.content), 0600); err != nil {
 			t.Fatal(err)
@@ -78,6 +79,29 @@ func TestCodexConfigDefaultHome(t *testing.T) {
 		if got := codexConfigModel(); got != tc.want {
 			t.Fatalf("%q: %q", tc.content, got)
 		}
+	}
+}
+
+func TestCodexConfigMultilineSettings(t *testing.T) {
+	for _, tc := range []struct{ name, content string }{
+		{"inline comment", "model = \"config-model\" # documentation: \"\"\"\n"},
+		{"following instructions", "model = 'config-model'\ndeveloper_instructions = \"\"\"\nBe concise.\n\"\"\"\n"},
+		{"preceding instructions", "developer_instructions = '''\nmodel = 'wrong'\n[profiles.other]\n'''\nmodel = 'config-model'\n"},
+		{"quoted delimiter", "instructions = \"literal ''' delimiter\"\nmodel = 'config-model'\n"},
+		{"same line delimiters", "instructions = \"\"\"Be concise.\"\"\" # '''\nmodel = 'config-model'\n"},
+		{"escaped delimiter", "instructions = \"\"\"\nescaped \\\"\"\"\nmodel = 'wrong'\n\"\"\"\nmodel = 'config-model'\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("CODEX_HOME", t.TempDir())
+			if err := os.WriteFile(filepath.Join(codexHome(), "config.toml"), []byte(tc.content), 0600); err != nil {
+				t.Fatal(err)
+			}
+			rec := history.Record{}
+			resolveCodexModel(&rec, "")
+			if rec.Model != "config-model" || rec.ModelSource != "config" || rec.ModelUnavailable != "" {
+				t.Fatalf("%+v", rec)
+			}
+		})
 	}
 }
 
