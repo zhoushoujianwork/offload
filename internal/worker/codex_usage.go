@@ -34,24 +34,13 @@ func decodeCodexUsage(raw json.RawMessage) *history.TokenUsage {
 
 var codexSessionID = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
 
-// Capture before the child starts: a resumed exec emits the session total.
-// Only filenames are searched; only the matching rollout is streamed. Never
-// surface paths, payload text, prompts, or results in accounting errors.
-func codexBaseline(session string) (*history.TokenUsage, string) {
-	if session == "" {
-		return &history.TokenUsage{}, ""
-	}
-	const unavailable = "resume baseline missing or corrupt"
+func codexRollout(session string) (string, error) {
 	if !codexSessionID.MatchString(session) {
-		return nil, unavailable
+		return "", errors.New("invalid session id")
 	}
-	home := os.Getenv("CODEX_HOME")
+	home := codexHome()
 	if home == "" {
-		userHome, err := os.UserHomeDir()
-		if err != nil {
-			return nil, unavailable
-		}
-		home = filepath.Join(userHome, ".codex")
+		return "", errors.New("codex home unavailable")
 	}
 	var match string
 	err := filepath.WalkDir(filepath.Join(home, "sessions"), func(path string, d fs.DirEntry, err error) error {
@@ -67,6 +56,24 @@ func codexBaseline(session string) (*history.TokenUsage, string) {
 		return nil
 	})
 	if err != nil || match == "" {
+		return "", errors.New("rollout unavailable")
+	}
+	return match, nil
+}
+
+// Capture before the child starts: a resumed exec emits the session total.
+// Only filenames are searched; only the matching rollout is streamed. Never
+// surface paths, payload text, prompts, or results in accounting errors.
+func codexBaseline(session string) (*history.TokenUsage, string) {
+	if session == "" {
+		return &history.TokenUsage{}, ""
+	}
+	const unavailable = "resume baseline missing or corrupt"
+	if !codexSessionID.MatchString(session) {
+		return nil, unavailable
+	}
+	match, err := codexRollout(session)
+	if err != nil {
 		return nil, unavailable
 	}
 	f, err := os.Open(match)
@@ -152,6 +159,11 @@ func applyCodexAccounting(rec *history.Record, s streamSummary, baseline *histor
 				rec.Usage = delta
 			}
 		}
+	}
+	if codexSubscription() {
+		rec.CostBasis = "subscription"
+		rec.CostUnavailable = "subscription: Codex does not report USD cost"
+		return
 	}
 	if rec.Usage == nil {
 		rec.CostUnavailable = rec.UsageUnavailable

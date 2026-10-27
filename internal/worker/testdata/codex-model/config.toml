@@ -1,0 +1,4 @@
+# Native default, distinct from the session's model.
+model = 'gpt-6.1-sol' # inline comment
+[profiles.other]
+model = "other-profile-model"

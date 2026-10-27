@@ -249,6 +249,9 @@ func Run(ctx context.Context, o Opts) (rec history.Record, err error) {
 	var admitted time.Time
 	var leftover *proc.Group // worker processes that survived cleanup
 	defer func() {
+		if rec.Backend == "codex" {
+			resolveCodexModel(&rec, o.Model)
+		}
 		elapsed := time.Since(started).Milliseconds()
 		rec.ElapsedMs = &elapsed
 		if !admitted.IsZero() {

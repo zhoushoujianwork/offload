@@ -50,6 +50,9 @@ func cmdList(args []string, stdout, stderr io.Writer) int {
 		if r.Model != "" && !strings.Contains(strings.ToLower(profile), strings.ToLower(r.Model)) {
 			profile += " / " + r.Model
 		}
+		if r.ModelSource != "" {
+			profile += " (model_source=" + r.ModelSource + ")"
+		}
 		project := "project unavailable"
 		if r.Dir != "" {
 			project = filepath.Base(r.Dir)
