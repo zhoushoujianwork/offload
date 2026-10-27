@@ -4,12 +4,17 @@ import (
 	"bytes"
 	"context"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/zhoushoujianwork/offload/internal/live"
 )
+
+type watchWriter func([]byte) (int, error)
+
+func (w watchWriter) Write(p []byte) (int, error) { return w(p) }
 
 func newTestWatcher() (*watcher, *bytes.Buffer) {
 	var buf bytes.Buffer
@@ -88,15 +93,38 @@ func TestWatchFollowsARealRunToTheEnd(t *testing.T) {
 	fastWatch(t)
 	watchEvery = 50 * time.Millisecond
 	work, _ := setup(t, okReply)
-	t.Setenv("FAKE_SLEEP", "1")
+	release := filepath.Join(t.TempDir(), "release")
+	fake := os.Getenv("OFFLOAD_CLAUDE")
+	script, err := os.ReadFile(fake)
+	if err != nil {
+		t.Fatal(err)
+	}
+	script = bytes.Replace(script, []byte("cat <<'EOF'"), []byte("while [ ! -f '"+release+"' ]; do sleep 0.02; done\ncat <<'EOF'"), 1)
+	if err := os.WriteFile(fake, script, 0700); err != nil {
+		t.Fatal(err)
+	}
 	done := make(chan struct{})
-	go func() { defer close(done); runCLI("-d", work, "task") }()
-	time.Sleep(500 * time.Millisecond) // let the worker publish its first state
+	go func() { defer close(done); runCLI("-d", work, "-t", "30s", "task") }()
+	t.Cleanup(func() {
+		os.WriteFile(release, nil, 0600)
+		<-done
+	})
+	waitFor(t, "running worker", 30*time.Second, func() bool { return phases(t)[live.Running] == 1 })
 
 	var out bytes.Buffer
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	code := cmdWatch(ctx, &out, &out)
+	// watch 实际报告启动后才放行后端。
+	observed := watchWriter(func(p []byte) (int, error) {
+		n, err := out.Write(p)
+		if bytes.Contains(p, []byte("started pid=")) {
+			if e := os.WriteFile(release, nil, 0600); e != nil {
+				return n, e
+			}
+		}
+		return n, err
+	})
+	code := cmdWatch(ctx, observed, &out)
 	<-done
 	got := out.String()
 	if code != 0 || !strings.Contains(got, "started") || !strings.Contains(got, "finished status=ok") || !strings.Contains(got, "all workers finished") {
@@ -109,32 +137,58 @@ func TestWatchFollowsARealRunToTheEnd(t *testing.T) {
 func TestSalvagingWorkerIsNotReportedLost(t *testing.T) {
 	work, _ := setup(t, okReply)
 	origStale := live.StaleAfter
-	live.StaleAfter = 3 * time.Second // above the 2s refresh interval, below the salvage run
+	live.StaleAfter = 10 * time.Second // 为 2s 刷新周期预留调度余量。
 	t.Cleanup(func() { live.StaleAfter = origStale })
-	t.Setenv("FAKE_PREFIX", `{"type":"system","subtype":"init","session_id":"s-killed"}`)
-	t.Setenv("FAKE_SLEEP", "15")
-	t.Setenv("FAKE_SALVAGE", "REPORT")
-	t.Setenv("FAKE_SALVAGE_SLEEP", "7")
+	release := filepath.Join(t.TempDir(), "release")
+	fake := os.Getenv("OFFLOAD_CLAUDE")
+	t.Setenv("FAKE_RELEASE", release)
+	script := `#!/bin/sh
+case " $* " in
+*' --tools '*)
+  while [ ! -f "$FAKE_RELEASE" ]; do sleep 0.02; done
+  printf '%s\n' '{"type":"result","result":"REPORT","session_id":"s-killed"}'
+  ;;
+*)
+  printf '%s\n' '{"type":"system","subtype":"init","session_id":"s-killed"}'
+  sleep 60
+  ;;
+esac
+`
+	if err := os.WriteFile(fake, []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
 	done := make(chan struct{})
-	go func() { defer close(done); runCLI("-d", work, "-t", "4s", "slow") }()
+	go func() { defer close(done); runCLI("-d", work, "-t", "10s", "slow") }()
 
-	lost, salvaging := false, false
-	for end := time.Now().Add(25 * time.Second); time.Now().Before(end); time.Sleep(150 * time.Millisecond) {
-		states, _ := live.List()
+	t.Cleanup(func() { os.WriteFile(release, nil, 0600); <-done })
+	var first time.Time
+	waitFor(t, "salvage heartbeat beyond the stale interval", 45*time.Second, func() bool {
+		states, err := live.List()
+		if err != nil {
+			t.Fatal(err)
+		}
 		for _, s := range states {
-			lost = lost || s.Phase == live.Lost
-			salvaging = salvaging || s.Phase == live.Salvaging
+			if s.Phase == live.Lost {
+				t.Fatal("a refreshed salvage state went stale")
+			}
+			if s.Phase == live.Salvaging {
+				if first.IsZero() {
+					first = s.UpdatedAt
+				}
+				return s.UpdatedAt.Sub(first) > live.StaleAfter
+			}
 		}
 		select {
 		case <-done:
-			end = time.Now()
+			t.Fatal("worker finished before salvage heartbeats were observed")
 		default:
 		}
+		return false
+	})
+	if err := os.WriteFile(release, nil, 0600); err != nil {
+		t.Fatal(err)
 	}
 	<-done
-	if !salvaging || lost {
-		t.Fatalf("salvaging seen=%v lost seen=%v; a refreshed state must not go stale", salvaging, lost)
-	}
 }
 
 // A bounded watch is one long wait instead of many short polls: it returns 124 with a clear

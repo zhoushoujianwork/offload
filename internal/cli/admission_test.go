@@ -14,7 +14,6 @@ import (
 
 	"github.com/zhoushoujianwork/offload/internal/live"
 	"github.com/zhoushoujianwork/offload/internal/proc"
-	"github.com/zhoushoujianwork/offload/internal/worker"
 )
 
 func needUnix(t *testing.T) {
@@ -329,19 +328,59 @@ func TestTimeoutAndIdleStopWorkerChildren(t *testing.T) {
 		t.Run(tc, func(t *testing.T) {
 			work, _ := setup(t, okReply)
 			childPID := filepath.Join(t.TempDir(), "child.pid")
-			t.Setenv("FAKE_SLEEP", "60")
-			t.Setenv("FAKE_CHILD", childPID)
-			t.Setenv("FAKE_PREFIX", `{"type":"system","subtype":"init","session_id":"s-x"}`)
-			timeout := "1500ms"
-			if tc == "idle" {
-				orig := worker.IdleLimit
-				worker.IdleLimit = time.Second
-				t.Cleanup(func() { worker.IdleLimit = orig })
-				timeout = "30s"
+			// 在外部初始化命令之前输出 init，持续产生活动，
+			// 直到父进程观察到已解析的会话及子进程。
+			release := filepath.Join(t.TempDir(), "silent")
+			script := `#!/bin/sh
+printf '%s\n' '{"type":"system","subtype":"init","session_id":"s-x"}'
+sleep 300 >/dev/null 2>&1 &
+echo $! > "$FAKE_CHILD"
+while [ ! -f "$FAKE_RELEASE" ]; do
+  printf '%s\n' '{"type":"system","subtype":"init","session_id":"s-x"}'
+  sleep 0.1
+done
+sleep 300
+`
+			if err := os.WriteFile(os.Getenv("OFFLOAD_CLAUDE"), []byte(script), 0700); err != nil {
+				t.Fatal(err)
 			}
-			code, out, _ := runCLI("-json", "-no-salvage", "-d", work, "-t", timeout, "task")
+			t.Setenv("FAKE_CHILD", childPID)
+			t.Setenv("FAKE_RELEASE", release)
+			timeout, idle, reason := "10s", "0", "deadline"
+			if tc == "idle" {
+				timeout, idle, reason = "60s", "5s", "idle"
+			}
+			var code int
+			var out string
+			done := make(chan struct{})
+			go func() {
+				defer close(done)
+				code, out, _ = runCLI("-json", "-no-salvage", "-d", work, "-t", timeout, "-idle", idle, "task")
+			}()
+			t.Cleanup(func() { os.WriteFile(release, nil, 0600); <-done })
+			waitFor(t, "parsed session and worker child", 30*time.Second, func() bool {
+				states, err := live.List()
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, s := range states {
+					if s.Phase == live.Running && s.Session == "s-x" && pidFrom(childPID) > 0 {
+						return true
+					}
+				}
+				select {
+				case <-done:
+					t.Fatalf("worker stopped before readiness: code=%d out=%s", code, out)
+				default:
+				}
+				return false
+			})
+			if err := os.WriteFile(release, nil, 0600); err != nil {
+				t.Fatal(err)
+			}
+			<-done
 			rec := decodeRun(t, out)
-			if code != 124 || rec.Status != "timeout" || rec.Session != "s-x" || rec.Cleanup != "" || !strings.Contains(rec.Error, "offload -r s-x") {
+			if code != 124 || rec.StopReason != reason || rec.Status != "timeout" || rec.Session != "s-x" || rec.Cleanup != "" || !strings.Contains(rec.Error, "offload -r s-x") {
 				t.Fatalf("code=%d rec=%+v", code, rec)
 			}
 			cpid := pidFrom(childPID)
