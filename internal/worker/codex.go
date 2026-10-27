@@ -27,8 +27,21 @@ func buildCodexArgs(o Opts) []string {
 	if o.Write {
 		sandbox = "workspace-write"
 	}
+	if o.ExecutionPolicy == "managed-development" && o.CodexSandbox != "" {
+		sandbox = o.CodexSandbox
+	}
 	// Config overrides also work with exec resume, which has no --sandbox flag.
 	args := []string{"exec", "-c", `approval_policy="never"`, "-c", `sandbox_mode="` + sandbox + `"`}
+	if o.ExecutionPolicy == "managed-development" && sandbox == "workspace-write" {
+		args = append(args, "-c", "sandbox_workspace_write.network_access=true")
+		if len(o.GitRoots) > 0 {
+			roots := make([]string, len(o.GitRoots))
+			for i, r := range o.GitRoots {
+				roots[i] = strconv.Quote(r)
+			}
+			args = append(args, "-c", "sandbox_workspace_write.writable_roots=["+strings.Join(roots, ",")+"]")
+		}
+	}
 	if o.Profile.ReasoningEffort != "" {
 		args = append(args, "-c", "model_reasoning_effort="+strconv.Quote(o.Profile.ReasoningEffort))
 	}
@@ -49,7 +62,7 @@ func buildCodexArgs(o Opts) []string {
 }
 
 // codexParser normalizes Codex JSONL events into the shared progress/result model.
-// Codex reports token usage, not a USD cost; leave cost unavailable.
+// Usage is session-cumulative; run accounting is applied after the process exits.
 type codexParser struct {
 	s       streamSummary
 	report  string
@@ -71,9 +84,10 @@ func (p *codexParser) feed(line []byte) {
 	}
 	seen := p.seen
 	var e struct {
-		Type     string `json:"type"`
-		ThreadID string `json:"thread_id"`
-		Message  string `json:"message"`
+		Type     string          `json:"type"`
+		Usage    json.RawMessage `json:"usage"`
+		ThreadID string          `json:"thread_id"`
+		Message  string          `json:"message"`
 		Error    struct {
 			Message string `json:"message"`
 		} `json:"error"`
@@ -94,6 +108,8 @@ func (p *codexParser) feed(line []byte) {
 		s.Session = e.ThreadID
 	}
 	switch e.Type {
+	case "turn.started":
+		s.Result, p.report = nil, ""
 	case "item.started", "item.completed":
 		if e.Item.Type == "agent_message" && e.Type == "item.completed" {
 			s.LastText = e.Item.Text
@@ -112,6 +128,10 @@ func (p *codexParser) feed(line []byte) {
 		}
 	case "turn.completed":
 		s.Result = &claudeResult{Result: p.report, SessionID: s.Session, NumTurns: s.ToolCalls}
+		s.Result.CumulativeUsage = decodeCodexUsage(e.Usage)
+		if s.Result.CumulativeUsage == nil {
+			s.Result.UsageUnavailable = "missing or invalid terminal usage"
+		}
 		if strings.TrimSpace(p.report) == "" {
 			s.Result.IsError = true
 			s.Result.Errors = []string{"Codex completed without a report"}

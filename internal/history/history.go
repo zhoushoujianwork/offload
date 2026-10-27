@@ -12,19 +12,32 @@ import (
 
 // Record is one line of the run log.
 type Record struct {
-	TS             string   `json:"ts"`
-	Status         string   `json:"status"` // ok | error | timeout
-	ExitCode       *int     `json:"exit_code"`
-	Profile        string   `json:"profile"`
-	Backend        string   `json:"backend,omitempty"`
-	Model          string   `json:"model"`
-	Dir            string   `json:"dir"`
-	Task           string   `json:"task"`
-	Session        string   `json:"session"`
-	Turns          int      `json:"turns"`                        // for an interrupted run: tool calls made
-	Denials        int      `json:"permission_denials,omitempty"` // tool calls the worker was refused
-	CostUSD        *float64 `json:"cost_usd"`                     // worker estimate, never verified billing; nil means unavailable
-	CostIsEstimate bool     `json:"cost_is_estimate"`
+	RunID            string           `json:"run_id,omitempty"`
+	CallerRunID      string           `json:"caller_run_id,omitempty"`
+	ExecutionPolicy  string           `json:"execution_policy,omitempty"`
+	ErrorKind        string           `json:"error_kind,omitempty"`
+	TS               string           `json:"ts"`
+	Status           string           `json:"status"` // ok | error | timeout
+	ExitCode         *int             `json:"exit_code"`
+	Profile          string           `json:"profile"`
+	Backend          string           `json:"backend,omitempty"`
+	Model            string           `json:"model"`
+	ServiceTier      string           `json:"service_tier,omitempty"`
+	Dir              string           `json:"dir"`
+	Task             string           `json:"task"`
+	Session          string           `json:"session"`
+	Turns            int              `json:"turns"`                        // for an interrupted run: tool calls made
+	Denials          int              `json:"permission_denials,omitempty"` // tool calls the worker was refused
+	CostUSD          *float64         `json:"cost_usd"`                     // worker estimate, never verified billing; nil means unavailable
+	CostIsEstimate   bool             `json:"cost_is_estimate"`
+	Usage            *TokenUsage      `json:"usage,omitempty"`
+	CumulativeUsage  *TokenUsage      `json:"cumulative_usage,omitempty"`
+	UsageSource      string           `json:"usage_source,omitempty"`
+	UsageScope       string           `json:"usage_scope,omitempty"`
+	UsageUnavailable string           `json:"usage_unavailable,omitempty"`
+	CostUnavailable  string           `json:"cost_unavailable,omitempty"`
+	CostBasis        string           `json:"cost_basis,omitempty"`
+	Pricing          *PricingSnapshot `json:"pricing,omitempty"`
 	// CostNote explains why CostUSD is nil. Read derives it for display only; it is never persisted.
 	CostNote   string `json:"-"`
 	DurationMs int64  `json:"duration_ms"` // duration reported by the worker (legacy field)
@@ -110,7 +123,7 @@ func normalizeCost(r *Record) {
 	case r.CostUSD != nil && !r.CostIsEstimate && *r.CostUSD == 0:
 		r.CostUSD, r.CostNote = nil, CostNoteLegacyZero
 	case r.CostUSD == nil && r.Backend == "codex":
-		r.CostNote = CostNoteCodex
+		r.CostNote = firstCostReason(r.CostUnavailable, CostNoteCodex)
 	case r.CostUSD == nil:
 		r.CostNote = CostNoteNotReport
 	}

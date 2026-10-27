@@ -34,6 +34,7 @@ func setup(t *testing.T, reply string) (work, record string) {
 	fake := filepath.Join(tmp, "claude")
 	script := "#!/bin/sh\n" +
 		"{ printf '%s\\n' \"$@\"; echo \"ENV token=$ANTHROPIC_AUTH_TOKEN base=$ANTHROPIC_BASE_URL model=$ANTHROPIC_MODEL key=$ANTHROPIC_API_KEY hdr=$ANTHROPIC_CUSTOM_HEADERS pwd=$(pwd -P) gomaxprocs=$GOMAXPROCS goflags=$GOFLAGS\"; } > " + record + "\n" +
+		"cat > '" + record + ".stdin'\n" +
 		"[ -n \"$FAKE_CHILD\" ] && { sleep 300 >/dev/null 2>&1 & echo $! > \"$FAKE_CHILD\"; }\n" +
 		"[ -n \"$FAKE_MARK\" ] && echo \"$$ $(date +%s)\" >> \"$FAKE_MARK\"\n" +
 		"prompt_file=''; inline_prompt=0; previous=''\n" +

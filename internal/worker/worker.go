@@ -81,6 +81,18 @@ func watchIdle(ctx context.Context, cancel context.CancelCauseFunc, last *atomic
 
 // Opts is one worker run.
 type Opts struct {
+	RunID            string
+	CallerRunID      string
+	ExecutionPolicy  string
+	InstructionsFile string
+	CodexSandbox     string
+
+	Instructions                  []byte
+	ToolsDisabled                 bool
+	AllowedTools, DisallowedTools string
+	GitRoots                      []string
+	OnLine                        func([]byte) error
+
 	ProfileName string
 	Profile     config.Profile
 	Model       string
@@ -101,14 +113,16 @@ type Opts struct {
 
 // claudeResult is the subset of `claude -p --output-format json` we use.
 type claudeResult struct {
-	Result     string   `json:"result"`
-	IsError    bool     `json:"is_error"`
-	Subtype    string   `json:"subtype"`
-	Errors     []string `json:"errors"`
-	NumTurns   int      `json:"num_turns"`
-	CostUSD    *float64 `json:"total_cost_usd"`
-	DurationMs int64    `json:"duration_ms"`
-	SessionID  string   `json:"session_id"`
+	CumulativeUsage  *history.TokenUsage `json:"-"`
+	UsageUnavailable string              `json:"-"`
+	Result           string              `json:"result"`
+	IsError          bool                `json:"is_error"`
+	Subtype          string              `json:"subtype"`
+	Errors           []string            `json:"errors"`
+	NumTurns         int                 `json:"num_turns"`
+	CostUSD          *float64            `json:"total_cost_usd"`
+	DurationMs       int64               `json:"duration_ms"`
+	SessionID        string              `json:"session_id"`
 }
 
 // salvageTask makes a stopped worker write its report from what it already read.
@@ -130,12 +144,26 @@ func buildArgs(o Opts, promptPath string) []string {
 
 	if o.Salvage {
 		args = append(args, "--tools", "")
+	} else if o.ToolsDisabled {
+		args = append(args, "--tools", "")
+	} else if o.AllowedTools != "" {
+		// Explicit allowlists must not inherit automatic approval for edits.
+		args = append(args, "--permission-mode", "default", "--allowedTools", strings.ReplaceAll(o.AllowedTools, ",", " "))
+	} else if o.ExecutionPolicy == "managed-development" {
+		args = append(args, "--permission-mode", "acceptEdits", "--allowedTools", "Bash Read Grep Glob Edit Write")
 	} else if o.Write {
 		args = append(args, "--permission-mode", "acceptEdits", "--allowedTools", writeTools)
 	} else {
 		args = append(args, "--allowedTools", readOnlyTools)
 	}
-	return append(args, "--append-system-prompt-file", promptPath, o.Task)
+	if o.DisallowedTools != "" {
+		args = append(args, "--disallowedTools", strings.ReplaceAll(o.DisallowedTools, ",", " "))
+	}
+	args = append(args, "--append-system-prompt-file", promptPath)
+	if o.ExecutionPolicy == "managed-development" {
+		return args // managed task contents travel only through stdin
+	}
+	return append(args, o.Task)
 }
 
 // writeWorkerPrompt combines explicit project instructions and delegated-task constraints.
@@ -154,7 +182,13 @@ func writeWorkerPrompt(o Opts) (string, error) {
 		}
 		fmt.Fprintf(&prompt, "Project instructions from %s:\n%s\n\n", path, contents)
 	}
-	if o.Profile.BackendName() == "codex" {
+	if len(o.Instructions) > 0 {
+		prompt.Write(o.Instructions)
+		prompt.WriteString("\n\n")
+	}
+	if o.ExecutionPolicy == "managed-development" {
+		prompt.WriteString(managedPrompt)
+	} else if o.Profile.BackendName() == "codex" {
 		prompt.WriteString(codexPrompt)
 	} else {
 		prompt.WriteString(Prompt)
@@ -219,12 +253,15 @@ var (
 // slot through the worker, any salvage step and cleanup of the worker's process group, and gives
 // it up only once those processes are confirmed gone.
 func Run(ctx context.Context, o Opts) (rec history.Record, err error) {
+	if o.RunID == "" {
+		o.RunID = NewRunID()
+	}
 	started := o.StartedAt
 	if started.IsZero() {
 		started = time.Now()
 	}
 	rec = history.Record{TS: started.Format("2006-01-02 15:04:05"), Profile: o.ProfileName, Model: o.Model,
-		Backend: o.Profile.BackendName(), Dir: o.Dir, Task: o.Task, Status: "error", CostIsEstimate: true}
+		RunID: o.RunID, CallerRunID: o.CallerRunID, ExecutionPolicy: policyName(o.ExecutionPolicy), Backend: o.Profile.BackendName(), Dir: o.Dir, Task: o.Task, Status: "error", CostIsEstimate: true}
 	var pub *publisher
 	var slot *slots.Slot
 	var admitted time.Time
@@ -245,6 +282,12 @@ func Run(ctx context.Context, o Opts) (rec history.Record, err error) {
 			code = 124
 		}
 		rec.ExitCode = &code
+		if rec.Status != "ok" && rec.ErrorKind == "" {
+			rec.ErrorKind = "execution"
+		}
+		if rec.Status == "ok" {
+			rec.ErrorKind = ""
+		}
 		// Give the slot up only after cleanup. A group that is still alive keeps the slot file
 		// recording it, so the capacity stays unavailable.
 		if leftover != nil && !leftover.Alive() {
@@ -265,6 +308,11 @@ func Run(ctx context.Context, o Opts) (rec history.Record, err error) {
 			pub.finish(rec, leftover)
 		}
 	}()
+	if err = Validate(&o); err != nil {
+		rec.ErrorKind = ErrorKind(err)
+		return rec, err
+	}
+	rec.ErrorKind = "configuration"
 	promptPath, err := writeWorkerPrompt(o)
 	if err != nil {
 		return rec, err
@@ -272,6 +320,7 @@ func Run(ctx context.Context, o Opts) (rec history.Record, err error) {
 	defer os.Remove(promptPath)
 	var token, bin string
 	if o.Profile.BackendName() == "codex" {
+		rec.ErrorKind = "launch"
 		bin, err = codexBin()
 		if err != nil {
 			return rec, fmt.Errorf("codex CLI not found: %w", err)
@@ -281,6 +330,7 @@ func Run(ctx context.Context, o Opts) (rec history.Record, err error) {
 		if err != nil {
 			return rec, err
 		}
+		rec.ErrorKind = "launch"
 		bin, err = claudeBin()
 		if err != nil {
 			return rec, fmt.Errorf("claude CLI not found: %w", err)
@@ -289,6 +339,7 @@ func Run(ctx context.Context, o Opts) (rec history.Record, err error) {
 			return rec, err
 		}
 	}
+	rec.ErrorKind = "launch"
 	pub = newPublisher(o, started)
 	slot, err = slots.Acquire(ctx, slots.Options{Dir: slots.Dir(), Max: o.MaxWorkers, OnWait: pub.waiting})
 	if err != nil {
@@ -307,10 +358,29 @@ func Run(ctx context.Context, o Opts) (rec history.Record, err error) {
 		leftover = a.leftover
 	}
 	s := a.s
+	rec.ErrorKind = "execution"
+	var launchErr *exec.Error
+	var pathErr *os.PathError
+	if errors.As(a.runErr, &launchErr) || errors.As(a.runErr, &pathErr) {
+		rec.ErrorKind = "launch"
+	}
+	// NotifyContext may expose a signal-specific Cause; Err remains context.Canceled.
+	if errors.Is(a.cause, context.Canceled) || errors.Is(ctx.Err(), context.Canceled) {
+		rec.ErrorKind = "canceled"
+	}
+	if errors.Is(a.cause, errEventsIO) {
+		rec.ErrorKind = "events_io"
+	}
+	if o.Profile.BackendName() == "codex" {
+		defer func() {
+			applyCodexAccounting(&rec, s, a.baseline, a.baselineError, o, a.runErr == nil && a.cause == nil)
+		}()
+	}
 	rec.Session, rec.Turns, rec.Denials = s.Session, s.ToolCalls, s.Denials
 	stopped := errors.Is(a.cause, errIdle) || errors.Is(a.cause, context.DeadlineExceeded)
 	if stopped {
 		rec.Status = "timeout"
+		rec.ErrorKind = "timeout"
 		rec.Error = "timed out after " + o.Timeout.String()
 		if errors.Is(a.cause, errIdle) {
 			rec.Error = "worker produced no output for " + IdleLimit.String()
@@ -343,8 +413,8 @@ func Run(ctx context.Context, o Opts) (rec history.Record, err error) {
 		rec.Result = rec.Error + s.progress()
 		// A stopped worker has usually read plenty. Ask it for the report without tools instead
 		// of leaving the supervisor with a progress sketch. Not after the user pressed Ctrl-C,
-		// and not while the first worker's processes are still alive.
-		if !o.NoSalvage && o.Profile.BackendName() == "claude" && s.Session != "" && ctx.Err() == nil && leftover == nil {
+		// not while the first worker's processes are still alive, and never for managed development.
+		if o.ExecutionPolicy != "managed-development" && !o.NoSalvage && o.Profile.BackendName() == "claude" && s.Session != "" && ctx.Err() == nil && leftover == nil {
 			pub.phase(live.Salvaging)
 			report, cost, ok, left := salvage(ctx, bin, o, promptPath, token, s.Session, pub.keepAlive, hooks)
 			if left != nil {
@@ -364,7 +434,7 @@ func Run(ctx context.Context, o Opts) (rec history.Record, err error) {
 	if rec.CostUSD != nil && !history.ValidCost(*rec.CostUSD) {
 		rec.CostUSD = nil
 	}
-	if !res.IsError && a.runErr == nil {
+	if !res.IsError && a.runErr == nil && a.cause == nil {
 		rec.Status = "ok"
 	} else {
 		for _, message := range res.Errors {
@@ -394,6 +464,8 @@ func Run(ctx context.Context, o Opts) (rec history.Record, err error) {
 
 // attempt is the outcome of one worker process.
 type attempt struct {
+	baseline       *history.TokenUsage
+	baselineError  string
 	s              streamSummary
 	cause          error
 	runErr         error
@@ -423,8 +495,11 @@ func runAttempt(ctx context.Context, bin string, o Opts, promptPath, token strin
 	defer cancelCause(nil)
 	var cmd *exec.Cmd
 	var parser eventParser = &claudeParser{}
+	var baseline *history.TokenUsage
+	var baselineError string
 	// Not CommandContext: that kills only the worker process and never its children.
 	if o.Profile.BackendName() == "codex" {
+		baseline, baselineError = codexBaseline(o.Resume)
 		cmd = exec.Command(bin, buildCodexArgs(o)...)
 		cmd.Dir = o.Dir
 		cmd.Env = o.Limits.ApplyEnv(os.Environ())
@@ -438,9 +513,21 @@ func runAttempt(ctx context.Context, bin string, o Opts, promptPath, token strin
 		cmd = exec.Command(bin, buildArgs(o, promptPath)...)
 		cmd.Dir = o.Dir
 		cmd.Env = o.Limits.ApplyEnv(childEnv(os.Environ(), o, token))
+		if o.ExecutionPolicy == "managed-development" {
+			cmd.Stdin = strings.NewReader(o.Task)
+		}
 	}
 	proc.Prepare(cmd)
 	out := newActivityWriter(parser)
+	if o.OnLine != nil {
+		out.onLine = func(line []byte) error {
+			if err := o.OnLine(line); err != nil {
+				cancelCause(errEventsIO)
+				return fmt.Errorf("%w: %v", errEventsIO, err)
+			}
+			return nil
+		}
+	}
 	var workerErr cappedBuffer
 	cmd.Stdout, cmd.Stderr = out, &workerErr
 	// Do not wait indefinitely for a worker descendant to close inherited pipes.
@@ -492,7 +579,8 @@ func runAttempt(ctx context.Context, bin string, o Opts, promptPath, token strin
 		h.cleaning()
 	}
 	out.finish()
-	a := attempt{s: out.summary(), cause: cause, runErr: runErr, stdout: out.String(), stderr: workerErr.String()}
+	a := attempt{s: out.summary(), cause: cause, runErr: runErr, baseline: baseline, baselineError: baselineError,
+		stdout: out.String(), stderr: workerErr.String()}
 	if !stopGroup(group) {
 		g := group
 		a.leftover = &g

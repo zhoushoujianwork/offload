@@ -14,6 +14,8 @@ const (
 	// maxLineKept bounds one event line. The final report is a single line, so this is generous;
 	// a longer line is dropped rather than buffered without limit.
 	maxLineKept = 16 << 20
+	// maxCallbackLine bounds the lines handed to onLine; longer ones still feed the parser.
+	maxCallbackLine = 256 << 10
 )
 
 // eventParser folds a worker's newline-delimited events into a streamSummary one line at a time,
@@ -38,9 +40,12 @@ func parseAll(p eventParser, out []byte) streamSummary {
 // discarded, and only a capped amount of raw text is kept.
 type activityWriter struct {
 	mu        sync.Mutex
+	lineMu    sync.Mutex // keeps onLine calls in stream order without holding mu during the callback
 	parser    eventParser
-	pending   []byte // bytes of the current, unfinished line
-	skipping  bool   // inside a line longer than maxLineKept; discard up to its newline
+	onLine    func([]byte) error // optional; sees each complete line of at most maxCallbackLine bytes
+	lines     [][]byte           // lines completed by the current Write, delivered after mu is released
+	pending   []byte             // bytes of the current, unfinished line
+	skipping  bool               // inside a line longer than maxLineKept; discard up to its newline
 	raw       []byte
 	rawCapped bool
 	last      atomic.Int64 // unix nanoseconds of the latest write
@@ -54,8 +59,25 @@ func newActivityWriter(p eventParser) *activityWriter {
 
 func (w *activityWriter) Write(p []byte) (int, error) {
 	w.last.Store(time.Now().UnixNano())
+	if w.onLine != nil {
+		w.lineMu.Lock()
+		defer w.lineMu.Unlock()
+	}
 	w.mu.Lock()
-	defer w.mu.Unlock()
+	w.write(p)
+	lines := w.lines
+	w.lines = nil
+	w.mu.Unlock()
+	// A callback error is returned to the writer's caller, which stops the worker's output copy.
+	for _, line := range lines {
+		if err := w.onLine(line); err != nil {
+			return len(p), err
+		}
+	}
+	return len(p), nil
+}
+
+func (w *activityWriter) write(p []byte) {
 	if room := maxRawKept - len(w.raw); room > 0 {
 		w.raw = append(w.raw, p[:min(room, len(p))]...)
 	}
@@ -69,10 +91,9 @@ func (w *activityWriter) Write(p []byte) (int, error) {
 			break
 		}
 		w.addPending(data[:i])
-		w.endLine()
+		w.endLine(true)
 		data = data[i+1:]
 	}
-	return len(p), nil
 }
 
 func (w *activityWriter) addPending(b []byte) {
@@ -86,10 +107,15 @@ func (w *activityWriter) addPending(b []byte) {
 	w.pending = append(w.pending, b...)
 }
 
-func (w *activityWriter) endLine() {
+func (w *activityWriter) endLine(emit bool) {
 	if !w.skipping {
 		if line := bytes.TrimSpace(w.pending); len(line) > 0 {
-			w.parser.feed(line)
+			if w.parser != nil {
+				w.parser.feed(line)
+			}
+			if emit && w.onLine != nil && len(line) <= maxCallbackLine {
+				w.lines = append(w.lines, bytes.Clone(line))
+			}
 		}
 	}
 	w.skipping = false
@@ -105,14 +131,24 @@ func (w *activityWriter) finish() {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	if len(w.pending) > 0 {
-		w.endLine()
+		w.endLine(false) // an unterminated final line is parsed but not streamed to onLine
 	}
 }
 
 func (w *activityWriter) summary() streamSummary {
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	if w.parser == nil {
+		return streamSummary{}
+	}
 	return w.parser.summary()
+}
+
+// Bytes returns a copy of the raw stdout kept so far, capped at maxRawKept.
+func (w *activityWriter) Bytes() []byte {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return bytes.Clone(w.raw)
 }
 
 // String is the raw stdout kept for diagnostics, capped at maxRawKept.
