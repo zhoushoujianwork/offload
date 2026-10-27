@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -328,9 +329,9 @@ func TestTimeoutAndIdleStopWorkerChildren(t *testing.T) {
 		t.Run(tc, func(t *testing.T) {
 			work, _ := setup(t, okReply)
 			childPID := filepath.Join(t.TempDir(), "child.pid")
-			// 在外部初始化命令之前输出 init，持续产生活动，
-			// 直到父进程观察到已解析的会话及子进程。
+			// Keep emitting activity until the parsed session and child are observed.
 			release := filepath.Join(t.TempDir(), "silent")
+			events := filepath.Join(t.TempDir(), "events.ndjson")
 			script := `#!/bin/sh
 printf '%s\n' '{"type":"system","subtype":"init","session_id":"s-x"}'
 sleep 300 >/dev/null 2>&1 &
@@ -346,25 +347,27 @@ sleep 300
 			}
 			t.Setenv("FAKE_CHILD", childPID)
 			t.Setenv("FAKE_RELEASE", release)
-			timeout, idle, reason := "10s", "0", "deadline"
+			timeout, idle, reason := "3s", "0", "deadline"
 			if tc == "idle" {
-				timeout, idle, reason = "60s", "5s", "idle"
+				timeout, idle, reason = "60s", "1s", "idle"
 			}
 			var code int
 			var out string
 			done := make(chan struct{})
 			go func() {
 				defer close(done)
-				code, out, _ = runCLI("-json", "-no-salvage", "-d", work, "-t", timeout, "-idle", idle, "task")
+				code, out, _ = runCLI("-json", "-no-salvage", "-events-file", events, "-d", work, "-t", timeout, "-idle", idle, "task")
 			}()
 			t.Cleanup(func() { os.WriteFile(release, nil, 0600); <-done })
 			waitFor(t, "parsed session and worker child", 30*time.Second, func() bool {
-				states, err := live.List()
-				if err != nil {
+				// Progress is emitted after parsing, without waiting for the 2s live heartbeat.
+				data, err := os.ReadFile(events)
+				if err != nil && !os.IsNotExist(err) {
 					t.Fatal(err)
 				}
-				for _, s := range states {
-					if s.Phase == live.Running && s.Session == "s-x" && pidFrom(childPID) > 0 {
+				for _, line := range bytes.Split(data, []byte("\n")) {
+					var event supervisorEvent
+					if json.Unmarshal(line, &event) == nil && event.Type == "progress" && event.Session == "s-x" && pidFrom(childPID) > 0 {
 						return true
 					}
 				}

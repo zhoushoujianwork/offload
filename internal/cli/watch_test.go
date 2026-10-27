@@ -137,7 +137,7 @@ func TestWatchFollowsARealRunToTheEnd(t *testing.T) {
 func TestSalvagingWorkerIsNotReportedLost(t *testing.T) {
 	work, _ := setup(t, okReply)
 	origStale := live.StaleAfter
-	live.StaleAfter = 10 * time.Second // 为 2s 刷新周期预留调度余量。
+	live.StaleAfter = 5 * time.Second // Allow more than two 2s heartbeat intervals.
 	t.Cleanup(func() { live.StaleAfter = origStale })
 	release := filepath.Join(t.TempDir(), "release")
 	fake := os.Getenv("OFFLOAD_CLAUDE")
@@ -150,7 +150,8 @@ case " $* " in
   ;;
 *)
   printf '%s\n' '{"type":"system","subtype":"init","session_id":"s-killed"}'
-  sleep 60
+  # Ending without a result enters salvage without waiting for a deadline.
+  exit 1
   ;;
 esac
 `
@@ -158,7 +159,7 @@ esac
 		t.Fatal(err)
 	}
 	done := make(chan struct{})
-	go func() { defer close(done); runCLI("-d", work, "-t", "10s", "slow") }()
+	go func() { defer close(done); runCLI("-d", work, "-t", "30s", "slow") }()
 
 	t.Cleanup(func() { os.WriteFile(release, nil, 0600); <-done })
 	var first time.Time
