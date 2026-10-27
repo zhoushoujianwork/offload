@@ -14,6 +14,8 @@ import (
 
 // Events contain only correlation and allowlisted activity metadata, never worker payloads.
 type supervisorEvent struct {
+	StopReason    string  `json:"stop_reason,omitempty"`
+	IdleTimeout   string  `json:"idle_timeout,omitempty"`
 	SchemaVersion int     `json:"schema_version"`
 	Type          string  `json:"type"`
 	RunID         string  `json:"run_id"`
@@ -72,6 +74,8 @@ func (e *eventWriter) emit(kind, native, tool string, rec *history.Record) error
 	if rec != nil {
 
 		if kind == "final" {
+			v.StopReason = rec.StopReason
+			v.IdleTimeout = rec.IdleTimeout
 			v.Status = rec.Status
 			v.ExitCode = rec.ExitCode
 			v.ErrorKind = &rec.ErrorKind

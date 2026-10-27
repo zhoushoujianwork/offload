@@ -104,6 +104,7 @@ func cmdRun(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	write := fs.Bool("w", false, "write mode: edit files in -d + build/test commands (default read-only)")
 	resume := fs.String("r", "", "resume a session id; reuses its original dir unless -d is given")
 	dir := fs.String("d", "", "working directory (default: cwd)")
+	idle := fs.Duration("idle", 0, "idle timeout (0 disables; default 30m managed-development, 10m otherwise)")
 	timeout := fs.Duration("t", 30*time.Minute, "timeout")
 	noSalvage := fs.Bool("no-salvage", false, "skip automatic report salvage for stopped Claude workers")
 	jsonOutput := fs.Bool("json", false, "print one structured run result instead of plain report")
@@ -240,6 +241,11 @@ func cmdRun(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		RunID: rec.RunID, CallerRunID: *callerRunID, ExecutionPolicy: *executionPolicy, InstructionsFile: *instructionsFile, CodexSandbox: *codexSandbox,
 		ToolsDisabled: *toolsDisabled, AllowedTools: *allowedTools, DisallowedTools: *disallowedTools,
 		MaxWorkers: maxWorkers, Limits: cfg.Limits}
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "idle" {
+			o.IdleTimeout = idle
+		}
+	})
 	if events != nil {
 		if err := events.emit("start", "", "", &rec); err != nil {
 			rec.ErrorKind = "events_io"
@@ -256,8 +262,18 @@ func cmdRun(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 
 	// SIGTERM is what a supervisor's own cancellation or a timeout wrapper sends; handle it like Ctrl-C
 	// so the worker's process group is stopped instead of orphaned.
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
+	ctx, cancel := context.WithCancelCause(context.Background())
+	defer cancel(nil)
+	signals := make(chan os.Signal, 1)
+	signal.Notify(signals, os.Interrupt, syscall.SIGTERM)
+	defer signal.Stop(signals)
+	go func() {
+		select {
+		case <-signals:
+			cancel(worker.ErrSignal)
+		case <-ctx.Done():
+		}
+	}()
 	rec, _ = worker.Run(ctx, o)
 	return finish()
 }

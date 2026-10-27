@@ -89,7 +89,7 @@ func SaveProfile(path, name string, p Profile, add bool) error {
 	if err := json.Unmarshal(encoded, &known); err != nil {
 		return err
 	}
-	for _, key := range []string{"backend", "base_url", "model", "token", "token_cmd", "reasoning_effort", "service_tier"} {
+	for _, key := range []string{"backend", "base_url", "model", "token", "token_cmd", "reasoning_effort", "service_tier", "idle_timeout"} {
 		delete(profile, key)
 	}
 	for key, value := range known {

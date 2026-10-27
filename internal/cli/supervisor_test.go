@@ -199,6 +199,12 @@ func TestStructuredErrorKinds(t *testing.T) {
 				timeout = 100 * time.Millisecond
 			}
 			rec, err := worker.Run(ctx, worker.Opts{Dir: work, Profile: config.Profile{Backend: "codex"}, Timeout: timeout})
+			if tc.canceled && rec.StopReason != "canceled" {
+				t.Fatal(rec.StopReason)
+			}
+			if tc.kind == "timeout" && rec.StopReason != "deadline" {
+				t.Fatal(rec.StopReason)
+			}
 			if err != nil || rec.ErrorKind != tc.kind || rec.RunID == "" {
 				t.Fatal(rec, err)
 			}
@@ -331,7 +337,7 @@ func TestSupervisorSIGTERM(t *testing.T) {
 				t.Fatalf("err=%v stdout=%s stderr=%s", err, out.String(), stderr.String())
 			}
 			rec := decodeRun(t, out.String())
-			if rec.Status != "error" || rec.ErrorKind != "canceled" || rec.Salvaged || rec.Session != "s-killed" || rec.ExitCode == nil || *rec.ExitCode != 1 {
+			if rec.Status != "error" || rec.ErrorKind != "canceled" || rec.StopReason != "signal" || rec.Salvaged || rec.Session != "s-killed" || rec.ExitCode == nil || *rec.ExitCode != 1 {
 				t.Fatal(rec)
 			}
 			if _, err := os.Stat(record + ".salvage-args"); !os.IsNotExist(err) {
@@ -362,5 +368,64 @@ func TestClaudeEventFailureCancelsWorker(t *testing.T) {
 	rec, err := worker.Run(context.Background(), worker.Opts{Dir: work, Write: true, ExecutionPolicy: "managed-development", Profile: cfg.Profiles["cheap"], Timeout: time.Minute, OnLine: func([]byte) error { return errors.New("disk full") }})
 	if err != nil || rec.ErrorKind != "events_io" || rec.Status != "error" || rec.Salvaged || time.Since(started) > 5*time.Second {
 		t.Fatalf("%+v %v", rec, err)
+	}
+}
+
+func TestIdleCLIProtocol(t *testing.T) {
+	for _, tc := range []struct {
+		name, profile string
+		flags         []string
+		want, limit   string
+		code          int
+	}{
+		{"profile", "200ms", nil, "idle", "200ms", 124},
+		{"override", "200ms", []string{"-idle", "0"}, "", "0s", 0},
+		{"deadline", "", []string{"-t", "200ms", "-idle", "1s"}, "deadline", "200ms", 124},
+		{"managed", "", []string{"-w", "-execution-policy", "managed-development", "-t", "1h"}, "", "30m0s", 0},
+		{"negative", "", []string{"-idle", "-1s"}, "", "", 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			work, _ := setupCodex(t, codexReply)
+			t.Setenv("FAKE_SLEEP", "0.6")
+			cfg, err := config.Load(config.Path())
+			if err != nil {
+				t.Fatal(err)
+			}
+			profile := cfg.Profiles["codex"]
+			profile.IdleTimeout = tc.profile
+			cfg.Profiles["codex"] = profile
+			data, _ := json.Marshal(cfg)
+			if err := os.WriteFile(config.Path(), data, 0600); err != nil {
+				t.Fatal(err)
+			}
+			events := filepath.Join(t.TempDir(), "events")
+			args := []string{"-json", "-p", "codex", "-d", work, "-events-file", events}
+			args = append(args, tc.flags...)
+			args = append(args, "inspect")
+			code, out, stderr := runCLI(args...)
+			rec := decodeRun(t, out)
+			if code != tc.code || rec.StopReason != tc.want || rec.IdleTimeout != tc.limit {
+				t.Fatalf("%d %+v %s", code, rec, stderr)
+			}
+			if tc.code == 124 && rec.ErrorKind != "timeout" {
+				t.Fatal(rec.ErrorKind)
+			}
+			rs, err := history.Read(history.Path())
+			if err != nil || len(rs) != 1 || rs[0].StopReason != tc.want || rs[0].IdleTimeout != tc.limit {
+				t.Fatalf("%+v %v", rs, err)
+			}
+			b, err := os.ReadFile(events)
+			if err != nil {
+				t.Fatal(err)
+			}
+			lines := bytes.Split(bytes.TrimSpace(b), []byte("\n"))
+			var final supervisorEvent
+			if err := json.Unmarshal(lines[len(lines)-1], &final); err != nil {
+				t.Fatal(err)
+			}
+			if final.Type != "final" || final.StopReason != tc.want || final.IdleTimeout != tc.limit {
+				t.Fatalf("%+v", final)
+			}
+		})
 	}
 }

@@ -117,7 +117,7 @@ Independent `offload` invocations share a per-user, machine-wide worker limit. R
 
 - `max_workers`: workers allowed at once across all terminals and projects. Unset, it defaults to a quarter of the logical CPUs (at least 1), so an 8-CPU machine gets 2. `-1` turns the limit off. `OFFLOAD_MAX_WORKERS` overrides it for one invocation. Tune it for your machine; the default is a starting point, not a measured optimum.
 - `go_max_procs` and `go_parallelism`: defaults added to the worker's environment as `GOMAXPROCS` and `-p=N` in `GOFLAGS` (defaults 2 and 1; `-1` disables). A `GOMAXPROCS` or `-p` you already set is kept, and other `GOFLAGS` are preserved. These are Go build settings, **not** CPU or memory limits: they do not constrain `xcodebuild`, other build tools, or a worker that overrides its environment.
-- A worker holds its slot through the run, any salvage step, and cleanup. It leads its own process group; on completion, `-t` timeout, the 10-minute idle limit, Ctrl-C or SIGTERM, offload sends SIGTERM to the group, then SIGKILL after 5 seconds, and releases the slot only once the group is empty. It never signals processes outside that group and never kills by executable name.
+- A worker holds its slot through the run, any salvage step, and cleanup. It leads its own process group; on completion, `-t` timeout, the configured idle limit, Ctrl-C or SIGTERM, offload sends SIGTERM to the group, then SIGKILL after 5 seconds, and releases the slot only once the group is empty. It never signals processes outside that group and never kills by executable name.
 - Wait and execution time are reported separately (`wait=` and `exec=` in the summary line, `wait_ms` and `exec_ms` in `-json`). `-t` applies to execution only; time spent queued does not count against it. `elapsed` is the total.
 - Only one process can drive a resumed session: of two simultaneous `-r` runs, the second is refused.
 - If worker processes cannot be stopped, the run is reported with `cleanup=unresolved` and its slot stays unavailable until they exit. If offload itself is killed (SIGKILL, crash), the slot is not reused while the recorded process group is alive, and `status` shows the worker as `lost` with `(worker processes alive)` rather than finished. A recycled PID is told apart by process start time.
@@ -272,7 +272,8 @@ offload version
   -w           write mode (default: read-only)
   -r session   resume a session; reuses its original dir unless -d is given
   -d dir       working directory (default: cwd)
-  -t 30m       worker timeout; a worker silent for 10 minutes is stopped earlier
+  -t 30m       worker timeout
+  -idle 10m    空闲时限；0 禁用；managed-development 默认 30m
   -no-salvage  do not ask a stopped worker for a report from what it already read
   -json        emit one JSON run record instead of report-only stdout
 ```
@@ -347,9 +348,10 @@ Before launching Claude, a reachability preflight attempts a TCP connection to t
 ## Known limits
 
 - The worker is headless, so permission prompts cannot be approved. With Claude, compound shell commands (pipes, `&&`, heredocs, `python -c`) are refused and burn a turn. Read-only `rtk` forms (`rtk ls`, `rtk read`, `rtk grep`, `rtk git log`, ...) are allowed; `rtk run`, `proxy`, `err`, `summary`, `pipe`, `test` and `find` are not; `permission_denials=N` in the summary line counts them.
-- A Claude worker stopped by `-t`, by 10 minutes of silence, or ending without a result is asked once, with all tools off, for a report from what it already read. The result starts with `[SALVAGED REPORT ...]`, the summary line shows `salvaged=true`, and `-json` has `"salvaged": true`. Its `cost_usd` covers only that step. It is partial and unverified. `-no-salvage` skips the step; if nothing could be salvaged you get the progress and an `offload -r <session>` command. For such runs `turns` counts tool calls.
+- A Claude worker stopped by `-t`, by the configured idle limit, or ending without a result is asked once, with all tools off, for a report from what it already read. The result starts with `[SALVAGED REPORT ...]`, the summary line shows `salvaged=true`, and `-json` has `"salvaged": true`. Its `cost_usd` covers only that step. It is partial and unverified. `-no-salvage` skips the step; if nothing could be salvaged you get the progress and an `offload -r <session>` command. For such runs `turns` counts tool calls.
 - Process-group cleanup is Unix only (macOS, Linux, BSD). A descendant that detaches with `setsid` or double-forks out of the worker's group is not stopped, and offload cannot see it. On other platforms only the worker process itself is stopped and the machine-wide queue and session lock are not enforced. No pressure-aware admission exists yet: the limit is static.
-- A worker that prints nothing for 10 minutes (a hung model request) is stopped without waiting for `-t`; the idle limit is fixed. Large tasks are slow (20-40s per turn). Split broad audits instead of raising `-t`; keep `-t` at its default unless the task needs more.
+- 空闲检测跟踪 stdout、stderr，以及当前会话的原生事件日志增长（Codex 的 `CODEX_HOME/sessions/YYYY/MM/DD/*-<session>.jsonl`、Claude 的 `CLAUDE_CONFIG_DIR/projects/*/<session>.jsonl`；环境变量未设置时使用各自默认目录）。其他会话的写入不计入。完全没有这些活动的长命令仍受空闲时限约束。
+- 空闲时限优先级：显式 `-idle <duration>` > profile 的 `"idle_timeout": "20m"` > 执行策略默认值（managed-development 为 30m，其他为 10m）。`0` 禁用空闲检测；负数或无效时长拒绝启动。有效空闲时限不会超过 `-t`，禁用空闲检测也不会禁用总时限。
 - Requires network access and writes state outside the project (`~/.claude` or `$CODEX_HOME`, plus the offload history directory). Use host-approved permissions; when offloading is unavailable, report the failure and continue with local tools or native subagents.
 - Some gateways reject Claude Code's `anthropic-beta: claude-code-*` header and cannot be used as workers.
 - Nested workers inherit host restrictions. For example, the Claude desktop app may prevent file writes; verify the host supports the requested mode.
@@ -444,3 +446,5 @@ in addition to start/final. Final adds `status`, `exit_code`, and `error_kind`
 (empty on success). Event I/O failure cancels the worker and returns `events_io`
 in final stdout JSON; a failed event destination cannot guarantee a final event.
 The supervisor must parse the final record even when the process exits nonzero.
+
+停止原因通过最终事件、`-json` 和运行记录的 `stop_reason` 输出：`deadline`、`idle`、`signal` 或 `canceled`；正常完成时省略。三处同时输出 `idle_timeout`，记录按 `-t` 截断后的有效配置（禁用为 `0s`）。deadline 和 idle 保持 `error_kind: "timeout"` 及退出码 124。没有新增自动重试或跨调用计时机制。

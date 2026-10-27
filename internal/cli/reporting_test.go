@@ -200,7 +200,7 @@ func TestIdleWorkerIsStoppedBeforeTimeout(t *testing.T) {
 	started := time.Now()
 	code, out, _ := runCLI("-json", "-d", work, "-t", "20s", "hang")
 	rec := decodeRun(t, out)
-	if code != 124 || rec.Status != "timeout" || rec.Session != "s-idle" || !strings.Contains(rec.Error, "no output") || !strings.Contains(rec.Error, "offload -r s-idle") {
+	if code != 124 || rec.Status != "timeout" || rec.Session != "s-idle" || !strings.Contains(rec.Error, "no activity") || !strings.Contains(rec.Error, "offload -r s-idle") {
 		t.Fatalf("idle worker not reported: code=%d rec=%+v", code, rec)
 	}
 	if time.Since(started) > 8*time.Second {
@@ -215,7 +215,13 @@ func TestIdleLimitDoesNotKillAWorkerThatKeepsWriting(t *testing.T) {
 	orig := worker.IdleLimit
 	worker.IdleLimit = time.Second
 	t.Cleanup(func() { worker.IdleLimit = orig })
-	t.Setenv("FAKE_TICKS", "8") // 8 x 0.4s = 3.2s of steady output, well past the 1s limit
+	// 直接开始心跳，避免通用夹具的 argv/环境记录延迟干扰空闲断言。
+	fake := filepath.Join(t.TempDir(), "active-child")
+	script := "#!/bin/sh\ni=0\nwhile [ $i -lt 8 ]; do\necho '{\"type\":\"system\",\"subtype\":\"thinking_tokens\"}'\nsleep 0.4\ni=$((i+1))\ndone\nprintf '%s\\n' '" + okReply + "'\n"
+	if err := os.WriteFile(fake, []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("OFFLOAD_CLAUDE", fake)
 	code, out, errOut := runCLI("-json", "-d", work, "-t", "20s", "busy")
 	rec := decodeRun(t, out)
 	if code != 0 || rec.Status != "ok" {
