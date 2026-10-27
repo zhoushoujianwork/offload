@@ -13,6 +13,7 @@ import (
 
 // Profile selects a worker backend and its model/configuration.
 type Profile struct {
+	IdleTimeout     string `json:"idle_timeout,omitempty"`
 	Backend         string `json:"backend,omitempty"` // claude (default) or codex
 	BaseURL         string `json:"base_url"`
 	Model           string `json:"model"`

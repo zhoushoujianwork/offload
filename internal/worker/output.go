@@ -48,17 +48,17 @@ type activityWriter struct {
 	skipping  bool               // inside a line longer than maxLineKept; discard up to its newline
 	raw       []byte
 	rawCapped bool
-	last      atomic.Int64 // unix nanoseconds of the latest write
+	last      atomic.Int64 // 相对 activityEpoch 的单调时钟纳秒数
 }
 
 func newActivityWriter(p eventParser) *activityWriter {
 	w := &activityWriter{parser: p}
-	w.last.Store(time.Now().UnixNano())
+	w.last.Store(time.Since(activityEpoch).Nanoseconds())
 	return w
 }
 
 func (w *activityWriter) Write(p []byte) (int, error) {
-	w.last.Store(time.Now().UnixNano())
+	w.last.Store(time.Since(activityEpoch).Nanoseconds())
 	if w.onLine != nil {
 		w.lineMu.Lock()
 		defer w.lineMu.Unlock()

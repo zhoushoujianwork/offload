@@ -13,7 +13,6 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/zhoushoujianwork/offload/internal/config"
@@ -56,28 +55,10 @@ const (
 		"Bash(rtk go build:*) Bash(rtk go test:*) Bash(rtk go vet:*) Bash(rtk cargo build:*) Bash(rtk cargo test:*) Bash(rtk pytest:*)"
 )
 
-// IdleLimit stops a worker that has produced no output for this long. A hung model request
-// otherwise holds the run until the full timeout. It is a variable only so tests can shorten it.
+// IdleLimit 是默认执行策略的空闲时限；变量形式便于现有测试缩短时限。
 var IdleLimit = 10 * time.Minute
 
 var errIdle = errors.New("worker idle")
-
-// watchIdle cancels ctx with errIdle once nothing was written for limit.
-func watchIdle(ctx context.Context, cancel context.CancelCauseFunc, last *atomic.Int64, limit time.Duration) {
-	t := time.NewTicker(limit / 10)
-	defer t.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-t.C:
-			if time.Since(time.Unix(0, last.Load())) > limit {
-				cancel(errIdle)
-				return
-			}
-		}
-	}
-}
 
 // Opts is one worker run.
 type Opts struct {
@@ -100,6 +81,7 @@ type Opts struct {
 	Resume      string
 	Dir         string
 	Task        string
+	IdleTimeout *time.Duration
 	Timeout     time.Duration
 	StartedAt   time.Time
 	NoSalvage   bool // do not ask a stopped worker for a report from what it already read
@@ -312,6 +294,12 @@ func Run(ctx context.Context, o Opts) (rec history.Record, err error) {
 		rec.ErrorKind = ErrorKind(err)
 		return rec, err
 	}
+	limit, limitErr := o.idleLimit()
+	if limitErr != nil {
+		rec.ErrorKind = "configuration"
+		return rec, limitErr
+	}
+	rec.IdleTimeout = limit.String()
 	rec.ErrorKind = "configuration"
 	promptPath, err := writeWorkerPrompt(o)
 	if err != nil {
@@ -344,6 +332,8 @@ func Run(ctx context.Context, o Opts) (rec history.Record, err error) {
 	slot, err = slots.Acquire(ctx, slots.Options{Dir: slots.Dir(), Max: o.MaxWorkers, OnWait: pub.waiting})
 	if err != nil {
 		if ctx.Err() != nil {
+			rec.StopReason = stopReason(context.Cause(ctx))
+			rec.ErrorKind = "canceled"
 			return rec, errors.New("cancelled while waiting for a worker slot; no worker was started")
 		}
 		return rec, fmt.Errorf("acquire worker slot: %w", err)
@@ -358,14 +348,15 @@ func Run(ctx context.Context, o Opts) (rec history.Record, err error) {
 		leftover = a.leftover
 	}
 	s := a.s
+	rec.StopReason = stopReason(a.cause)
 	rec.ErrorKind = "execution"
 	var launchErr *exec.Error
 	var pathErr *os.PathError
 	if errors.As(a.runErr, &launchErr) || errors.As(a.runErr, &pathErr) {
 		rec.ErrorKind = "launch"
 	}
-	// NotifyContext may expose a signal-specific Cause; Err remains context.Canceled.
-	if errors.Is(a.cause, context.Canceled) || errors.Is(ctx.Err(), context.Canceled) {
+	// 信号保留独立停止原因，兼容原有 canceled 错误分类。
+	if rec.StopReason == "canceled" || rec.StopReason == "signal" {
 		rec.ErrorKind = "canceled"
 	}
 	if errors.Is(a.cause, errEventsIO) {
@@ -383,7 +374,7 @@ func Run(ctx context.Context, o Opts) (rec history.Record, err error) {
 		rec.ErrorKind = "timeout"
 		rec.Error = "timed out after " + o.Timeout.String()
 		if errors.Is(a.cause, errIdle) {
-			rec.Error = "worker produced no output for " + IdleLimit.String()
+			rec.Error = "worker produced no activity for " + limit.String()
 		}
 	} else if s.Result == nil {
 		if s.Events == 0 {
@@ -489,6 +480,12 @@ type hooks struct {
 // outlive the run. A descendant that left the group with setsid is not reachable this way.
 func runAttempt(ctx context.Context, bin string, o Opts, promptPath, token string, timeout time.Duration,
 	tick func(streamSummary, time.Time), h hooks) attempt {
+	attemptOpts := o
+	attemptOpts.Timeout = timeout
+	limit, err := attemptOpts.idleLimit()
+	if err != nil {
+		return attempt{runErr: err}
+	}
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	ctx, cancelCause := context.WithCancelCause(ctx)
@@ -529,9 +526,10 @@ func runAttempt(ctx context.Context, bin string, o Opts, promptPath, token strin
 		}
 	}
 	var workerErr cappedBuffer
-	cmd.Stdout, cmd.Stderr = out, &workerErr
+	cmd.Stdout, cmd.Stderr = out, &livenessWriter{w: &workerErr, last: &out.last}
 	// Do not wait indefinitely for a worker descendant to close inherited pipes.
 	cmd.WaitDelay = 100 * time.Millisecond
+	files := newSessionActivity(o)
 	if err := cmd.Start(); err != nil {
 		return attempt{runErr: err}
 	}
@@ -542,7 +540,9 @@ func runAttempt(ctx context.Context, bin string, o Opts, promptPath, token strin
 	waited := make(chan error, 1)
 	go func() { waited <- cmd.Wait() }()
 
-	go watchIdle(ctx, cancelCause, &out.last, IdleLimit)
+	if limit > 0 {
+		go watchIdle(ctx, cancelCause, &out.last, limit, func() bool { return files.grew(firstNonEmpty(out.summary().Session, o.Resume)) })
+	}
 	if tick != nil {
 		go func() {
 			t := time.NewTicker(publishEvery)
@@ -552,7 +552,7 @@ func runAttempt(ctx context.Context, bin string, o Opts, promptPath, token strin
 				case <-ctx.Done():
 					return
 				case <-t.C:
-					tick(out.summary(), time.Unix(0, out.last.Load()))
+					tick(out.summary(), activityEpoch.Add(time.Duration(out.last.Load())))
 				}
 			}
 		}()
