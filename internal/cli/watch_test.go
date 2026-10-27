@@ -12,10 +12,6 @@ import (
 	"github.com/zhoushoujianwork/offload/internal/live"
 )
 
-type watchWriter func([]byte) (int, error)
-
-func (w watchWriter) Write(p []byte) (int, error) { return w(p) }
-
 func newTestWatcher() (*watcher, *bytes.Buffer) {
 	var buf bytes.Buffer
 	return &watcher{seen: map[int]*seenWorker{}, out: &buf}, &buf
@@ -93,38 +89,15 @@ func TestWatchFollowsARealRunToTheEnd(t *testing.T) {
 	fastWatch(t)
 	watchEvery = 50 * time.Millisecond
 	work, _ := setup(t, okReply)
-	release := filepath.Join(t.TempDir(), "release")
-	fake := os.Getenv("OFFLOAD_CLAUDE")
-	script, err := os.ReadFile(fake)
-	if err != nil {
-		t.Fatal(err)
-	}
-	script = bytes.Replace(script, []byte("cat <<'EOF'"), []byte("while [ ! -f '"+release+"' ]; do sleep 0.02; done\ncat <<'EOF'"), 1)
-	if err := os.WriteFile(fake, script, 0700); err != nil {
-		t.Fatal(err)
-	}
+	t.Setenv("FAKE_SLEEP", "1")
 	done := make(chan struct{})
-	go func() { defer close(done); runCLI("-d", work, "-t", "30s", "task") }()
-	t.Cleanup(func() {
-		os.WriteFile(release, nil, 0600)
-		<-done
-	})
-	waitFor(t, "running worker", 30*time.Second, func() bool { return phases(t)[live.Running] == 1 })
+	go func() { defer close(done); runCLI("-d", work, "task") }()
+	time.Sleep(500 * time.Millisecond) // let the worker publish its first state
 
 	var out bytes.Buffer
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	// watch 实际报告启动后才放行后端。
-	observed := watchWriter(func(p []byte) (int, error) {
-		n, err := out.Write(p)
-		if bytes.Contains(p, []byte("started pid=")) {
-			if e := os.WriteFile(release, nil, 0600); e != nil {
-				return n, e
-			}
-		}
-		return n, err
-	})
-	code := cmdWatch(ctx, observed, &out)
+	code := cmdWatch(ctx, &out, &out)
 	<-done
 	got := out.String()
 	if code != 0 || !strings.Contains(got, "started") || !strings.Contains(got, "finished status=ok") || !strings.Contains(got, "all workers finished") {
