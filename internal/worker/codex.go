@@ -64,10 +64,11 @@ func buildCodexArgs(o Opts) []string {
 // codexParser normalizes Codex JSONL events into the shared progress/result model.
 // Usage is session-cumulative; run accounting is applied after the process exits.
 type codexParser struct {
-	s       streamSummary
-	report  string
-	seen    map[string]bool
-	stopped bool // an undecodable line was seen; later lines are ignored
+	s            streamSummary
+	providerKind string
+	report       string
+	seen         map[string]bool
+	stopped      bool // an undecodable line was seen; later lines are ignored
 }
 
 func (p *codexParser) summary() streamSummary { return p.s.clone() }
@@ -109,7 +110,7 @@ func (p *codexParser) feed(line []byte) {
 	}
 	switch e.Type {
 	case "turn.started":
-		s.Result, p.report = nil, ""
+		s.Result, p.report, p.providerKind = nil, "", ""
 	case "item.started", "item.completed":
 		if e.Item.Type == "agent_message" && e.Type == "item.completed" {
 			s.LastText = e.Item.Text
@@ -137,13 +138,14 @@ func (p *codexParser) feed(line []byte) {
 			s.Result.Errors = []string{"Codex completed without a report"}
 		}
 	case "error":
+		p.providerKind = providerErrorKind(line, e.Message)
 		// Error events can be transient (e.g. a reconnect); only turn.failed is terminal.
 		if e.Message != "" {
 			s.LastText = e.Message
 		}
 	case "turn.failed":
 		message := firstNonEmpty(e.Error.Message, "Codex turn failed")
-		s.Result = &claudeResult{IsError: true, Result: message, Errors: []string{message}, SessionID: s.Session, NumTurns: s.ToolCalls}
+		s.Result = &claudeResult{ErrorKind: terminalProviderKind(line, p.providerKind, message), IsError: true, Result: message, Errors: []string{message}, SessionID: s.Session, NumTurns: s.ToolCalls}
 	}
 }
 

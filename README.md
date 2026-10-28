@@ -432,7 +432,14 @@ record only (diagnostics go to stderr), including normal setup/flag errors once
 Existing `status`, `exit_code`, session, report, usage and cost fields retain their
 meaning. No authentication classification is inferred from provider prose.
 Error kinds are `configuration`, `unsupported_tools`, `launch`, `execution`,
-`timeout`, `canceled`, and `events_io`. Exit codes remain 0 for success, 1 for
+`timeout`, `canceled`, `events_io`, `capacity`, and `rate_limit`.
+`capacity` identifies provider overload (HTTP 529 or an overload/capacity code);
+`rate_limit` identifies throttling (HTTP 429 or a rate-limit code). Structured
+provider signals take precedence over a narrow fallback matching leading phrases
+such as "Selected model is at capacity" and "Overloaded". Unknown structured
+errors remain `execution`. These two provider classifications retain only the kind
+in `error` and `result`, never the raw provider message. Successful reports and
+existing lifecycle error kinds are unchanged. Exit codes remain 0 for success, 1 for
 worker failure/cancellation, 2 for setup or event-file errors, and 124 for timeout.
 
 `-events-file` must be absolute and nonexistent; exclusive creation rejects existing

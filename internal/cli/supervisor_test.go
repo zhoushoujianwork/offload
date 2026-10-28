@@ -429,3 +429,54 @@ func TestIdleCLIProtocol(t *testing.T) {
 		})
 	}
 }
+
+func TestProviderFailureResultKinds(t *testing.T) {
+	for _, backend := range []string{"codex", "claude"} {
+		for _, tc := range []struct{ code, kind string }{{"overloaded_error", "capacity"}, {"rate_limit_error", "rate_limit"}, {"invalid_request_error", "execution"}} {
+			t.Run(backend+"/"+tc.kind, func(t *testing.T) {
+				reply := `{"type":"turn.failed","error":{"code":"` + tc.code + `","message":"PRIVATE_PROVIDER_MESSAGE"}}`
+				var work string
+				if backend == "codex" {
+					work, _ = setupCodex(t, reply)
+				} else {
+					reply = `{"type":"result","is_error":true,"error":{"type":"` + tc.code + `"},"errors":["PRIVATE_PROVIDER_MESSAGE"],"result":"PRIVATE_PROVIDER_MESSAGE"}`
+					work, _ = setup(t, reply)
+				}
+				file := filepath.Join(t.TempDir(), "events.ndjson")
+				args := []string{"-json", "-d", work, "-events-file", file, "inspect"}
+				if backend == "codex" {
+					args = append([]string{"-p", "codex"}, args...)
+				}
+				code, out, stderr := runCLI(args...)
+				var rec history.Record
+				if err := json.Unmarshal([]byte(out), &rec); err != nil {
+					t.Fatal(err, out, stderr)
+				}
+				if code != 1 || rec.ErrorKind != tc.kind {
+					t.Fatalf("code=%d record=%+v stderr=%s", code, rec, stderr)
+				}
+				events, err := os.ReadFile(file)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !strings.Contains(string(events), `"error_kind":"`+tc.kind+`"`) || strings.Contains(string(events), "PRIVATE_PROVIDER_MESSAGE") {
+					t.Fatal(string(events))
+				}
+				if tc.kind != "execution" && (rec.Result != tc.kind || rec.Error != tc.kind || strings.Contains(out, "PRIVATE_PROVIDER_MESSAGE")) {
+					t.Fatal(out)
+				}
+			})
+		}
+	}
+}
+
+func TestSafeKind(t *testing.T) {
+	for _, kind := range []string{"", "configuration", "unsupported_tools", "launch", "execution", "timeout", "canceled", "events_io", "capacity", "rate_limit"} {
+		if safeKind(kind) != kind {
+			t.Fatal(kind)
+		}
+	}
+	if safeKind("PRIVATE_PROVIDER_MESSAGE") != "execution" {
+		t.Fatal("unknown kind escaped allowlist")
+	}
+}

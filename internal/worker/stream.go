@@ -25,8 +25,9 @@ const lastToolsKept = 5
 
 // claudeParser folds `claude -p --output-format stream-json` events into a streamSummary.
 type claudeParser struct {
-	s       streamSummary
-	stopped bool // an undecodable line was seen; later lines are ignored
+	providerKind string
+	s            streamSummary
+	stopped      bool // an undecodable line was seen; later lines are ignored
 }
 
 func (p *claudeParser) summary() streamSummary { return p.s.clone() }
@@ -65,13 +66,19 @@ func (p *claudeParser) feed(line []byte) {
 	case "result":
 		var r claudeResult
 		if json.Unmarshal(line, &r) == nil {
+			if r.IsError {
+				r.ErrorKind = terminalProviderKind(line, p.providerKind, append(r.Errors, r.Result)...)
+			}
 			s.Result = &r
 		}
 	case "system":
 		if head.Subtype == "permission_denied" {
 			s.Denials++
 		}
+	case "error":
+		p.providerKind = providerErrorKind(line)
 	case "assistant":
+		p.providerKind = providerErrorKind(line)
 		s.addAssistant(head.Message)
 	}
 }
