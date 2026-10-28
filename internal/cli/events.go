@@ -78,7 +78,8 @@ func (e *eventWriter) emit(kind, native, tool string, rec *history.Record) error
 			v.IdleTimeout = rec.IdleTimeout
 			v.Status = rec.Status
 			v.ExitCode = rec.ExitCode
-			v.ErrorKind = &rec.ErrorKind
+			kind := safeKind(rec.ErrorKind)
+			v.ErrorKind = &kind
 		}
 	}
 	b, err := json.Marshal(v)
@@ -181,4 +182,13 @@ func safeMeta(s string) string {
 		}
 	}
 	return s
+}
+
+func safeKind(kind string) string {
+	switch kind {
+	case "", "configuration", "unsupported_tools", "launch", "execution", "timeout", "canceled", "events_io", "capacity", "rate_limit":
+		return kind
+	default:
+		return "execution"
+	}
 }

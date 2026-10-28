@@ -95,6 +95,7 @@ type Opts struct {
 
 // claudeResult is the subset of `claude -p --output-format json` we use.
 type claudeResult struct {
+	ErrorKind        string              `json:"-"`
 	CumulativeUsage  *history.TokenUsage `json:"-"`
 	UsageUnavailable string              `json:"-"`
 	Result           string              `json:"result"`
@@ -273,6 +274,9 @@ func Run(ctx context.Context, o Opts) (rec history.Record, err error) {
 		if rec.Status == "ok" {
 			rec.ErrorKind = ""
 		}
+		if rec.ErrorKind == "capacity" || rec.ErrorKind == "rate_limit" {
+			rec.Error, rec.Result = rec.ErrorKind, rec.ErrorKind
+		}
 		// Give the slot up only after cleanup. A group that is still alive keeps the slot file
 		// recording it, so the capacity stays unavailable.
 		if leftover != nil && !leftover.Alive() {
@@ -431,6 +435,9 @@ func Run(ctx context.Context, o Opts) (rec history.Record, err error) {
 	if !res.IsError && a.runErr == nil && a.cause == nil {
 		rec.Status = "ok"
 	} else {
+		if res.IsError && res.ErrorKind != "" && rec.ErrorKind == "execution" {
+			rec.ErrorKind = res.ErrorKind
+		}
 		for _, message := range res.Errors {
 			if message = strings.TrimSpace(message); message != "" {
 				if rec.Error != "" {
