@@ -4,6 +4,7 @@ package worker
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -105,6 +106,8 @@ type Opts struct {
 type claudeResult struct {
 	CumulativeUsage  *history.TokenUsage `json:"-"`
 	UsageUnavailable string              `json:"-"`
+	RawUsage         json.RawMessage     `json:"usage"`      // Claude: this invocation only; decoded by claude_usage.go
+	RawModelUsage    json.RawMessage     `json:"modelUsage"` // Claude: session cumulative; decoded by claude_usage.go
 	Result           string              `json:"result"`
 	IsError          bool                `json:"is_error"`
 	Subtype          string              `json:"subtype"`
@@ -287,6 +290,7 @@ func Run(ctx context.Context, o Opts) (rec history.Record, err error) {
 			if rec.Result == "" && a.runErr != nil {
 				rec.Result = a.runErr.Error()
 			}
+			markClaudeNoResult(&rec)
 			rec.Error = "worker returned invalid JSON"
 			if a.runErr != nil {
 				rec.Error += ": " + a.runErr.Error()
@@ -301,14 +305,16 @@ func Run(ctx context.Context, o Opts) (rec history.Record, err error) {
 	if stopped || s.Result == nil {
 		rec.Error += s.resumeHint()
 		rec.Result = rec.Error + s.progress()
+		markClaudeNoResult(&rec)
 		// A stopped worker has usually read plenty. Ask it for the report without tools instead
 		// of leaving the supervisor with a progress sketch. Not after the user pressed Ctrl-C.
 		if !o.NoSalvage && o.Profile.BackendName() == "claude" && s.Session != "" && ctx.Err() == nil {
 			pub.phase(live.Salvaging)
-			report, cost, serr := salvage(ctx, bin, o, promptPath, token, s.Session, pub.keepAlive)
+			report, sres, serr := salvageResult(ctx, bin, o, promptPath, token, s.Session, pub.keepAlive)
 			if serr == nil {
-				rec.Salvaged, rec.CostUSD = true, cost
-				rec.Error += "; the report is salvaged from what the worker read before it stopped, not a finished run (cost covers only that step)"
+				rec.Salvaged = true
+				applyClaudeSalvageAccounting(&rec, sres)
+				rec.Error += "; the report is salvaged from what the worker read before it stopped, not a finished run (cost_usd is the value the report step reported, not a full-run cost)"
 				rec.Result = "[SALVAGED REPORT: " + rec.Error + "]\n\n" + report
 			} else {
 				// Keep the original failure and progress; add why the extra step produced no report.
@@ -321,11 +327,9 @@ func Run(ctx context.Context, o Opts) (rec history.Record, err error) {
 		return rec, nil
 	}
 	res := *s.Result
-	rec.Session, rec.Turns, rec.CostUSD, rec.DurationMs, rec.Result =
-		firstNonEmpty(res.SessionID, s.Session), res.NumTurns, res.CostUSD, res.DurationMs, res.Result
-	if rec.CostUSD != nil && !history.ValidCost(*rec.CostUSD) {
-		rec.CostUSD = nil
-	}
+	rec.Session, rec.Turns, rec.DurationMs, rec.Result =
+		firstNonEmpty(res.SessionID, s.Session), res.NumTurns, res.DurationMs, res.Result
+	applyClaudeAccounting(&rec, &res, o, a.claudeBase)
 	if !res.IsError && a.runErr == nil {
 		rec.Status = "ok"
 	} else {
@@ -358,6 +362,7 @@ func Run(ctx context.Context, o Opts) (rec history.Record, err error) {
 type attempt struct {
 	baseline       *history.TokenUsage
 	baselineError  string
+	claudeBase     claudeBaseline // resumed normal Claude run only
 	s              streamSummary
 	cause          error
 	runErr         error
@@ -376,6 +381,7 @@ func runAttempt(ctx context.Context, bin string, o Opts, promptPath, token strin
 	parse := parseStream
 	var baseline *history.TokenUsage
 	var baselineError string
+	var claudeBase claudeBaseline
 	if o.Profile.BackendName() == "codex" {
 		baseline, baselineError = codexBaseline(o.Resume)
 		cmd = exec.CommandContext(ctx, bin, buildCodexArgs(o)...)
@@ -388,6 +394,10 @@ func runAttempt(ctx context.Context, bin string, o Opts, promptPath, token strin
 		cmd.Stdin = strings.NewReader(string(prompt) + "\nTask:\n" + o.Task)
 		parse = parseCodexStream
 	} else {
+		if o.Resume != "" && !o.Salvage {
+			// Capture before the child starts: the result's cost and modelUsage are session totals.
+			claudeBase = captureClaudeBaseline(history.Path(), o.Resume)
+		}
 		cmd = exec.CommandContext(ctx, bin, buildArgs(o, promptPath)...)
 		cmd.Dir = o.Dir
 		cmd.Env = childEnv(os.Environ(), o, token)
@@ -415,7 +425,7 @@ func runAttempt(ctx context.Context, bin string, o Opts, promptPath, token strin
 	cmd.WaitDelay = 100 * time.Millisecond
 	runErr := cmd.Run()
 	return attempt{s: parse(out.Bytes()), cause: context.Cause(ctx), runErr: runErr,
-		baseline: baseline, baselineError: baselineError,
+		baseline: baseline, baselineError: baselineError, claudeBase: claudeBase,
 		stdout: out.String(), stderr: workerErr.String()}
 }
 
@@ -423,6 +433,19 @@ func runAttempt(ctx context.Context, bin string, o Opts, promptPath, token strin
 // why there is no report. It never contains worker stderr, which may echo gateway details. A report
 // from a process that failed is discarded, because it may be cut short or come from a broken run.
 func salvage(ctx context.Context, bin string, o Opts, promptPath, token, session string, tick func(streamSummary, time.Time)) (string, *float64, error) {
+	report, r, err := salvageResult(ctx, bin, o, promptPath, token, session, tick)
+	if err != nil {
+		return "", nil, err
+	}
+	cost := r.CostUSD
+	if cost != nil && !history.ValidCost(*cost) {
+		cost = nil
+	}
+	return report, cost, nil
+}
+
+// salvageResult is salvage returning the whole final result, so Run can keep its session snapshots.
+func salvageResult(ctx context.Context, bin string, o Opts, promptPath, token, session string, tick func(streamSummary, time.Time)) (string, *claudeResult, error) {
 	so := o
 	so.Resume, so.Salvage, so.Write, so.Task = session, true, false, salvageTask
 	a := runAttempt(ctx, bin, so, promptPath, token, SalvageTimeout, tick)
@@ -453,11 +476,7 @@ func salvage(ctx context.Context, bin string, o Opts, promptPath, token, session
 	case strings.TrimSpace(r.Result) == "":
 		return "", nil, errors.New("the report step returned an empty report")
 	}
-	cost := r.CostUSD
-	if cost != nil && !history.ValidCost(*cost) {
-		cost = nil
-	}
-	return r.Result, cost, nil
+	return r.Result, r, nil
 }
 
 // publishEvery is how often a running worker refreshes its live state.

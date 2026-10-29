@@ -32,6 +32,8 @@ usage:
   offload ls [n]                list the last n runs (default 10)
   offload show <session>        print every report of a session
   offload status                what each worker is doing right now
+  offload stats [--json] [--period today|week|month|all]
+                                run, token and cost totals for a period (default today)
   offload watch [-t dur]        one line per event (start, progress, STALLED, finish) until all workers end;
                                 with -t, stop after dur and exit 124 if workers are still active
   offload profiles              list profiles (* = the one a run would use)
@@ -76,6 +78,8 @@ func Run(version string, args []string, stdin io.Reader, stdout, stderr io.Write
 				defer cancel()
 			}
 			return cmdWatch(ctx, stdout, stderr)
+		case "stats":
+			return cmdStats(args[1:], stdout, stderr)
 		case "profiles":
 			return cmdProfiles(stdout, stderr)
 		case "default":
