@@ -13,6 +13,9 @@ struct ProcessOutput {
 /// - The process is terminated after `timeout`, escalating to SIGKILL after `killGrace`.
 /// - Each stream keeps at most `maxOutput` bytes. The moment more arrives, the result is flagged
 ///   `truncated` and the process is terminated the same way.
+/// - Optional `stdin` bytes are written on a background queue through a non-blocking descriptor with
+///   SIGPIPE disabled for that descriptor only (no process-wide signal change). A child that never reads or
+///   exits early cannot hang or crash the caller; the writer stops when the call finishes or the deadline passes.
 /// - After the process exits, pipes are drained for at most `drainGrace`. A descendant that inherited
 ///   a pipe and keeps it open cannot hold the call open; whatever was read by then is returned.
 enum ProcessRunner {
@@ -28,6 +31,7 @@ enum ProcessRunner {
         var timedOut = false
         var truncated = false
         var finished = false
+        var isFinished: Bool { lock.lock(); defer { lock.unlock() }; return finished }
         init(maxOutput: Int) { self.maxOutput = maxOutput }
 
         /// Appends within the cap; returns true if this chunk crossed it.
@@ -43,7 +47,7 @@ enum ProcessRunner {
     }
 
     static func run(executable: URL, arguments: [String], environment: [String: String]? = nil,
-                    timeout: TimeInterval, maxOutput: Int = 8_000_000,
+                    timeout: TimeInterval, maxOutput: Int = 8_000_000, stdin: Data? = nil,
                     killGrace: TimeInterval = 2, drainGrace: TimeInterval = 1) async throws -> ProcessOutput {
         try await withCheckedThrowingContinuation { (cont: CheckedContinuation<ProcessOutput, Error>) in
             let process = Process()
@@ -54,7 +58,8 @@ enum ProcessRunner {
             let errPipe = Pipe()
             process.standardOutput = outPipe
             process.standardError = errPipe
-            process.standardInput = FileHandle.nullDevice
+            let inPipe: Pipe? = stdin == nil ? nil : Pipe()
+            process.standardInput = inPipe ?? FileHandle.nullDevice
 
             let state = State(maxOutput: maxOutput)
             let outHandle = outPipe.fileHandleForReading
@@ -123,12 +128,38 @@ enum ProcessRunner {
                 try? errHandle.close()
                 try? outPipe.fileHandleForWriting.close()
                 try? errPipe.fileHandleForWriting.close()
+                if let inPipe {
+                    try? inPipe.fileHandleForReading.close()
+                    try? inPipe.fileHandleForWriting.close()
+                }
                 cont.resume(throwing: error)
                 return
             }
             // The parent's copy of the write ends must close, or EOF never arrives.
             try? outPipe.fileHandleForWriting.close()
             try? errPipe.fileHandleForWriting.close()
+
+            if let inPipe, let stdin {
+                try? inPipe.fileHandleForReading.close() // the child has its own copy
+                let handle = inPipe.fileHandleForWriting
+                let fd = handle.fileDescriptor
+                _ = fcntl(fd, F_SETNOSIGPIPE, 1)
+                _ = fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK)
+                let deadline = Date().addingTimeInterval(timeout + killGrace + 1)
+                DispatchQueue.global().async {
+                    stdin.withUnsafeBytes { raw in
+                        guard let base = raw.baseAddress else { return }
+                        var offset = 0
+                        while offset < raw.count, !state.isFinished, Date() < deadline {
+                            let n = Darwin.write(fd, base + offset, raw.count - offset)
+                            if n > 0 { offset += n }
+                            else if n < 0, errno == EAGAIN || errno == EINTR { usleep(5_000) }
+                            else { break } // EPIPE or another error: the child is gone or done reading
+                        }
+                    }
+                    try? handle.close()
+                }
+            }
 
             DispatchQueue.global().asyncAfter(deadline: .now() + timeout) {
                 guard process.isRunning else { return }

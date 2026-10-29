@@ -40,8 +40,8 @@ final class PaginationTests: XCTestCase {
 /// The main panel must fit its fixed height in every state. These measure the natural (unclipped) height.
 @MainActor
 final class PanelFitTests: XCTestCase {
-    func fitHeight(_ model: MonitorModel, _ updates: UpdateManager) -> CGFloat {
-        let view = PopoverView(model: model, updates: updates, isDashboard: false, measuring: true)
+    func fitHeight(_ model: MonitorModel, _ updates: UpdateManager, profiles: ProfilesModel? = nil) -> CGFloat {
+        let view = PopoverView(model: model, updates: updates, profiles: profiles ?? ProfilesModel(testingSnapshot: nil), isDashboard: false, measuring: true)
         let host = NSHostingView(rootView: view)
         return host.fittingSize.height
     }

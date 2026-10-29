@@ -6,7 +6,7 @@ struct OffloadMonitorApp: App {
 
     var body: some Scene {
         MenuBarExtra {
-            PopoverView(model: state.model, updates: state.updates)
+            PopoverView(model: state.model, updates: state.updates, profiles: state.profiles)
         } label: {
             MenuBarLabel(model: state.model, updates: state.updates)
         }
@@ -23,7 +23,8 @@ struct MenuBarLabel: View {
         let count = model.runningCount.map(String.init) ?? "–"
         let warn = model.hasProblem || model.needsAttention
         HStack(spacing: 3) {
-            Image(systemName: warn ? "exclamationmark.triangle.fill" : "tray.and.arrow.up")
+            Image(nsImage: BrandMarkImage.menuBar)
+            if warn { Image(systemName: "exclamationmark.triangle.fill") }
             Text(count).monospacedDigit()
             if case .available = updates.phase { Image(systemName: "arrow.down.circle") }
         }

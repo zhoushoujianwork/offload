@@ -244,10 +244,13 @@ offload stats [--json] [--period today|week|month|all]
                               run, token and cost totals for a period (default today)
 offload watch [-t dur]        one line per event (started, progress, STALLED, finished) until all workers end;
                               with -t, stop after dur and exit 124 if workers are still active
-offload profiles              list profiles (* = the one a run would use)
+offload profiles [--json]     list profiles (* = the one a run would use); --json is a redacted machine-readable list
+offload profile save --json   create or edit one profile from a JSON request on stdin
 offload default [profile]     show or set the saved default profile
 offload mode [basic|proactive] show or set the saved delegation mode
 offload install-agent [flags] install skills and delegation agent instructions
+offload agent status [--json] user-scope skill/instruction state for Codex and Claude Code
+offload agent enable|disable --agent codex|claude|all [--json]
 offload version
 
   -p profile   profile name (default: $OFFLOAD_PROFILE, then config default)
@@ -273,6 +276,21 @@ offload version
   Session: 12345678-1234-1234-1234-123456789abc
 ```
 
+### Settings JSON commands
+
+These commands back the native app and are usable from scripts. The JSON is additive: the plain-text `offload profiles` and `offload default` output is unchanged.
+
+```sh
+offload profiles --json
+echo '{"name":"work","model":"m-2"}' | offload profile save --json  # edit an existing profile
+offload agent status --json
+offload agent enable --agent codex --json     # also: disable, --agent claude|all
+```
+
+- `profiles --json` prints `schema_version` (1), `config_exists`, `configured_default`, `active`, `active_source` (`environment`, `config` or `none`), `delegation_mode`, `profiles` (sorted by name) and `warnings`. Each profile has `name`, `backend`, `base_url`, `base_url_redacted`, `model`, `endpoint`, `reasoning_effort`, `service_tier` and `auth_mode` (`token_cmd`, `token` or `none`). It never prints a token or token command, and never runs the token command. A `base_url` containing credentials, a query or a fragment is withheld (empty, `base_url_redacted: true`). A missing config is not an error (`config_exists: false`, empty list). `active` follows the run rules, so `OFFLOAD_PROFILE` wins over the saved default.
+- `profile save --json` reads one JSON object from stdin (at most 64 KiB, unknown fields rejected) and prints the updated, redacted list. Fields: `name` (exact, required, cannot be renamed), `create` (bool), and optional patches `backend`, `base_url`, `model`, `endpoint`, `reasoning_effort`, `service_tier`, `auth_mode` (`preserve` default, `token`, `token_cmd`, `none`) and `secret`. Omitted fields keep their stored value, including current credentials and a private base URL. `secret` is required for `token` and `token_cmd` and refused with `preserve` or `none`; it is only accepted on stdin, never as an argument. A new profile defaults to the Claude backend and becomes the saved default, as in `offload config`. Claude profiles need authentication; Codex profiles do not. Errors are fixed messages that never echo request values. There is no rename or delete.
+- `agent status|enable|disable` act on user scope only (Codex policy under `$CODEX_HOME` or `~/.codex`, skill under `~/.agents/skills`; Claude under `$CLAUDE_CONFIG_DIR` or `~/.claude`), using the install planning shared with `install-agent`. Status reports each agent as `enabled`, `disabled`, `partial`, `blocked` or `shadowed` (a nonempty Codex `AGENTS.override.md` at the user configuration root takes precedence). The state describes the files on disk, not what a running session has loaded: **start a new agent session after enabling or disabling**. Only offload-owned skill files and marked policy blocks are written or removed, and unrelated instructions are kept. A modified, symlinked or unmanaged skill, or a malformed or non-regular policy file, is reported as `blocked` and left untouched. The change is not atomic across files: a failure rolls back what it can, and any state that could not be restored is reported (run `offload agent status`).
+
 ### Stats and the macOS menu bar monitor
 
 ```sh
@@ -295,6 +313,8 @@ To build and open the menu bar monitor on macOS:
 scripts/build-macos-app.sh
 open "dist/Offload Monitor.app"
 ```
+
+The app's menu bar item has an active-profile menu: choosing a profile saves it as the default (`offload default`), which applies to new runs only; running workers and `-p` or `OFFLOAD_PROFILE` overrides are unaffected. Its settings window has **Profiles**, **Agent skills** and **App** tabs, and the header shows a small "O with an outward arrow" mark beside the wordmark. **Profiles** creates and edits profiles (creating one selects it as the default). Saved credentials are shown only as masked; keeping them needs no input, replacing them takes an explicit new value, and the value goes to the CLI on stdin only. An existing private base URL is kept unless you change it. Opening settings never runs a token command. **Agent skills** enables or disables the Codex and Claude Code integration at user scope through `offload agent`; there is no project-scope or arbitrary skill management. Skill status reflects files on disk, so restart the agent session for a change to take effect.
 
 The app shows the output of `offload stats --json`. Its compact panel has no scrolling: task, history, project and model lists use pages. Trend bars can be selected for exact values and coverage. Token details, accounting notes and full run reports open in separate windows; long text there scrolls with indicators hidden. The script creates `dist/Offload Monitor.app`; you can copy it to `~/Applications` for daily use. Nothing is published. On its first launch it opens a native dashboard window. Later launches show only the menu bar item, and the menu's **Open Dashboard** action opens the dashboard again. Closing the dashboard leaves the menu bar item running. Launching with `--dashboard` opens the dashboard on any launch, for example `open "dist/Offload Monitor.app" --args --dashboard`. Its update check queries the stable GitHub release every 6 hours. Automatic installation is optional and off by default, and an update is installed only when the release provides a digest to verify. A local build publishes no release.
 

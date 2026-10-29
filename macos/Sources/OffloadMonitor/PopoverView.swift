@@ -23,6 +23,7 @@ extension TrendMetric {
 struct PopoverView: View {
     @ObservedObject var model: MonitorModel
     @ObservedObject var updates: UpdateManager
+    @ObservedObject var profiles: ProfilesModel
     var isDashboard = false
     /// Layout tests measure the natural height instead of forcing the fixed one.
     var measuring = false
@@ -50,14 +51,19 @@ struct PopoverView: View {
     private var header: some View {
         VStack(spacing: 6) {
             HStack(spacing: 6) {
-                Text("Offload Monitor").font(.system(size: 13, weight: .semibold))
+                BrandMark(size: 15)
+                Text("Offload").font(.system(size: 13, weight: .semibold)).lineLimit(1).fixedSize()
                 StatusPill(model: model)
-                Spacer()
+                Spacer(minLength: 2)
+                ProfileMenu(profiles: profiles)
                 if model.isLoading { ProgressView().controlSize(.mini) }
                 Button { model.refreshNow() } label: { Image(systemName: "arrow.clockwise") }
                     .buttonStyle(.borderless)
                     .help("Refresh now")
                     .disabled(!model.hasCLI)
+                Button { AppState.shared.showSettings() } label: { Image(systemName: "gearshape") }
+                    .buttonStyle(.borderless)
+                    .help("Settings")
             }
             Picker("Period", selection: $model.period) {
                 ForEach(StatsPeriod.allCases) { Text($0.label).tag($0) }
@@ -93,19 +99,6 @@ struct PopoverView: View {
                     .font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(1)
             }
             Spacer()
-            Menu {
-                Toggle("Check for updates automatically", isOn: $updates.autoCheck)
-                Toggle("Install updates automatically", isOn: $updates.autoInstall)
-                    .disabled(!updates.autoCheck)
-                Divider()
-                Button("Check for Updates Now") { updates.checkNow(manual: true) }
-                    .disabled(updates.isBusy)
-            } label: {
-                Label("Settings", systemImage: "gearshape")
-            }
-            .menuStyle(.borderlessButton)
-            .fixedSize()
-            .help("Update preferences. Automatic install restarts the app without asking.")
             if !isDashboard {
                 Button("Dashboard") { AppState.shared.showDashboard() }
             }
@@ -127,19 +120,91 @@ struct StatusPill: View {
         let (text, tint) = state
         HStack(spacing: 4) {
             Circle().fill(tint).frame(width: 6, height: 6)
-            Text(text).font(.system(size: 10, weight: .medium)).lineLimit(1)
+            Text(text).font(.system(size: 10, weight: .medium)).lineLimit(1).minimumScaleFactor(0.8)
         }
         .padding(.horizontal, 7).padding(.vertical, 2)
         .background(tint.opacity(0.14), in: Capsule())
+        .frame(maxWidth: 92)
+        .help(fullText)
+    }
+
+    private var fullText: String {
+        if model.hasProblem { return model.lastError ?? "Problem reading stats" }
+        guard let s = model.snapshot else { return "Loading" }
+        var t = "\(s.runningCount) running"
+        if s.stalledCount > 0 { t += ", \(s.stalledCount) stalled" }
+        if s.lostCount > 0 { t += ", \(s.lostCount) lost" }
+        return t
     }
 
     private var state: (String, Color) {
         if model.hasProblem { return (model.snapshot == nil ? "Offline" : "Stale", .orange) }
         guard let s = model.snapshot else { return ("Loading", .secondary) }
         if s.stalledCount > 0 || s.lostCount > 0 {
-            return ("\(s.runningCount) running · \(s.stalledCount + s.lostCount) attention", .orange)
+            return ("\(s.runningCount) running ⚠", .orange)
         }
         return (s.runningCount == 0 ? "Idle" : "\(s.runningCount) running", s.runningCount == 0 ? .secondary : .omTeal)
+    }
+}
+
+/// The profile new runs use, as a compact header menu. Choosing one makes it the saved default.
+struct ProfileMenu: View {
+    @ObservedObject var profiles: ProfilesModel
+
+    var body: some View {
+        Menu {
+            if let s = profiles.snapshot {
+                if profiles.isStale {
+                    Text("Profile list may be out of date: the last refresh failed").font(.caption)
+                    Button("Retry") { profiles.refresh() }
+                    Divider()
+                }
+                Text("Used for new runs").font(.caption)
+                ForEach(s.profiles) { p in
+                    Button {
+                        Task { await profiles.use(p.name) }
+                    } label: {
+                        let t = p.model.isEmpty ? p.name : "\(p.name) — \(p.model)"
+                        if p.name == s.active { Label(t, systemImage: "checkmark") } else { Text(t) }
+                    }
+                }
+                if s.overriddenByEnvironment {
+                    Divider()
+                    Text("OFFLOAD_PROFILE overrides the saved default").font(.caption)
+                }
+                Divider()
+                Button("Profile settings…") { AppState.shared.showSettings() }
+            } else {
+                Text(profiles.loadError ?? "Loading profiles…")
+                Button("Retry") { profiles.refresh() }
+            }
+        } label: {
+            HStack(spacing: 3) {
+                Image(systemName: "person.crop.circle").font(.system(size: 10))
+                Text(title).font(.system(size: 10.5)).lineLimit(1).truncationMode(.middle)
+            }
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.visible)
+        .frame(width: 128, alignment: .trailing)
+        .disabled(profiles.busy)
+        .help(help)
+        .onAppear { profiles.refreshIfStale() }
+    }
+
+    private var title: String {
+        guard let s = profiles.snapshot else { return profiles.loadError == nil ? "Profile…" : "Profile ⚠" }
+        if s.active.isEmpty { return "No profile" }
+        let name = s.overriddenByEnvironment ? "\(s.active) (env)" : s.active
+        return profiles.isStale ? "\(name) ⚠" : name
+    }
+
+    private var help: String {
+        if let s = profiles.snapshot {
+            let stale = profiles.isStale ? "Unavailable: the profile list could not be refreshed (\(profiles.loadError ?? "unknown error")). Showing the last known state.\n" : ""
+            return stale + s.activeDescription + (profiles.actionError.map { "\n" + $0 } ?? "")
+        }
+        return profiles.loadError ?? "Loading profiles…"
     }
 }
 
@@ -164,7 +229,7 @@ struct Banner: View {
     }
 }
 
-/// Full update status and actions, for the notices window. Preferences live in the footer Settings menu.
+/// Full update status and actions, for the notices window. Preferences live in Settings > App.
 struct UpdateBanner: View {
     @ObservedObject var updates: UpdateManager
 
