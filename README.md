@@ -361,6 +361,21 @@ The app's menu bar item has an active-profile menu: choosing a profile saves it 
 
 The app shows the output of `offload stats --json`. Its compact panel has no scrolling: task, history, project and model lists use pages. Trend bars can be selected for exact values and coverage. Token details, accounting notes and full run reports open in separate windows; long text there scrolls with indicators hidden. The script creates `dist/Offload Monitor.app`; you can copy it to `~/Applications` for daily use. Nothing is published. On its first launch it opens a native dashboard window. Later launches show only the menu bar item, and the menu's **Open Dashboard** action opens the dashboard again. Closing the dashboard leaves the menu bar item running. Launching with `--dashboard` opens the dashboard on any launch, for example `open "dist/Offload Monitor.app" --args --dashboard`. Its update check queries the stable GitHub release every 6 hours. Automatic installation is optional and off by default, and an update is installed only when the release provides a digest to verify. A local build publishes no release.
 
+#### Release downloads
+
+Pushing a `v*` tag runs `.github/workflows/macos-release.yml`. On a `macos-15` (Apple silicon) and a `macos-15-intel` runner it runs `go test ./...` and `swift test --package-path macos`, builds `Offload Monitor.app` with `scripts/package-macos-release.sh`, and uploads one archive per architecture to that tag's GitHub release (creating the release if needed):
+
+- `offload-monitor-macos-arm64.zip` (Apple silicon)
+- `offload-monitor-macos-amd64.zip` (Intel)
+
+Each archive holds only `Offload Monitor.app`. The `offload` CLI inside it (`Contents/Resources/offload`) is built from the same checkout with the tag as its version, and the bundle's `CFBundleShortVersionString` carries that version too. The app requires macOS 13 or later. The release's source and `go install` delivery of the CLI are unchanged.
+
+After each upload, `scripts/verify-macos-release.sh <tag> <arch>` downloads the asset back from GitHub and fails the job unless: the API digest (`sha256:<hex>`) equals the SHA-256 of the downloaded bytes; every archive entry is under `Offload Monitor.app`; the bundle identifier and both version keys match the tag; the app and the bundled CLI have a valid code signature and the expected architecture; and the bundled `offload version` prints the tag's version. The in-app updater needs exactly these file names and the `sha256:` digest on the asset. A separate checksum file does not substitute for it.
+
+To install, download the archive for your Mac, unzip it, and move `Offload Monitor.app` to `/Applications` or `~/Applications`. The app is **ad-hoc signed and not notarized**, so Gatekeeper may block the first launch of a downloaded copy. Open it from the Finder context menu (Open) or allow it under System Settings, Privacy & Security. Verify the download against the digest shown for the asset on the release page (`shasum -a 256 <file>`).
+
+The app checks the stable release every 6 hours and installs an update only if you enabled automatic installation (off by default), the release has the exact asset name for the running architecture, and its digest matches. Online updating against a published release has not yet been exercised. Unit tests cover asset selection for both architectures, digest checks and archive validation. A local build with `scripts/build-macos-app.sh` publishes nothing.
+
 ### Cost and elapsed time
 
 For Claude, final-result `usage` records invocation tokens. `total_cost_usd` is session cumulative: fresh runs use that estimate, while resumed runs use a cost delta only when the previous cumulative snapshot and token delta validate it. Missing or mismatched baselines leave cost unavailable. `cumulative_cost_usd` preserves the session snapshot separately; never sum it across runs.
