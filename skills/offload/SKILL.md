@@ -13,7 +13,7 @@ Follow the active mode above. `offload mode` shows the saved user default; a pro
 
 The CLI supports `claude` (default) and `codex` profile backends. Set `"backend": "codex"` in a profile to use `codex exec --json` with native Codex authentication/configuration; model is optional. Run `offload default <profile>` to save either backend as the default, or `offload default` to show the saved choice. `-p` and `OFFLOAD_PROFILE` override it for new runs. Known session resumes retain their original profile unless `-p` is given.
 
-Codex workers use `--dangerously-bypass-approvals-and-sandbox` for both read-only and `-w` tasks (offload adds no sandbox; `-w` only tells the worker it may modify files), and stdin for instructions/tasks. `OFFLOAD_CODEX` overrides the executable. Claude gateway/token fields do not apply to Codex. Codex preserves run token usage and supports the limited API baseline estimate below; `turns` counts tool calls. Interrupted Codex runs preserve progress and a resume hint, without automatic tool-less salvage.
+Default-policy Codex workers use `--dangerously-bypass-approvals-and-sandbox` for both read-only and `-w` tasks (offload adds no sandbox; `-w` only tells the worker it may modify files), and stdin for instructions/tasks. `OFFLOAD_CODEX` overrides the executable. Claude gateway/token fields do not apply to Codex. Codex preserves run token usage and supports the limited API baseline estimate below; `turns` counts tool calls. Interrupted Codex runs preserve progress and a resume hint, without automatic tool-less salvage.
 
 For Claude profiles, the CLI starts an external `claude -p --bare` worker on the configured Anthropic-compatible gateway, such as MiniMax. It does not replace a native Codex subagent's model provider. Profiles live in `~/.config/offload/config.json`; select with `-p`, `OFFLOAD_PROFILE`, or config `default`. `offload profiles` lists them (`offload profiles --json` gives a redacted machine-readable list; `offload profile save --json` creates or edits one profile from a JSON request on stdin). Each run drops the caller's `ANTHROPIC_*` variables and sets the chosen `ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN` (Bearer), and `ANTHROPIC_MODEL` (`-m` can override). It also passes `--setting-sources ""` so user/project/local settings cannot override the profile; `--bare` alone does not isolate settings. Auth is environment-only, without `apiKeyHelper` or `--settings`.
 
@@ -75,7 +75,7 @@ Worker errors retain their type and message, such as `error_max_turns`. An empty
 
 ## Follow a running worker
 
-Do not wait blind. While a worker runs, `offload status` prints one line per worker (tool calls, permission denials, idle time, last tool call). `offload watch` prints one line per event until every worker has finished: `started`, `progress` (at most once a minute), `STALLED` (no event for 60s), `resumed`, `stopped, asking the worker for a report`, `LOST` (the offload process died), `finished`. Start the worker in the background and run `offload watch` with the host's background or monitor facility, so you are told when something needs a decision instead of polling. On `STALLED`, check `offload status`; the worker stops itself after 10 minutes of silence.
+Do not wait blind. While a worker runs, `offload status` prints one line per worker (tool calls, permission denials, idle time, last tool call). `offload watch` prints one line per event until every worker has finished: `started` (a worker waiting for a free slot shows as `queued` with its wait reason, then `admitted after waiting`), `progress` (at most once a minute), `STALLED` (no event for 60s), `resumed`, `stopped, asking the worker for a report`, `LOST` (the offload process died; the line says whether its worker processes are still running), `UNRESOLVED` (worker processes survived cleanup and still hold their slot), `finished`. Start the worker in the background and run `offload watch` with the host's background or monitor facility, so you are told when something needs a decision instead of polling. On `STALLED`, check `offload status`; the worker stops itself after 10 minutes of silence.
 
 Prefer one long wait over many short polls. `offload watch -t 10m` prints events as they happen and returns when every worker finishes (exit 0), or after the bound with workers still active (exit 124, not a worker failure). Stalls, `LOST`, timeouts, and failures are still printed; on exit 124, look at `offload status` once and wait again. If the host has a completion notification for background commands, use it instead of waiting in the foreground. Without either, make a few long bounded waits (several minutes each, within the host's responsiveness limit) rather than a status check every few seconds. Waiting is headless: never open, focus, or control the user's desktop to check on a worker. A worker that finished between two bounded waits is reported by the next `offload watch` as `recently finished`, with its status and exit code.
 
@@ -101,6 +101,7 @@ offload -w -json -d /abs/docs "..."
 Rules for resumes:
 
 - One run per session at a time; never send overlapping follow-ups. `offload -r` refuses a session that still has an active run; wait for it with `offload watch -t`, then resume.
+- Workers are limited machine-wide (`limits.max_workers`, or `OFFLOAD_MAX_WORKERS`); extra runs queue instead of starting. The `-t` timeout does not count queue time (`wait=` and `exec=` in the summary line). Offload workers only: builds and tests you run yourself bypass the queue, so do not run heavy builds in parallel with several workers.
 - A resume uses the session's recorded profile. If that profile was renamed or deleted, offload stops with recovery guidance and does not fall back to the default provider. Restore the profile, or start a new session with `-p` and restate the context (`offload show <session>` has the earlier reports).
 - Inspect an interrupted run first (`offload show <session>`, `git diff`). Partial edits stay in the working tree; the follow-up says what to keep, fix, or finish rather than starting over.
 - `-p` and `-d` on a resume are explicit overrides; use them only when you intend to change them.
@@ -128,7 +129,7 @@ The parent decides requirements, design, tradeoffs, and acceptance. Delegate a c
 
 ## Know the limits
 
-The worker runs headless: nobody can answer a prompt. offload imposes no command, file or network allowlist on it; Claude workers run with `--dangerously-skip-permissions` and Codex workers with `--dangerously-bypass-approvals-and-sandbox`, in both read-only and `-w` runs. What the worker may do is set by your task text, so state the scope, allowed files and actions explicitly, including whether commits, pushes, deletions or network calls are authorized. The default read-only run only tells the worker not to modify files; that is an instruction, not a barrier, so a worker can still act if the task asks it to. The parent host's OS permissions, network access and credentials still apply, and the worker can fail on them; nothing guarantees success. The worker uses Read, Grep and Glob only when they are exposed to it; if Grep or Glob is missing it falls back to a simple `rg` or `rtk grep` and `ls` or `rtk ls`, and does not repeat calls to an unavailable tool. The summary line shows `permission_denials=N` when the host or Claude Code still refused a step; a high N means that step needs host-side attention or a differently shaped task, not that the gateway is down. Large tasks run slowly (20-40s per turn is normal); split a broad audit into narrow ones instead of raising the timeout. A worker silent for 10 minutes is stopped without waiting for `-t`. `turns` of an interrupted run counts tool calls, not model turns.
+The worker runs headless: nobody can answer a prompt. With the default policy and no explicit tool controls, offload imposes no command, file or network allowlist on it; Claude workers run with `--dangerously-skip-permissions` and Codex workers with `--dangerously-bypass-approvals-and-sandbox`, in both read-only and `-w` runs. What the worker may do is set by your task text, so state the scope, allowed files and actions explicitly, including whether commits, pushes, deletions or network calls are authorized. The default read-only run only tells the worker not to modify files; that is an instruction, not a barrier, so a worker can still act if the task asks it to. The parent host's OS permissions, network access and credentials still apply, and the worker can fail on them; nothing guarantees success. The worker uses Read, Grep and Glob only when they are exposed to it; if Grep or Glob is missing it falls back to a simple `rg` or `rtk grep` and `ls` or `rtk ls`, and does not repeat calls to an unavailable tool. The summary line shows `permission_denials=N` when the host or Claude Code still refused a step; a high N means that step needs host-side attention or a differently shaped task, not that the gateway is down. Large tasks run slowly (20-40s per turn is normal); split a broad audit into narrow ones instead of raising the timeout. Idle detection tracks stdout, stderr and growth of the current native session log. The limit is explicit `-idle` > profile `idle_timeout` > policy default (10m normally, 30m for managed development), capped by `-t`; `0` disables idle detection. A worker with no activity for that limit is stopped without waiting for `-t`. `turns` of an interrupted run counts tool calls, not model turns.
 
 ## Verify and report
 
@@ -156,7 +157,7 @@ When evaluating coordination overhead, report parent polling/tool turns, parent 
 
 Project AGENTS.md/CLAUDE.md instructions and worker constraints are combined in one private temporary file passed with `--append-system-prompt-file`, then cleaned up. Instruction contents and tokens stay out of argv.
 
-offload does not restrict the worker. Claude runs with `--dangerously-skip-permissions` and Codex with `--dangerously-bypass-approvals-and-sandbox`, so a worker can run commands, change files and use the network wherever the parent host and the user account allow, and may side-effect beyond the named task. Only the tool-less salvage report step runs with tools off. The task text is the only scope control: name the allowed files and actions, say explicitly whether commits, pushes, deletions, installs or configuration changes are authorized, and do not authorize more than the user did. Read-only is an instruction, not a barrier. Inspect the actual diff and run checks yourself afterwards. Host permissions, OS limits, network and credentials still apply and offload cannot promise a step will succeed.
+With the default execution policy and no explicit tool controls, offload does not restrict the worker. Claude runs with `--dangerously-skip-permissions` and Codex with `--dangerously-bypass-approvals-and-sandbox`, so a worker can run commands, change files and use the network wherever the parent host and the user account allow, and may side-effect beyond the named task. Only the tool-less salvage report step runs with tools off. The task text is the only scope control: name the allowed files and actions, say explicitly whether commits, pushes, deletions, installs or configuration changes are authorized, and do not authorize more than the user did. Read-only is an instruction, not a barrier. Inspect the actual diff and run checks yourself afterwards. Host permissions, OS limits, network and credentials still apply and offload cannot promise a step will succeed.
 
 The CLI needs network access and writes state outside the workspace (`~/.claude` or `$CODEX_HOME`, `$XDG_STATE_HOME/offload`, default `~/.local/state/offload`). Use approved escalation only when the host supports and requires it. A worker launched from a restricted host inherits that host's restrictions; some hosts may prevent writes. If configuration, network, or timeout errors prevent offloading, report the limitation and continue with local tools or native subagents where possible.
 
@@ -175,3 +176,72 @@ Fresh runs use zero baseline. Resumes subtract the latest valid native rollout c
 JSON/history preserve optional `usage`, `cumulative_usage`, `usage_source`, `usage_scope`, `usage_unavailable`, `cost_unavailable`, `cost_basis`, `service_tier` and `pricing` (model/tier/rates/source/date/assumptions). Historical values never recompute. `ls` uses `N/A` for missing cost and a single limitations footer; `show` provides full provenance. Stderr explicitly labels computed Codex estimates. Old Codex history remains unavailable.
 
 Claude final-result `usage` is per invocation; input is normalized to include cache reads and writes. Its `total_cost_usd` and `modelUsage` are session cumulative across resumes. Fresh runs record the reported cost estimate; resumed runs record only a validated delta against the previous cumulative usage and `cumulative_cost_usd` snapshot. Missing baselines, counter regressions or intervening session activity make run cost unavailable. Never sum cumulative snapshots. Legacy history is preserved, and `stats` excludes Claude costs lacking the new snapshots because they may overlap. Salvaged accounting is incomplete and may contain session totals (Claude reports a session-cumulative cost even for the salvage step), so it is not a reliable full-run cost; `stats` excludes it from totals and shows null cost and usage for salvaged recent runs.
+## Direct supervisor integration
+
+Supervisors can invoke offload directly without an interactive launcher:
+
+```sh
+offload -json -w -execution-policy managed-development \
+  -instructions-file /absolute/private/operator.md \
+  -caller-run-id clawflow:run-123 \
+  -events-file /absolute/new/run-123.ndjson \
+  -p codex -codex-sandbox workspace-write -d /absolute/repo "Implement the assigned task"
+```
+
+`-execution-policy default` preserves existing prompts and permissions. The opt-in
+`managed-development` policy requires `-w`, disables salvage even on resume, and
+permits task-authorized tests, commits, pushes and PR operations through clawflow.
+It prohibits unsolicited merges, force pushes, destructive or unrelated changes,
+and recursive delegation. Supplied operator outcome markers are preserved; offload
+does not add a semantic outcome marker. ClawFlow remains responsible for interpreting
+its own outcome contract.
+
+`-instructions-file` must be an absolute, non-symlink regular file of at most
+256 KiB. The opened descriptor is validated and reads are bounded. Its bytes are
+appended verbatim to the private prompt before worker discipline; contents never
+appear in argv. The caller owns this file and its confidentiality.
+
+Managed Claude uses `acceptEdits` with Bash, Read, Grep, Glob, Edit and Write.
+`-tools-disabled`, `-allowed-tools Read,Grep` and `-disallowed-tools Bash,Write`
+forward explicit Claude restrictions; an explicit allowlist replaces the managed
+broad allowlist and uses default permission mode rather than automatic edit approval.
+Combining `-tools-disabled` with `-allowed-tools` is rejected. Deny restrictions
+remain effective. Managed Claude tasks travel through stdin; default mode retains
+its existing task argument behavior. Codex rejects otherwise valid explicit tool
+constraints before launch with `error_kind: "unsupported_tools"`.
+
+`-codex-sandbox` is optional and requires managed development, `-w`, and Codex.
+`workspace-write` enables sandbox network access and adds canonical Git directory
+and common directory paths to writable roots. This also applies to resumed runs.
+Managed Codex defaults to `workspace-write`; the default execution policy retains
+its permission and sandbox bypass. Explicit `danger-full-access` in managed mode
+disables sandbox containment; managed mode never selects it automatically or
+elevates after a permission denial. Approval remains `never`
+for both fresh and resumed Codex runs. SIGINT and SIGTERM cancel the worker; the
+supervisor owns process-group lifecycle. `-no-salvage` remains available in default
+mode; managed mode always disables salvage.
+
+`-caller-run-id` matches `[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}`. Every invocation gets
+an independent generated `run_id`. With `-json`, stdout contains one final history
+record only (diagnostics go to stderr), including normal setup/flag errors once
+`-json` has been parsed. Additive record fields are `run_id`, `caller_run_id`
+(when supplied), `backend`, `execution_policy`, and `error_kind` (on failure).
+Existing `status`, `exit_code`, session, report, usage and cost fields retain their
+meaning. No authentication classification is inferred from provider prose.
+Error kinds are `configuration`, `unsupported_tools`, `launch`, `execution`,
+`timeout`, `canceled`, and `events_io`. Exit codes remain 0 for success, 1 for
+worker failure/cancellation, 2 for setup or event-file errors, and 124 for timeout.
+
+`-events-file` must be absolute and nonexistent; exclusive creation rejects existing
+files and symlinks before provider launch and uses mode 0600. It contains bounded
+NDJSON with common fields `schema_version: 1`, `type` (`start`, `progress`, `final`),
+`run_id`, `caller_run_id`, `seq` (increasing from 1), UTC `timestamp`, `session`,
+`backend`, and `model`. Unknown metadata may be empty. Progress contains only
+allowlisted `native_type` and optional coarse `tool_category` (`shell`, `file`,
+`web`, `mcp`, `other`); prompts, arguments, text and command output are excluded. Unknown
+native types become `other`. Native lines over 256 KiB are skipped, incomplete
+trailing lines produce no progress, and at most 10,000 progress events are written
+in addition to start/final. Final adds `status`, `exit_code`, and `error_kind`
+(empty on success). Event I/O failure cancels the worker and returns `events_io`
+in final stdout JSON; a failed event destination cannot guarantee a final event.
+The supervisor must parse the final record even when the process exits nonzero.

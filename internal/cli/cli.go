@@ -22,6 +22,7 @@ import (
 	"github.com/zhoushoujianwork/offload/internal/config"
 	"github.com/zhoushoujianwork/offload/internal/history"
 	"github.com/zhoushoujianwork/offload/internal/live"
+	"github.com/zhoushoujianwork/offload/internal/slots"
 	"github.com/zhoushoujianwork/offload/internal/text"
 	"github.com/zhoushoujianwork/offload/internal/worker"
 )
@@ -43,6 +44,7 @@ usage:
   offload profiles [--json]     list profiles (* = the one a run would use)
   offload profile save --json   create or edit a profile from a JSON request on stdin
   offload default [profile]     show or set the saved default profile
+  offload disable / enable     persistently stop / allow new workers
   offload mode [basic|proactive] show or switch delegation mode and agent rules
   offload install-agent [flags] install delegation instructions for a host agent
   offload agent status|enable|disable [--agent codex|claude|all] [--json]
@@ -79,7 +81,7 @@ func Run(version string, args []string, stdin io.Reader, stdout, stderr io.Write
 			if fs.NArg() != 0 || *limit < 0 {
 				return fail(stderr, errors.New("usage: offload watch [-t duration]"))
 			}
-			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 			defer stop()
 			if *limit > 0 {
 				var cancel context.CancelFunc
@@ -95,6 +97,8 @@ func Run(version string, args []string, stdin io.Reader, stdout, stderr io.Write
 			return cmdProfile(args[1:], stdin, stdout, stderr)
 		case "default":
 			return cmdDefault(args[1:], stdout, stderr)
+		case "disable", "enable":
+			return agentinstall.RunSwitch(args, stdout, stderr)
 		case "mode":
 			return agentinstall.RunMode(args[1:], stdout, stderr)
 		case "install-agent":
@@ -114,7 +118,7 @@ func cmdRun(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("offload", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = func() { fmt.Fprint(stderr, usage); fs.PrintDefaults() }
-	profile := fs.String("p", "", "profile name (default: $OFFLOAD_PROFILE, then config default)")
+	profile := fs.String("p", "", "profile name or alias (default: $OFFLOAD_PROFILE, then config default)")
 	model := fs.String("m", "", "override the profile's model")
 	write := fs.Bool("w", false, "task intent: the task may modify files (default: told to stay read-only). Instruction only; offload adds no tool or sandbox limits either way")
 	resume := fs.String("r", "", "resume a session id; reuses its original dir unless -d is given")
@@ -122,31 +126,83 @@ func cmdRun(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	var addDirs dirList
 	fs.Var(&addDirs, "add-dir", "additional directory the worker may use (repeatable; relative paths resolve against the current directory; absolute recommended). A resume inherits the session's saved set unless this replaces it")
 	clearAddDirs := fs.Bool("clear-add-dirs", false, "resume without the session's saved additional directories (cannot be combined with --add-dir)")
+	idle := fs.Duration("idle", 0, "idle timeout (0 disables; default 30m managed-development, 10m otherwise)")
 	timeout := fs.Duration("t", 30*time.Minute, "timeout")
 	noSalvage := fs.Bool("no-salvage", false, "skip automatic report salvage for stopped Claude workers")
 	jsonOutput := fs.Bool("json", false, "print one structured run result instead of plain report")
-	if err := fs.Parse(args); err != nil {
-		return 2
-	}
+	executionPolicy := fs.String("execution-policy", "default", "default or managed-development (requires -w)")
+	instructionsFile := fs.String("instructions-file", "", "absolute private operator instructions file (<=256KiB)")
+	codexSandbox := fs.String("codex-sandbox", "", "managed Codex sandbox: workspace-write or danger-full-access")
+	callerRunID := fs.String("caller-run-id", "", "supervisor correlation ID (1-128 safe characters)")
+	eventsFile := fs.String("events-file", "", "absolute exclusive-create sanitized NDJSON events file")
+	toolsDisabled := fs.Bool("tools-disabled", false, "disable all worker tools (Claude only)")
+	allowedTools := fs.String("allowed-tools", "", "explicit comma-separated Claude tool allowlist")
+	disallowedTools := fs.String("disallowed-tools", "", "explicit comma-separated Claude tool denylist")
+	parseErr := fs.Parse(args)
 	task := strings.Join(fs.Args(), " ")
-	if task == "" && !isTerminal(stdin) {
-		b, _ := io.ReadAll(stdin)
-		task = strings.TrimSpace(string(b))
-	}
-	if task == "" {
-		fs.Usage()
-		return 2
-	}
 
 	logPath := history.Path()
-	rec := history.Record{TS: started.Format("2006-01-02 15:04:05"), Status: "error", Profile: *profile,
+	rec := history.Record{RunID: worker.NewRunID(), CallerRunID: *callerRunID, ExecutionPolicy: *executionPolicy, Session: *resume, TS: started.Format("2006-01-02 15:04:05"), Status: "error", Profile: *profile,
 		Model: *model, Dir: *dir, Task: task, CostIsEstimate: true}
+	var events *eventWriter
+	var eventFile *os.File
+	eventsStarted := false
+	finish := func() int {
+		if events != nil {
+			var err error
+			if !eventsStarted {
+				err = events.emit("start", "", "", &rec)
+				eventsStarted = true
+			}
+			if err == nil {
+				err = events.emit("final", "", "", &rec)
+			}
+			if closeErr := eventFile.Close(); err == nil {
+				err = closeErr
+			}
+			if err != nil {
+				code := 2
+				rec.Status = "error"
+				rec.ExitCode = &code
+				rec.ErrorKind = "events_io"
+				rec.Error = err.Error()
+				rec.Result = err.Error()
+			}
+		}
+		return printRun(rec, logPath, *jsonOutput, stdout, stderr)
+	}
 	failRun := func(err error) int {
+		// Setup never launched a session run. Do not make a failed setup the latest
+		// resume baseline for saved directories, profile or usage accounting.
+		rec.Session = ""
 		code := 2
+		rec.ErrorKind = worker.ErrorKind(err)
 		rec.ExitCode, rec.Error, rec.Result = &code, err.Error(), err.Error()
 		elapsed := time.Since(started).Milliseconds()
 		rec.ElapsedMs = &elapsed
-		return printRun(rec, logPath, *jsonOutput, stdout, stderr)
+		return finish()
+	}
+	if parseErr != nil {
+		return failRun(parseErr)
+	}
+	if err := config.CheckEnabled(); err != nil {
+		return failRun(err)
+	}
+	if task == "" && !isTerminal(stdin) {
+		b, _ := io.ReadAll(stdin)
+		task = strings.TrimSpace(string(b))
+		rec.Task = task
+	}
+	if task == "" {
+		fs.Usage()
+		return failRun(errors.New("task required"))
+	}
+	if *eventsFile != "" {
+		var err error
+		events, eventFile, err = openEvents(*eventsFile, rec)
+		if err != nil {
+			return failRun(err)
+		}
 	}
 	explicitDirs, err := normalizeAddDirs(addDirs, *clearAddDirs)
 	if err != nil {
@@ -154,6 +210,19 @@ func cmdRun(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	}
 	rec.AddDirs = slices.Clone(explicitDirs)
 	if *resume != "" {
+		// The lock closes the race the live-state check below only narrows: of two simultaneous
+		// resumes, one fails to take it. It is held until this process exits.
+		lock, _, lockErr := slots.LockSession(slots.Dir(), *resume)
+		switch {
+		case errors.Is(lockErr, slots.ErrSessionBusy):
+			pid := slots.HolderPID(slots.Dir(), *resume)
+			return failRun(fmt.Errorf("session %s already has an active run (pid %d); do not send overlapping follow-ups to one session. "+
+				"Wait for it (offload watch -t 10m), inspect the result or partial edits with offload show %s and git diff, then resume once",
+				*resume, pid, *resume))
+		case lockErr != nil:
+			return failRun(fmt.Errorf("lock session %s: %w", *resume, lockErr))
+		}
+		defer lock.Release()
 		if s, busy := activeSessionRun(*resume); busy {
 			return failRun(fmt.Errorf("session %s already has an active run (pid %d); do not send overlapping follow-ups to one session. "+
 				"Wait for it (offload watch -t 10m), inspect the result or partial edits with offload show %s and git diff, then resume once",
@@ -177,7 +246,17 @@ func cmdRun(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 			resumedProfile = selected
 		}
 	}
+	selected = firstNonEmpty(selected, firstNonEmpty(os.Getenv("OFFLOAD_PROFILE"), cfg.Default))
 	name, prof, err := cfg.Resolve(selected)
+	if resumedProfile != "" {
+		if _, exists := cfg.Profiles[resumedProfile]; !exists {
+			name, prof = resumedProfile, config.Profile{}
+			err = fmt.Errorf("unknown profile %q; available: %s", resumedProfile, cfg.ProfileChoices())
+		}
+	}
+	if err == nil && selected != name {
+		rec.ProfileAlias = selected
+	}
 	rec.Profile, rec.Model = name, firstNonEmpty(*model, prof.Model)
 	rec.Backend = prof.BackendName()
 	if err != nil {
@@ -202,13 +281,52 @@ func cmdRun(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	if err != nil {
 		return failRun(err)
 	}
+	maxWorkers, err := cfg.Limits.EffectiveMaxWorkers()
+	if err != nil {
+		return failRun(err)
+	}
 	o := worker.Opts{ProfileName: name, Profile: prof, Model: firstNonEmpty(*model, prof.Model), Write: *write,
-		Resume: *resume, Dir: wd, AddDirs: effectiveDirs, Task: task, Timeout: *timeout, StartedAt: started, NoSalvage: *noSalvage}
+		Resume: *resume, Dir: wd, AddDirs: effectiveDirs, Task: task, Timeout: *timeout, StartedAt: started, NoSalvage: *noSalvage,
+		RunID: rec.RunID, CallerRunID: *callerRunID, ExecutionPolicy: *executionPolicy, InstructionsFile: *instructionsFile, CodexSandbox: *codexSandbox,
+		ToolsDisabled: *toolsDisabled, AllowedTools: *allowedTools, DisallowedTools: *disallowedTools,
+		MaxWorkers: maxWorkers, Limits: cfg.Limits}
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "idle" {
+			o.IdleTimeout = idle
+		}
+	})
+	if events != nil {
+		if err := events.emit("start", "", "", &rec); err != nil {
+			rec.ErrorKind = "events_io"
+			code := 2
+			rec.ExitCode = &code
+			rec.Error = err.Error()
+			rec.Result = err.Error()
+			eventsStarted = true
+			return finish()
+		}
+		eventsStarted = true
+		o.OnLine = events.progress
+	}
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
+	// SIGTERM is what a supervisor's own cancellation or a timeout wrapper sends; handle it like Ctrl-C
+	// so the worker's process group is stopped instead of orphaned.
+	ctx, cancel := context.WithCancelCause(context.Background())
+	defer cancel(nil)
+	signals := make(chan os.Signal, 1)
+	signal.Notify(signals, os.Interrupt, syscall.SIGTERM)
+	defer signal.Stop(signals)
+	go func() {
+		select {
+		case <-signals:
+			cancel(worker.ErrSignal)
+		case <-ctx.Done():
+		}
+	}()
+	profileAlias := rec.ProfileAlias
 	rec, _ = worker.Run(ctx, o)
-	return printRun(rec, logPath, *jsonOutput, stdout, stderr)
+	rec.ProfileAlias = profileAlias
+	return finish()
 }
 
 // activeSessionRun finds another offload process still working in the session. The live state is
@@ -249,8 +367,11 @@ func printRun(rec history.Record, logPath string, jsonOutput bool, stdout, stder
 	if rec.Denials > 0 {
 		errText = fmt.Sprintf(" permission_denials=%d", rec.Denials) + errText
 	}
-	fmt.Fprintf(stderr, "[offload] %s exit_code=%s %s/%s turns=%d estimated_cost=%s elapsed=%s session=%s%s%s\n",
-		rec.Status, exitText(rec), rec.Profile, rec.Model, rec.Turns, costText(rec), elapsedText(rec),
+	if rec.Cleanup != "" {
+		errText += " cleanup=" + text.OneLine(rec.Cleanup)
+	}
+	fmt.Fprintf(stderr, "[offload] %s exit_code=%s %s/%s turns=%d estimated_cost=%s elapsed=%s%s session=%s%s%s\n",
+		rec.Status, exitText(rec), rec.Profile, rec.Model, rec.Turns, costText(rec), elapsedText(rec), waitText(rec),
 		firstNonEmpty(rec.Session, "-"), errText, warning)
 	if rec.ExitCode != nil {
 		return *rec.ExitCode
@@ -273,6 +394,15 @@ func elapsedText(rec history.Record) string {
 		return "unknown"
 	}
 	return fmt.Sprintf("%.3fs", float64(*rec.ElapsedMs)/1000)
+}
+
+// waitText splits elapsed into queue wait and execution when the run was admitted. The -t timeout
+// covers only the execution part.
+func waitText(rec history.Record) string {
+	if rec.WaitMs == nil || rec.ExecMs == nil {
+		return ""
+	}
+	return fmt.Sprintf(" wait=%.3fs exec=%.3fs", float64(*rec.WaitMs)/1000, float64(*rec.ExecMs)/1000)
 }
 
 func exitText(rec history.Record) string {
@@ -432,7 +562,11 @@ func cmdProfiles(stdout, stderr io.Writer) int {
 			mark = "*"
 		}
 		p := cfg.Profiles[n]
-		fmt.Fprintf(stdout, "%s %-12s %-8s %-5s %-24s %s\n", mark, n, p.BackendName(), firstNonEmpty(p.Endpoint, "-"), p.Model, p.BaseURL)
+		aliases := ""
+		if len(p.Aliases) > 0 {
+			aliases = " (aliases: " + strings.Join(p.Aliases, ", ") + ")"
+		}
+		fmt.Fprintf(stdout, "%s %-12s %-8s %-5s %-24s %s%s\n", mark, n, p.BackendName(), firstNonEmpty(p.Endpoint, "-"), p.Model, p.BaseURL, aliases)
 	}
 	return 0
 }

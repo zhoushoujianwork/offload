@@ -1,7 +1,6 @@
 package worker
 
 import (
-	"bytes"
 	"encoding/json"
 	"os"
 	"os/exec"
@@ -26,6 +25,27 @@ func codexBin() (string, error) {
 func buildCodexArgs(o Opts) []string {
 	// The explicit bypass works for both exec and exec resume. Write is task intent only.
 	args := []string{"exec", "--dangerously-bypass-approvals-and-sandbox"}
+	if o.ExecutionPolicy == "managed-development" {
+		sandbox := "read-only"
+		if o.Write {
+			sandbox = "workspace-write"
+		}
+		if o.ExecutionPolicy == "managed-development" && o.CodexSandbox != "" {
+			sandbox = o.CodexSandbox
+		}
+		// Config overrides also work with exec resume, which has no --sandbox flag.
+		args = []string{"exec", "-c", `approval_policy="never"`, "-c", `sandbox_mode="` + sandbox + `"`}
+		if o.ExecutionPolicy == "managed-development" && sandbox == "workspace-write" {
+			args = append(args, "-c", "sandbox_workspace_write.network_access=true")
+			if len(o.GitRoots) > 0 {
+				roots := make([]string, len(o.GitRoots))
+				for i, r := range o.GitRoots {
+					roots[i] = strconv.Quote(r)
+				}
+				args = append(args, "-c", "sandbox_workspace_write.writable_roots=["+strings.Join(roots, ",")+"]")
+			}
+		}
+	}
 	if o.Profile.ReasoningEffort != "" {
 		args = append(args, "-c", "model_reasoning_effort="+strconv.Quote(o.Profile.ReasoningEffort))
 	}
@@ -49,75 +69,93 @@ func buildCodexArgs(o Opts) []string {
 	return append(args, "-") // instructions and task go through stdin, never argv
 }
 
-// parseCodexStream normalizes Codex JSONL events into the shared progress/result model.
+// codexParser normalizes Codex JSONL events into the shared progress/result model.
 // Usage is session-cumulative; run accounting is applied after the process exits.
-func parseCodexStream(out []byte) streamSummary {
-	var s streamSummary
-	var report string
-	seen := make(map[string]bool)
-	dec := json.NewDecoder(bytes.NewReader(out))
-	for {
-		var e struct {
-			Type     string          `json:"type"`
-			Usage    json.RawMessage `json:"usage"`
-			ThreadID string          `json:"thread_id"`
-			Message  string          `json:"message"`
-			Error    struct {
-				Message string `json:"message"`
-			} `json:"error"`
-			Item struct {
-				ID      string `json:"id"`
-				Type    string `json:"type"`
-				Text    string `json:"text"`
-				Command string `json:"command"`
-				Tool    string `json:"tool"`
-			} `json:"item"`
+type codexParser struct {
+	s            streamSummary
+	providerKind string
+	report       string
+	seen         map[string]bool
+	stopped      bool // an undecodable line was seen; later lines are ignored
+}
+
+func (p *codexParser) summary() streamSummary { return p.s.clone() }
+
+// feed handles one event line. It stops at the first line that does not decode, as the one-shot
+// decoder it replaces did.
+func (p *codexParser) feed(line []byte) {
+	if p.stopped {
+		return
+	}
+	s := &p.s
+	if p.seen == nil {
+		p.seen = make(map[string]bool)
+	}
+	seen := p.seen
+	var e struct {
+		Type     string          `json:"type"`
+		Usage    json.RawMessage `json:"usage"`
+		ThreadID string          `json:"thread_id"`
+		Message  string          `json:"message"`
+		Error    struct {
+			Message string `json:"message"`
+		} `json:"error"`
+		Item struct {
+			ID      string `json:"id"`
+			Type    string `json:"type"`
+			Text    string `json:"text"`
+			Command string `json:"command"`
+			Tool    string `json:"tool"`
+		} `json:"item"`
+	}
+	if json.Unmarshal(line, &e) != nil {
+		p.stopped = true
+		return
+	}
+	s.Events++
+	if e.ThreadID != "" {
+		s.Session = e.ThreadID
+	}
+	switch e.Type {
+	case "turn.started":
+		s.Result, p.report, p.providerKind = nil, "", ""
+	case "item.started", "item.completed":
+		if e.Item.Type == "agent_message" && e.Type == "item.completed" {
+			s.LastText = e.Item.Text
+			p.report = e.Item.Text
 		}
-		if dec.Decode(&e) != nil {
-			break
-		}
-		s.Events++
-		if e.ThreadID != "" {
-			s.Session = e.ThreadID
-		}
-		switch e.Type {
-		case "turn.started":
-			s.Result, report = nil, ""
-		case "item.started", "item.completed":
-			if e.Item.Type == "agent_message" && e.Type == "item.completed" {
-				s.LastText = e.Item.Text
-				report = e.Item.Text
-			}
-			switch e.Item.Type {
-			case "command_execution", "mcp_tool_call", "file_change", "web_search":
-				if !seen[e.Item.ID] {
-					seen[e.Item.ID] = true
-					s.ToolCalls++
-					s.LastTools = append(s.LastTools, text.Truncate(text.OneLine(strings.TrimSpace(e.Item.Type+" "+e.Item.Command+" "+e.Item.Tool)), 120))
-					if len(s.LastTools) > lastToolsKept {
-						s.LastTools = s.LastTools[1:]
-					}
+		switch e.Item.Type {
+		case "command_execution", "mcp_tool_call", "file_change", "web_search":
+			if !seen[e.Item.ID] {
+				seen[e.Item.ID] = true
+				s.ToolCalls++
+				s.LastTools = append(s.LastTools, text.Truncate(text.OneLine(strings.TrimSpace(e.Item.Type+" "+e.Item.Command+" "+e.Item.Tool)), 120))
+				if len(s.LastTools) > lastToolsKept {
+					s.LastTools = s.LastTools[1:]
 				}
 			}
-		case "turn.completed":
-			s.Result = &claudeResult{Result: report, SessionID: s.Session, NumTurns: s.ToolCalls}
-			s.Result.CumulativeUsage = decodeCodexUsage(e.Usage)
-			if s.Result.CumulativeUsage == nil {
-				s.Result.UsageUnavailable = "missing or invalid terminal usage"
-			}
-			if strings.TrimSpace(report) == "" {
-				s.Result.IsError = true
-				s.Result.Errors = []string{"Codex completed without a report"}
-			}
-		case "error":
-			// Error events can be transient (e.g. a reconnect); only turn.failed is terminal.
-			if e.Message != "" {
-				s.LastText = e.Message
-			}
-		case "turn.failed":
-			message := firstNonEmpty(e.Error.Message, "Codex turn failed")
-			s.Result = &claudeResult{IsError: true, Result: message, Errors: []string{message}, SessionID: s.Session, NumTurns: s.ToolCalls}
 		}
+	case "turn.completed":
+		s.Result = &claudeResult{Result: p.report, SessionID: s.Session, NumTurns: s.ToolCalls}
+		s.Result.CumulativeUsage = decodeCodexUsage(e.Usage)
+		if s.Result.CumulativeUsage == nil {
+			s.Result.UsageUnavailable = "missing or invalid terminal usage"
+		}
+		if strings.TrimSpace(p.report) == "" {
+			s.Result.IsError = true
+			s.Result.Errors = []string{"Codex completed without a report"}
+		}
+	case "error":
+		p.providerKind = providerErrorKind(line, e.Message)
+		// Error events can be transient (e.g. a reconnect); only turn.failed is terminal.
+		if e.Message != "" {
+			s.LastText = e.Message
+		}
+	case "turn.failed":
+		message := firstNonEmpty(e.Error.Message, "Codex turn failed")
+		s.Result = &claudeResult{ErrorKind: terminalProviderKind(line, p.providerKind, message), IsError: true, Result: message, Errors: []string{message}, SessionID: s.Session, NumTurns: s.ToolCalls}
 	}
-	return s
 }
+
+// parseCodexStream reads a complete Codex JSONL output.
+func parseCodexStream(out []byte) streamSummary { return parseAll(&codexParser{}, out) }

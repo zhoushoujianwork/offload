@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -109,32 +110,59 @@ func TestWatchFollowsARealRunToTheEnd(t *testing.T) {
 func TestSalvagingWorkerIsNotReportedLost(t *testing.T) {
 	work, _ := setup(t, okReply)
 	origStale := live.StaleAfter
-	live.StaleAfter = 3 * time.Second // above the 2s refresh interval, below the salvage run
+	live.StaleAfter = 5 * time.Second // Allow more than two 2s heartbeat intervals.
 	t.Cleanup(func() { live.StaleAfter = origStale })
-	t.Setenv("FAKE_PREFIX", `{"type":"system","subtype":"init","session_id":"s-killed"}`)
-	t.Setenv("FAKE_SLEEP", "15")
-	t.Setenv("FAKE_SALVAGE", "REPORT")
-	t.Setenv("FAKE_SALVAGE_SLEEP", "7")
+	release := filepath.Join(t.TempDir(), "release")
+	fake := os.Getenv("OFFLOAD_CLAUDE")
+	t.Setenv("FAKE_RELEASE", release)
+	script := `#!/bin/sh
+case " $* " in
+*' --tools '*)
+  while [ ! -f "$FAKE_RELEASE" ]; do sleep 0.02; done
+  printf '%s\n' '{"type":"result","result":"REPORT","session_id":"s-killed"}'
+  ;;
+*)
+  printf '%s\n' '{"type":"system","subtype":"init","session_id":"s-killed"}'
+  # Ending without a result enters salvage without waiting for a deadline.
+  exit 1
+  ;;
+esac
+`
+	if err := os.WriteFile(fake, []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
 	done := make(chan struct{})
-	go func() { defer close(done); runCLI("-d", work, "-t", "4s", "slow") }()
+	go func() { defer close(done); runCLI("-d", work, "-t", "30s", "slow") }()
 
-	lost, salvaging := false, false
-	for end := time.Now().Add(25 * time.Second); time.Now().Before(end); time.Sleep(150 * time.Millisecond) {
-		states, _ := live.List()
+	t.Cleanup(func() { os.WriteFile(release, nil, 0600); <-done })
+	var first time.Time
+	waitFor(t, "salvage heartbeat beyond the stale interval", 45*time.Second, func() bool {
+		states, err := live.List()
+		if err != nil {
+			t.Fatal(err)
+		}
 		for _, s := range states {
-			lost = lost || s.Phase == live.Lost
-			salvaging = salvaging || s.Phase == live.Salvaging
+			if s.Phase == live.Lost {
+				t.Fatal("a refreshed salvage state went stale")
+			}
+			if s.Phase == live.Salvaging {
+				if first.IsZero() {
+					first = s.UpdatedAt
+				}
+				return s.UpdatedAt.Sub(first) > live.StaleAfter
+			}
 		}
 		select {
 		case <-done:
-			end = time.Now()
+			t.Fatal("worker finished before salvage heartbeats were observed")
 		default:
 		}
+		return false
+	})
+	if err := os.WriteFile(release, nil, 0600); err != nil {
+		t.Fatal(err)
 	}
 	<-done
-	if !salvaging || lost {
-		t.Fatalf("salvaging seen=%v lost seen=%v; a refreshed state must not go stale", salvaging, lost)
-	}
 }
 
 // A bounded watch is one long wait instead of many short polls: it returns 124 with a clear
@@ -166,5 +194,24 @@ func TestWatchFlagValidation(t *testing.T) {
 	}
 	if code, out, _ := runCLI("watch", "-t", "5s"); code != 0 || !strings.Contains(out, "no active workers") {
 		t.Errorf("bounded watch with nothing running: %d %q", code, out)
+	}
+}
+
+func TestWatcherReportsQueueCleanupAndUnresolved(t *testing.T) {
+	var out bytes.Buffer
+	w := &watcher{seen: map[int]*seenWorker{}, out: &out}
+	now := time.Now()
+	slot := 1
+	w.step([]live.State{{PID: 8, Phase: live.Queued, WaitReason: "all 2 worker slot(s) are busy (2 running)", StartedAt: now, LastEventAt: now}})
+	w.step([]live.State{{PID: 8, Phase: live.Running, Slot: &slot, WaitMs: 4000, PGID: 99, StartedAt: now, LastEventAt: now}})
+	w.step([]live.State{{PID: 8, Phase: live.Cleaning, Slot: &slot, PGID: 99, StartedAt: now, LastEventAt: now}})
+	active := w.step([]live.State{{PID: 8, Phase: live.Unresolved, PGID: 99, WaitReason: "still running", StartedAt: now, LastEventAt: now}})
+	if active != 0 {
+		t.Logf("unresolved phase counted as active: %d", active)
+	}
+	for _, want := range []string{"wait_reason=", "admitted after waiting 4s", "pgid=99", "slot=1", "stopping the worker's child processes", "UNRESOLVED"} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("missing %q in:\n%s", want, out.String())
+		}
 	}
 }

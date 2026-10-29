@@ -272,3 +272,67 @@ func TestProjectModeOverridePreservesUserSettings(t *testing.T) {
 		}
 	}
 }
+
+func TestSwitchPreservesCustomInstructionsAndSettings(t *testing.T) {
+	home := modeHome(t)
+	path := filepath.Join(home, ".codex", "AGENTS.md")
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("Custom instructions.\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	original := `{"delegation_mode":"basic","default":"a","profiles":{"a":{"token":"secret"}},"future":{"x":1}}`
+	if err := os.MkdirAll(config.Dir(), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(config.Path(), []byte(original), 0600); err != nil {
+		t.Fatal(err)
+	}
+	for _, command := range []string{"disable", "enable"} {
+		var out, errOut bytes.Buffer
+		if code := RunSwitch([]string{command}, &out, &errOut); code != 0 {
+			t.Fatal(errOut.String())
+		}
+		b := installTestRead(t, path)
+		if !strings.HasPrefix(string(b), "Custom instructions.\n") {
+			t.Fatal(string(b))
+		}
+		var before, after map[string]json.RawMessage
+		json.Unmarshal([]byte(original), &before)
+		json.Unmarshal(installTestRead(t, config.Path()), &after)
+		for k, want := range before {
+			var a, b bytes.Buffer
+			json.Compact(&a, want)
+			json.Compact(&b, after[k])
+			if a.String() != b.String() {
+				t.Fatalf("%s changed", k)
+			}
+		}
+	}
+	assertInstalledMode(t, "basic")
+}
+
+func TestDisableRemainsSavedWhenInstructionsConflict(t *testing.T) {
+	home := modeHome(t)
+	path := filepath.Join(home, ".agents", "skills", "offload", "SKILL.md")
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("user-owned skill"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	var out, errOut bytes.Buffer
+	if code := RunSwitch([]string{"disable"}, &out, &errOut); code != 2 {
+		t.Fatal(code)
+	}
+	if config.CheckEnabled() != config.ErrDisabled {
+		t.Fatal("disable was undone")
+	}
+	if string(installTestRead(t, path)) != "user-owned skill" {
+		t.Fatal("custom skill overwritten")
+	}
+	if !strings.Contains(errOut.String(), "Global switch saved") {
+		t.Fatal(errOut.String())
+	}
+}

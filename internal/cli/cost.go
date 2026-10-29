@@ -13,6 +13,12 @@ func compactUsage(r history.Record) string {
 }
 
 func showCostDetails(w io.Writer, r history.Record) {
+	if r.ModelSource != "" {
+		fmt.Fprintf(w, "Model source: %s\n", r.ModelSource)
+	}
+	if r.ModelUnavailable != "" {
+		fmt.Fprintf(w, "Model unavailable: %s\n", r.ModelUnavailable)
+	}
 	if r.Backend == "codex" && r.UsageSource != "" {
 		fmt.Fprintf(w, "Selected model/tier: %s / %s\n", firstNonEmpty(r.Model, "inherited"), firstNonEmpty(r.ServiceTier, "inherited"))
 	}

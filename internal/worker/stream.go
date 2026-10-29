@@ -1,7 +1,6 @@
 package worker
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -24,45 +23,68 @@ type streamSummary struct {
 
 const lastToolsKept = 5
 
-// parseStream reads newline-delimited events and stops at the first undecodable one, which for a
-// killed worker is a truncated final line.
-func parseStream(out []byte) streamSummary {
-	var s streamSummary
-	dec := json.NewDecoder(bytes.NewReader(out))
-	for {
-		var raw json.RawMessage
-		if dec.Decode(&raw) != nil {
-			break
-		}
-		var head struct {
-			Type      string          `json:"type"`
-			Subtype   string          `json:"subtype"`
-			SessionID string          `json:"session_id"`
-			Message   json.RawMessage `json:"message"`
-		}
-		if json.Unmarshal(raw, &head) != nil {
-			continue
-		}
-		s.Events++
-		if s.Session == "" {
-			s.Session = head.SessionID
-		}
-		switch head.Type {
-		case "result":
-			var r claudeResult
-			if json.Unmarshal(raw, &r) == nil {
-				s.Result = &r
-			}
-		case "system":
-			if head.Subtype == "permission_denied" {
-				s.Denials++
-			}
-		case "assistant":
-			s.addAssistant(head.Message)
-		}
-	}
+// claudeParser folds `claude -p --output-format stream-json` events into a streamSummary.
+type claudeParser struct {
+	providerKind string
+	s            streamSummary
+	stopped      bool // an undecodable line was seen; later lines are ignored
+}
+
+func (p *claudeParser) summary() streamSummary { return p.s.clone() }
+
+// clone copies the one slice a caller could otherwise see change underneath it.
+func (s streamSummary) clone() streamSummary {
+	s.LastTools = append([]string(nil), s.LastTools...)
 	return s
 }
+
+// feed handles one event line. Like the one-shot decoder it replaces, it stops at the first line
+// that is not valid JSON, which for a killed worker is a truncated final line.
+func (p *claudeParser) feed(line []byte) {
+	if p.stopped {
+		return
+	}
+	if !json.Valid(line) {
+		p.stopped = true
+		return
+	}
+	var head struct {
+		Type      string          `json:"type"`
+		Subtype   string          `json:"subtype"`
+		SessionID string          `json:"session_id"`
+		Message   json.RawMessage `json:"message"`
+	}
+	if json.Unmarshal(line, &head) != nil {
+		return
+	}
+	s := &p.s
+	s.Events++
+	if s.Session == "" {
+		s.Session = head.SessionID
+	}
+	switch head.Type {
+	case "result":
+		var r claudeResult
+		if json.Unmarshal(line, &r) == nil {
+			if r.IsError {
+				r.ErrorKind = terminalProviderKind(line, p.providerKind, append(r.Errors, r.Result)...)
+			}
+			s.Result = &r
+		}
+	case "system":
+		if head.Subtype == "permission_denied" {
+			s.Denials++
+		}
+	case "error":
+		p.providerKind = providerErrorKind(line)
+	case "assistant":
+		p.providerKind = providerErrorKind(line)
+		s.addAssistant(head.Message)
+	}
+}
+
+// parseStream reads a complete stream-json output.
+func parseStream(out []byte) streamSummary { return parseAll(&claudeParser{}, out) }
 
 func (s *streamSummary) addAssistant(message json.RawMessage) {
 	var m struct {

@@ -1,9 +1,12 @@
 package live
 
 import (
+	"os/exec"
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/zhoushoujianwork/offload/internal/proc"
 )
 
 func setState(t *testing.T) {
@@ -50,5 +53,63 @@ func TestStaleActiveStateIsLostAndOldFilesExpire(t *testing.T) {
 	ExpireAfter = 20 * time.Millisecond
 	if rs, _ := List(); len(rs) != 0 {
 		t.Fatalf("expired states must be dropped: %+v", rs)
+	}
+}
+
+// An expired heartbeat does not prove the worker's processes are gone. While the recorded group is
+// alive the state is reported with Unresolved set and is not expired; a group that is gone, or a
+// recycled pid, is not reported as running.
+func TestStaleStateChecksWorkerProcessGroup(t *testing.T) {
+	if !proc.Supported {
+		t.Skip("needs process groups")
+	}
+	setState(t)
+	cmd := exec.Command("sleep", "60")
+	proc.Prepare(cmd)
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	g := proc.Started(cmd)
+	go cmd.Wait()
+	t.Cleanup(g.Kill)
+
+	now := time.Now()
+	Publish(State{PID: 11, Phase: Running, StartedAt: now, PGID: g.PGID, PGIDStart: g.Start})
+	Publish(State{PID: 12, Phase: Running, StartedAt: now, PGID: 2147480000, PGIDStart: "x"})
+	Publish(State{PID: 13, Phase: Done, Status: "ok", StartedAt: now, PGID: g.PGID, PGIDStart: g.Start})
+	StaleAfter = 20 * time.Millisecond
+	time.Sleep(60 * time.Millisecond)
+	got := map[int]State{}
+	rs, _ := List()
+	for _, s := range rs {
+		got[s.PID] = s
+	}
+	if got[11].Phase != Lost || !got[11].Unresolved {
+		t.Errorf("lost owner with a live group must be flagged: %+v", got[11])
+	}
+	if got[12].Phase != Lost || got[12].Unresolved {
+		t.Errorf("a group that does not exist must not be flagged: %+v", got[12])
+	}
+	if got[13].Phase != Done || got[13].Unresolved {
+		t.Errorf("finished runs are not rechecked: %+v", got[13])
+	}
+
+	ExpireAfter = 20 * time.Millisecond
+	rs, _ = List()
+	kept := map[int]bool{}
+	for _, s := range rs {
+		kept[s.PID] = true
+	}
+	if !kept[11] || kept[12] || kept[13] {
+		t.Errorf("only the state with live processes may outlive expiry: %v", kept)
+	}
+
+	g.Kill()
+	deadline := time.Now().Add(5 * time.Second)
+	for g.Alive() && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if rs, _ := List(); len(rs) != 0 {
+		t.Errorf("state should expire once the processes are gone: %+v", rs)
 	}
 }

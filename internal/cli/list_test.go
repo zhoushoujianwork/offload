@@ -183,3 +183,31 @@ func TestListCostFromSavedFixtures(t *testing.T) {
 		t.Errorf("stale unexplained wording in %q", out)
 	}
 }
+
+func TestListShowsModelUnlessProfileNamesIt(t *testing.T) {
+	cases := []struct {
+		profile, model string
+		shown          bool
+	}{
+		{"codex", "c", true},
+		{"codex-subscription", "gpt-6-astra", true},
+		{"codex-gpt-6", "gpt-6", false},
+		{"long-profile-GPT-5.4", "gpt-5.4", false},
+		{"gpt-5.40-fast", "gpt-5.4", true},
+	}
+	for _, c := range cases {
+		t.Run(c.profile+"/"+c.model, func(t *testing.T) {
+			t.Setenv("XDG_STATE_HOME", t.TempDir())
+			appendListRecord(t, history.Record{Profile: c.profile, Model: c.model, ModelSource: "config", Session: "s"})
+			_, out, _ := runCLI("ls")
+			want := "  project unavailable | " + c.profile
+			if c.shown {
+				want += " / " + c.model
+			}
+			want += " (model_source=config)"
+			if !strings.Contains(out, want+"\n") {
+				t.Fatalf("want %q in %q", want, out)
+			}
+		})
+	}
+}

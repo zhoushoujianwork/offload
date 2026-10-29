@@ -15,13 +15,13 @@ import (
 	"slices"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/zhoushoujianwork/offload/internal/config"
 	"github.com/zhoushoujianwork/offload/internal/history"
 	"github.com/zhoushoujianwork/offload/internal/live"
-	"github.com/zhoushoujianwork/offload/internal/procutil"
+	"github.com/zhoushoujianwork/offload/internal/proc"
+	"github.com/zhoushoujianwork/offload/internal/slots"
 	"github.com/zhoushoujianwork/offload/internal/text"
 )
 
@@ -47,50 +47,20 @@ var IdleLimit = 10 * time.Minute
 
 var errIdle = errors.New("worker idle")
 
-// activityWriter collects the worker's stdout and remembers when it last wrote. The buffer is a
-// named field, not embedded: an embedded bytes.Buffer would promote ReadFrom, io.Copy would call
-// that directly, and Write (hence the timestamp) would never run.
-type activityWriter struct {
-	mu   sync.Mutex
-	buf  bytes.Buffer
-	last atomic.Int64 // unix nanoseconds of the latest write
-}
-
-func (w *activityWriter) Write(p []byte) (int, error) {
-	w.last.Store(time.Now().UnixNano())
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	return w.buf.Write(p)
-}
-
-// Bytes returns a copy, because the live publisher reads while the worker is still writing.
-func (w *activityWriter) Bytes() []byte {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	return bytes.Clone(w.buf.Bytes())
-}
-
-func (w *activityWriter) String() string { return string(w.Bytes()) }
-
-// watchIdle cancels ctx with errIdle once nothing was written for limit.
-func watchIdle(ctx context.Context, cancel context.CancelCauseFunc, last *atomic.Int64, limit time.Duration) {
-	t := time.NewTicker(limit / 10)
-	defer t.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-t.C:
-			if time.Since(time.Unix(0, last.Load())) > limit {
-				cancel(errIdle)
-				return
-			}
-		}
-	}
-}
-
 // Opts is one worker run.
 type Opts struct {
+	RunID            string
+	CallerRunID      string
+	ExecutionPolicy  string
+	InstructionsFile string
+	CodexSandbox     string
+
+	Instructions                  []byte
+	ToolsDisabled                 bool
+	AllowedTools, DisallowedTools string
+	GitRoots                      []string
+	OnLine                        func([]byte) error
+
 	ProfileName string
 	Profile     config.Profile
 	Model       string
@@ -99,14 +69,21 @@ type Opts struct {
 	Dir         string
 	AddDirs     []string // absolute extra directories forwarded to the backend; Dir stays the cwd
 	Task        string
+	IdleTimeout *time.Duration
 	Timeout     time.Duration
 	StartedAt   time.Time
 	NoSalvage   bool // do not ask a stopped worker for a report from what it already read
 	Salvage     bool // internal: this run is the tool-less report of a stopped worker
+
+	// MaxWorkers is the machine-wide worker limit; <= 0 disables admission control. Limits adds
+	// build defaults to the worker's environment.
+	MaxWorkers int
+	Limits     config.Limits
 }
 
 // claudeResult is the subset of `claude -p --output-format json` we use.
 type claudeResult struct {
+	ErrorKind        string              `json:"-"`
 	CumulativeUsage  *history.TokenUsage `json:"-"`
 	UsageUnavailable string              `json:"-"`
 	RawUsage         json.RawMessage     `json:"usage"`      // Claude: this invocation only; decoded by claude_usage.go
@@ -144,14 +121,30 @@ func buildArgs(o Opts, promptPath string) []string {
 	}
 
 	// offload adds no permission barrier: nobody can answer a prompt in a headless run, so every
-	// normal run skips them, and -w only states the task's intent (see writeWorkerPrompt). Host
+	// default-policy run without explicit tool controls skips them; -w states task intent. Host
 	// OS, network and credential limits still apply. Only the report-only salvage step is
 	// tool-less, by design, so it cannot start new work.
-	args = append(args, "--dangerously-skip-permissions")
+	if o.Salvage || (o.ExecutionPolicy != "managed-development" && o.AllowedTools == "" && o.DisallowedTools == "" && !o.ToolsDisabled) {
+		args = append(args, "--dangerously-skip-permissions")
+	}
 	if o.Salvage {
 		args = append(args, "--tools", "")
+	} else if o.ToolsDisabled {
+		args = append(args, "--tools", "")
+	} else if o.AllowedTools != "" {
+		// Explicit allowlists must not inherit automatic approval for edits.
+		args = append(args, "--permission-mode", "default", "--allowedTools", strings.ReplaceAll(o.AllowedTools, ",", " "))
+	} else if o.ExecutionPolicy == "managed-development" {
+		args = append(args, "--permission-mode", "acceptEdits", "--allowedTools", "Bash Read Grep Glob Edit Write")
 	}
-	return append(args, "--append-system-prompt-file", promptPath, o.Task)
+	if o.DisallowedTools != "" {
+		args = append(args, "--disallowedTools", strings.ReplaceAll(o.DisallowedTools, ",", " "))
+	}
+	args = append(args, "--append-system-prompt-file", promptPath)
+	if o.ExecutionPolicy == "managed-development" {
+		return args // managed task contents travel only through stdin
+	}
+	return append(args, o.Task)
 }
 
 // writeWorkerPrompt combines explicit project instructions and delegated-task constraints.
@@ -170,7 +163,13 @@ func writeWorkerPrompt(o Opts) (string, error) {
 		}
 		fmt.Fprintf(&prompt, "Project instructions from %s:\n%s\n\n", path, contents)
 	}
-	if o.Profile.BackendName() == "codex" {
+	if len(o.Instructions) > 0 {
+		prompt.Write(o.Instructions)
+		prompt.WriteString("\n\n")
+	}
+	if o.ExecutionPolicy == "managed-development" {
+		prompt.WriteString(managedPrompt)
+	} else if o.Profile.BackendName() == "codex" {
 		prompt.WriteString(codexPrompt)
 	} else {
 		prompt.WriteString(Prompt)
@@ -223,18 +222,42 @@ func claudeBin() (string, error) {
 	return exec.LookPath("claude")
 }
 
+// StopGrace is how long a stopped worker's process group gets to exit after SIGTERM before it is
+// killed; KillWait bounds the wait for the kernel after SIGKILL. Variables only so tests can shorten them.
+var (
+	StopGrace = 5 * time.Second
+	KillWait  = 3 * time.Second
+)
+
 // Run executes the worker and always returns a Record describing what happened.
+//
+// The run first waits for a worker slot, so at most MaxWorkers run on the machine. It keeps the
+// slot through the worker, any salvage step and cleanup of the worker's process group, and gives
+// it up only once those processes are confirmed gone.
 func Run(ctx context.Context, o Opts) (rec history.Record, err error) {
+	if o.RunID == "" {
+		o.RunID = NewRunID()
+	}
 	started := o.StartedAt
 	if started.IsZero() {
 		started = time.Now()
 	}
 	rec = history.Record{TS: started.Format("2006-01-02 15:04:05"), Profile: o.ProfileName, Model: o.Model,
-		Backend: o.Profile.BackendName(), Dir: o.Dir, AddDirs: slices.Clone(o.AddDirs), Task: o.Task, Status: "error", CostIsEstimate: true}
+		RunID: o.RunID, CallerRunID: o.CallerRunID, ExecutionPolicy: policyName(o.ExecutionPolicy), Backend: o.Profile.BackendName(), Dir: o.Dir, AddDirs: slices.Clone(o.AddDirs), Task: o.Task, Status: "error", CostIsEstimate: true}
 	var pub *publisher
+	var slot *slots.Slot
+	var admitted time.Time
+	var leftover *proc.Group // worker processes that survived cleanup
 	defer func() {
+		if rec.Backend == "codex" {
+			resolveCodexModel(&rec, o.Model)
+		}
 		elapsed := time.Since(started).Milliseconds()
 		rec.ElapsedMs = &elapsed
+		if !admitted.IsZero() {
+			wait, exec := admitted.Sub(started).Milliseconds(), time.Since(admitted).Milliseconds()
+			rec.WaitMs, rec.ExecMs = &wait, &exec
+		}
 		code := 1
 		if err != nil {
 			code, rec.Error, rec.Result = 2, err.Error(), err.Error()
@@ -244,11 +267,50 @@ func Run(ctx context.Context, o Opts) (rec history.Record, err error) {
 			code = 124
 		}
 		rec.ExitCode = &code
+		if rec.Status != "ok" && rec.ErrorKind == "" {
+			rec.ErrorKind = "execution"
+		}
+		if rec.Status == "ok" {
+			rec.ErrorKind = ""
+		}
+		if rec.ErrorKind == "capacity" || rec.ErrorKind == "rate_limit" {
+			rec.Error, rec.Result = rec.ErrorKind, rec.ErrorKind
+		}
+		// Give the slot up only after cleanup. A group that is still alive keeps the slot file
+		// recording it, so the capacity stays unavailable.
+		if leftover != nil && !leftover.Alive() {
+			leftover = nil
+		}
+		if !slot.Release() && leftover == nil {
+			leftover = &proc.Group{}
+		}
+		if leftover != nil {
+			rec.Cleanup = "unresolved: worker processes are still running"
+			if leftover.PGID > 1 {
+				rec.Cleanup += fmt.Sprintf(" in process group %d; stop them with: kill -TERM -- -%d", leftover.PGID, leftover.PGID)
+			}
+			rec.Cleanup += "; their worker slot stays unavailable until they exit"
+		}
 		// Publish only after the exit code is final, or watch/status would show 0 for a failure.
 		if pub != nil {
-			pub.finish(rec)
+			pub.finish(rec, leftover)
 		}
 	}()
+	if err = config.CheckEnabled(); err != nil {
+		rec.ErrorKind = ErrorKind(err)
+		return rec, err
+	}
+	if err = Validate(&o); err != nil {
+		rec.ErrorKind = ErrorKind(err)
+		return rec, err
+	}
+	limit, limitErr := o.idleLimit()
+	if limitErr != nil {
+		rec.ErrorKind = "configuration"
+		return rec, limitErr
+	}
+	rec.IdleTimeout = limit.String()
+	rec.ErrorKind = "configuration"
 	promptPath, err := writeWorkerPrompt(o)
 	if err != nil {
 		return rec, err
@@ -256,6 +318,7 @@ func Run(ctx context.Context, o Opts) (rec history.Record, err error) {
 	defer os.Remove(promptPath)
 	var token, bin string
 	if o.Profile.BackendName() == "codex" {
+		rec.ErrorKind = "launch"
 		bin, err = codexBin()
 		if err != nil {
 			return rec, fmt.Errorf("codex CLI not found: %w", err)
@@ -265,6 +328,7 @@ func Run(ctx context.Context, o Opts) (rec history.Record, err error) {
 		if err != nil {
 			return rec, err
 		}
+		rec.ErrorKind = "launch"
 		bin, err = claudeBin()
 		if err != nil {
 			return rec, fmt.Errorf("claude CLI not found: %w", err)
@@ -273,9 +337,50 @@ func Run(ctx context.Context, o Opts) (rec history.Record, err error) {
 			return rec, err
 		}
 	}
+	rec.ErrorKind = "launch"
 	pub = newPublisher(o, started)
-	a := runAttempt(ctx, bin, o, promptPath, token, o.Timeout, pub.update)
+	slot, err = slots.Acquire(ctx, slots.Options{Dir: slots.Dir(), Max: o.MaxWorkers, OnWait: pub.waiting, Check: config.CheckEnabled})
+	if err != nil {
+		if ctx.Err() != nil {
+			rec.StopReason = stopReason(context.Cause(ctx))
+			rec.ErrorKind = "canceled"
+			return rec, errors.New("cancelled while waiting for a worker slot; no worker was started")
+		}
+		rec.ErrorKind = ErrorKind(err)
+		return rec, fmt.Errorf("acquire worker slot: %w", err)
+	}
+	if err = config.CheckEnabled(); err != nil {
+		rec.ErrorKind = ErrorKind(err)
+		return rec, err
+	}
+	admitted = time.Now()
+	pub.admitted(slot.Index(), admitted.Sub(started))
+	hooks := hooks{started: func(g proc.Group) { slot.Track(g); pub.group(g) }, cleaning: func() { pub.phase(live.Cleaning) }, cleaned: slot.Clear}
+
+	a := runAttempt(ctx, bin, o, promptPath, token, o.Timeout, pub.update, hooks)
+	if a.gateErr != nil {
+		rec.ErrorKind = ErrorKind(a.gateErr)
+		return rec, a.gateErr
+	}
+	pub.phase(live.Running)
+	if a.leftover != nil {
+		leftover = a.leftover
+	}
 	s := a.s
+	rec.StopReason = stopReason(a.cause)
+	rec.ErrorKind = "execution"
+	var launchErr *exec.Error
+	var pathErr *os.PathError
+	if errors.As(a.runErr, &launchErr) || errors.As(a.runErr, &pathErr) {
+		rec.ErrorKind = "launch"
+	}
+	// 信号保留独立停止原因，兼容原有 canceled 错误分类。
+	if rec.StopReason == "canceled" || rec.StopReason == "signal" {
+		rec.ErrorKind = "canceled"
+	}
+	if errors.Is(a.cause, errEventsIO) {
+		rec.ErrorKind = "events_io"
+	}
 	if o.Profile.BackendName() == "codex" {
 		defer func() {
 			applyCodexAccounting(&rec, s, a.baseline, a.baselineError, o, a.runErr == nil && a.cause == nil)
@@ -285,9 +390,10 @@ func Run(ctx context.Context, o Opts) (rec history.Record, err error) {
 	stopped := errors.Is(a.cause, errIdle) || errors.Is(a.cause, context.DeadlineExceeded)
 	if stopped {
 		rec.Status = "timeout"
+		rec.ErrorKind = "timeout"
 		rec.Error = "timed out after " + o.Timeout.String()
 		if errors.Is(a.cause, errIdle) {
-			rec.Error = "worker produced no output for " + IdleLimit.String()
+			rec.Error = "worker produced no activity for " + limit.String()
 		}
 	} else if s.Result == nil {
 		if s.Events == 0 {
@@ -306,6 +412,9 @@ func Run(ctx context.Context, o Opts) (rec history.Record, err error) {
 			return rec, nil
 		}
 		rec.Error = "worker ended without a result"
+		if errors.Is(a.cause, context.Canceled) {
+			rec.Error = "interrupted before the worker finished"
+		}
 		if a.runErr != nil {
 			rec.Error += ": " + a.runErr.Error()
 		}
@@ -315,10 +424,18 @@ func Run(ctx context.Context, o Opts) (rec history.Record, err error) {
 		rec.Result = rec.Error + s.progress()
 		markClaudeNoResult(&rec)
 		// A stopped worker has usually read plenty. Ask it for the report without tools instead
-		// of leaving the supervisor with a progress sketch. Not after the user pressed Ctrl-C.
-		if !o.NoSalvage && o.Profile.BackendName() == "claude" && s.Session != "" && ctx.Err() == nil {
+		// of leaving the supervisor with a progress sketch. Not after the user pressed Ctrl-C,
+		// not while the first worker's processes are still alive, and never for managed development.
+		if o.ExecutionPolicy != "managed-development" && !o.NoSalvage && o.Profile.BackendName() == "claude" && s.Session != "" && ctx.Err() == nil && leftover == nil {
 			pub.phase(live.Salvaging)
-			report, sres, serr := salvageResult(ctx, bin, o, promptPath, token, s.Session, pub.keepAlive)
+			report, sres, left, serr := salvageAttempt(ctx, bin, o, promptPath, token, s.Session, pub.keepAlive, hooks)
+			if left != nil {
+				leftover = left
+			}
+			if errors.Is(serr, config.ErrDisabled) {
+				rec.ErrorKind = ErrorKind(serr)
+				rec.Error += "; automatic salvage refused: " + serr.Error()
+			}
 			if serr == nil {
 				rec.Salvaged = true
 				applyClaudeSalvageAccounting(&rec, sres)
@@ -338,9 +455,12 @@ func Run(ctx context.Context, o Opts) (rec history.Record, err error) {
 	rec.Session, rec.Turns, rec.DurationMs, rec.Result =
 		firstNonEmpty(res.SessionID, s.Session), res.NumTurns, res.DurationMs, res.Result
 	applyClaudeAccounting(&rec, &res, o, a.claudeBase)
-	if !res.IsError && a.runErr == nil {
+	if !res.IsError && a.runErr == nil && a.cause == nil {
 		rec.Status = "ok"
 	} else {
+		if res.IsError && res.ErrorKind != "" && rec.ErrorKind == "execution" {
+			rec.ErrorKind = res.ErrorKind
+		}
 		for _, message := range res.Errors {
 			if message = strings.TrimSpace(message); message != "" {
 				if rec.Error != "" {
@@ -368,6 +488,7 @@ func Run(ctx context.Context, o Opts) (rec history.Record, err error) {
 
 // attempt is the outcome of one worker process.
 type attempt struct {
+	gateErr        error // admission failure before any backend process starts
 	baseline       *history.TokenUsage
 	baselineError  string
 	claudeBase     claudeBaseline // resumed normal Claude run only
@@ -375,46 +496,97 @@ type attempt struct {
 	cause          error
 	runErr         error
 	stdout, stderr string
+	// leftover is the worker's process group when processes in it could not be stopped.
+	leftover *proc.Group
+}
+
+// hooks lets the caller record the worker's process group while it is the slot's responsibility.
+type hooks struct {
+	started  func(proc.Group)
+	cleaning func()
+	cleaned  func()
 }
 
 // runAttempt starts one worker process and waits for it. It stops early on the timeout or when the
 // worker goes silent, and calls tick every publishEvery with what the worker has done so far.
+//
+// The worker leads its own process group. When the attempt ends, by itself or by cancellation, the
+// whole group is stopped (SIGTERM, then SIGKILL after StopGrace), so build and test children do not
+// outlive the run. A descendant that left the group with setsid is not reachable this way.
 func runAttempt(ctx context.Context, bin string, o Opts, promptPath, token string, timeout time.Duration,
-	tick func(streamSummary, time.Time)) attempt {
+	tick func(streamSummary, time.Time), h hooks) attempt {
+	attemptOpts := o
+	attemptOpts.Timeout = timeout
+	limit, err := attemptOpts.idleLimit()
+	if err != nil {
+		return attempt{runErr: err}
+	}
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	ctx, cancelCause := context.WithCancelCause(ctx)
 	defer cancelCause(nil)
 	var cmd *exec.Cmd
-	parse := parseStream
+	var parser eventParser = &claudeParser{}
 	var baseline *history.TokenUsage
 	var baselineError string
 	var claudeBase claudeBaseline
+	// Not CommandContext: that kills only the worker process and never its children.
 	if o.Profile.BackendName() == "codex" {
 		baseline, baselineError = codexBaseline(o.Resume)
-		cmd = procutil.CommandContext(ctx, bin, buildCodexArgs(o)...)
+		cmd = exec.Command(bin, buildCodexArgs(o)...)
 		cmd.Dir = o.Dir
-		cmd.Env = os.Environ()
+		cmd.Env = o.Limits.ApplyEnv(os.Environ())
 		prompt, err := os.ReadFile(promptPath)
 		if err != nil {
 			return attempt{runErr: err}
 		}
 		cmd.Stdin = strings.NewReader(string(prompt) + "\nTask:\n" + o.Task)
-		parse = parseCodexStream
+		parser = &codexParser{}
 	} else {
 		if o.Resume != "" && !o.Salvage {
 			// Capture before the child starts: the result's cost and modelUsage are session totals.
 			claudeBase = captureClaudeBaseline(history.Path(), o.Resume)
 		}
-		cmd = procutil.CommandContext(ctx, bin, buildArgs(o, promptPath)...)
+		cmd = exec.Command(bin, buildArgs(o, promptPath)...)
 		cmd.Dir = o.Dir
-		cmd.Env = childEnv(os.Environ(), o, token)
+		cmd.Env = o.Limits.ApplyEnv(childEnv(os.Environ(), o, token))
+		if o.ExecutionPolicy == "managed-development" {
+			cmd.Stdin = strings.NewReader(o.Task)
+		}
 	}
-	out := &activityWriter{}
-	out.last.Store(time.Now().UnixNano())
-	var workerErr bytes.Buffer
-	cmd.Stdout, cmd.Stderr = out, &workerErr
-	go watchIdle(ctx, cancelCause, &out.last, IdleLimit)
+	proc.Prepare(cmd)
+	out := newActivityWriter(parser)
+	if o.OnLine != nil {
+		out.onLine = func(line []byte) error {
+			if err := o.OnLine(line); err != nil {
+				cancelCause(errEventsIO)
+				return fmt.Errorf("%w: %v", errEventsIO, err)
+			}
+			return nil
+		}
+	}
+	var workerErr cappedBuffer
+	cmd.Stdout, cmd.Stderr = out, &livenessWriter{w: &workerErr, last: &out.last}
+	// Do not wait indefinitely for a worker descendant to close inherited pipes.
+	cmd.WaitDelay = 100 * time.Millisecond
+	files := newSessionActivity(o)
+	// Every process launch, including automatic salvage, must observe the saved switch.
+	if err := config.CheckEnabled(); err != nil {
+		return attempt{runErr: err, gateErr: err}
+	}
+	if err := cmd.Start(); err != nil {
+		return attempt{runErr: err}
+	}
+	group := proc.Started(cmd)
+	if h.started != nil {
+		h.started(group)
+	}
+	waited := make(chan error, 1)
+	go func() { waited <- cmd.Wait() }()
+
+	if limit > 0 {
+		go watchIdle(ctx, cancelCause, &out.last, limit, func() bool { return files.grew(firstNonEmpty(out.summary().Session, o.Resume)) })
+	}
 	if tick != nil {
 		go func() {
 			t := time.NewTicker(publishEvery)
@@ -424,17 +596,96 @@ func runAttempt(ctx context.Context, bin string, o Opts, promptPath, token strin
 				case <-ctx.Done():
 					return
 				case <-t.C:
-					tick(parse(out.Bytes()), time.Unix(0, out.last.Load()))
+					tick(out.summary(), activityEpoch.Add(time.Duration(out.last.Load())))
 				}
 			}
 		}()
 	}
-	// Do not wait indefinitely for a worker descendant to close inherited pipes.
-	cmd.WaitDelay = 100 * time.Millisecond
-	runErr := cmd.Run()
-	return attempt{s: parse(out.Bytes()), cause: context.Cause(ctx), runErr: runErr,
-		baseline: baseline, baselineError: baselineError, claudeBase: claudeBase,
+
+	var runErr error
+	select {
+	case runErr = <-waited:
+	case <-ctx.Done():
+		// Timeout, idle limit or interrupt: stop the group, then collect the worker's exit.
+		group.Term()
+		select {
+		case runErr = <-waited:
+		case <-time.After(StopGrace):
+			group.Kill()
+			select {
+			case runErr = <-waited:
+			case <-time.After(KillWait):
+			}
+		}
+	}
+	cause := context.Cause(ctx)
+	if h.cleaning != nil && group.Alive() {
+		h.cleaning()
+	}
+	out.finish()
+	a := attempt{s: out.summary(), cause: cause, runErr: runErr, baseline: baseline, baselineError: baselineError, claudeBase: claudeBase,
 		stdout: out.String(), stderr: workerErr.String()}
+	if !stopGroup(group) {
+		g := group
+		a.leftover = &g
+	} else if h.cleaned != nil {
+		h.cleaned()
+	}
+	return a
+}
+
+// stopGroup makes sure no process is left in the worker's group, escalating from SIGTERM to
+// SIGKILL, and reports whether the group is confirmed gone. A normal exit usually leaves nothing
+// to stop. It never signals anything outside the group offload created.
+func stopGroup(g proc.Group) bool {
+	if !proc.Supported {
+		return true // nothing is tracked; see Known limits
+	}
+	if !g.Alive() {
+		return true
+	}
+	g.Term()
+	if waitGone(g, StopGrace) {
+		return true
+	}
+	g.Kill()
+	return waitGone(g, KillWait)
+}
+
+func waitGone(g proc.Group, d time.Duration) bool {
+	deadline := time.Now().Add(d)
+	for {
+		if !g.Alive() {
+			return true
+		}
+		if time.Now().After(deadline) {
+			return false
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// cappedBuffer keeps the start of what the worker wrote to stderr; the rest is dropped.
+type cappedBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+const maxStderrKept = 64 << 10
+
+func (b *cappedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if room := maxStderrKept - b.buf.Len(); room > 0 {
+		b.buf.Write(p[:min(room, len(p))])
+	}
+	return len(p), nil
+}
+
+func (b *cappedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
 }
 
 // salvage resumes a stopped session with no tools and returns the report it writes. The error says
@@ -454,37 +705,47 @@ func salvage(ctx context.Context, bin string, o Opts, promptPath, token, session
 
 // salvageResult is salvage returning the whole final result, so Run can keep its session snapshots.
 func salvageResult(ctx context.Context, bin string, o Opts, promptPath, token, session string, tick func(streamSummary, time.Time)) (string, *claudeResult, error) {
+	report, result, _, err := salvageAttempt(ctx, bin, o, promptPath, token, session, tick, hooks{})
+	return report, result, err
+}
+
+func salvageAttempt(ctx context.Context, bin string, o Opts, promptPath, token, session string, tick func(streamSummary, time.Time), h hooks) (string, *claudeResult, *proc.Group, error) {
 	so := o
 	so.Resume, so.Salvage, so.Write, so.Task = session, true, false, salvageTask
-	a := runAttempt(ctx, bin, so, promptPath, token, SalvageTimeout, tick)
+	so.Timeout = SalvageTimeout
+	limit, _ := so.idleLimit()
+	a := runAttempt(ctx, bin, so, promptPath, token, SalvageTimeout, tick, h)
+	if a.gateErr != nil {
+		return "", nil, a.leftover, a.gateErr
+	}
 	switch {
 	case ctx.Err() != nil:
-		return "", nil, errors.New("cancelled during the report step")
+		return "", nil, a.leftover, errors.New("cancelled during the report step")
 	case errors.Is(a.cause, errIdle):
-		return "", nil, fmt.Errorf("the report step produced no output for %s", IdleLimit)
+		return "", nil, a.leftover, fmt.Errorf("the report step produced no output for %s", limit)
 	case errors.Is(a.cause, context.DeadlineExceeded):
-		return "", nil, fmt.Errorf("the report step timed out after %s", SalvageTimeout)
+		return "", nil, a.leftover, fmt.Errorf("the report step timed out after %s", SalvageTimeout)
 	case a.runErr != nil:
 		var exit *exec.ExitError
 		if errors.As(a.runErr, &exit) {
-			return "", nil, fmt.Errorf("the report step process failed (%s), its output was discarded", exit.ProcessState)
+			return "", nil, a.leftover, fmt.Errorf("the report step process failed (%s), its output was discarded", exit.ProcessState)
 		}
-		return "", nil, errors.New("the report step process could not run")
+		return "", nil, a.leftover, errors.New("the report step process could not run")
 	}
 	r := a.s.Result
 	switch {
 	case r == nil:
-		return "", nil, errors.New("the report step ended without a result")
+		return "", nil, a.leftover, errors.New("the report step ended without a result")
 	case r.IsError:
 		reason := "worker reported an error"
 		if r.Subtype != "" && r.Subtype != "success" {
 			reason = r.Subtype
 		}
-		return "", nil, fmt.Errorf("the report step returned an error (%s)", reason)
+		return "", nil, a.leftover, fmt.Errorf("the report step returned an error (%s)", reason)
 	case strings.TrimSpace(r.Result) == "":
-		return "", nil, errors.New("the report step returned an empty report")
+		return "", nil, a.leftover, errors.New("the report step returned an empty report")
 	}
-	return r.Result, r, nil
+	return r.Result, r, a.leftover, nil
 }
 
 // publishEvery is how often a running worker refreshes its live state.
@@ -497,13 +758,46 @@ type publisher struct {
 }
 
 func newPublisher(o Opts, started time.Time) *publisher {
-	// A resumed run is already in its session; publishing that now lets activeSessionRun refuse an
-	// overlapping follow-up before the first stream event arrives.
-	p := &publisher{st: live.State{PID: os.Getpid(), Phase: live.Running, Dir: o.Dir, Session: o.Resume,
+	// Queued first: the run holds no slot and has started no backend. A resumed run is already in
+	// its session, so activeSessionRun can refuse an overlapping follow-up from the start.
+	p := &publisher{st: live.State{PID: os.Getpid(), Phase: live.Queued, Dir: o.Dir, Session: o.Resume,
 		Task: text.Truncate(text.OneLine(o.Task), 200), Profile: o.ProfileName, Model: o.Model,
-		StartedAt: started, LastEventAt: started}}
+		StartedAt: started, LastEventAt: started, Limits: limitsSummary(o)}}
 	live.Publish(p.st)
 	return p
+}
+
+func limitsSummary(o Opts) string {
+	return o.Limits.Summary(max(o.MaxWorkers, 0))
+}
+
+// waiting is called while the run is queued. It refreshes the state so the queue stays visible
+// and the run is never reported lost.
+func (p *publisher) waiting(w slots.Wait) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.st.WaitReason = w.Reason()
+	p.st.WaitMs = time.Since(p.st.StartedAt).Milliseconds()
+	live.Publish(p.st)
+}
+
+// admitted marks the move from queue to running. LastEventAt restarts here so queue time is not
+// counted as worker idle time.
+func (p *publisher) admitted(slot int, waited time.Duration) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.st.Phase, p.st.WaitReason, p.st.WaitMs, p.st.LastEventAt = live.Running, "", waited.Milliseconds(), time.Now()
+	if slot >= 0 {
+		p.st.Slot = &slot
+	}
+	live.Publish(p.st)
+}
+
+func (p *publisher) group(g proc.Group) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.st.PGID, p.st.PGIDStart = g.PGID, g.Start
+	live.Publish(p.st)
 }
 
 func (p *publisher) update(s streamSummary, last time.Time) {
@@ -534,10 +828,19 @@ func (p *publisher) phase(phase string) {
 	live.Publish(p.st)
 }
 
-func (p *publisher) finish(rec history.Record) {
+// finish publishes the final state. A non-nil leftover means worker processes survived cleanup, so
+// the state is Unresolved rather than Done and keeps the group id for status and for slot recovery.
+func (p *publisher) finish(rec history.Record, leftover *proc.Group) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.st.Phase, p.st.Status, p.st.ToolCalls, p.st.Denials = live.Done, rec.Status, rec.Turns, rec.Denials
+	p.st.WaitReason = ""
+	if leftover != nil {
+		p.st.Phase = live.Unresolved
+		p.st.WaitReason = rec.Cleanup
+	} else {
+		p.st.PGID, p.st.PGIDStart = 0, ""
+	}
 	if rec.Session != "" {
 		p.st.Session = rec.Session
 	}

@@ -194,6 +194,11 @@ func runSettings(p settingsPrompt, stdout, stderr io.Writer) int {
 		if err != nil {
 			return fail(stderr, err)
 		}
+		disabled, err := config.LoadDisabled(config.Path())
+		if err != nil {
+			return fail(stderr, err)
+		}
+		fmt.Fprintf(stdout, "Offload globally disabled: %t (offload disable / enable)\n", disabled)
 		choices := []string{"Profile: " + firstNonEmpty(cfg.Default, "(not configured)"), "Offload level: " + offloadLevelLabel(mode), "Exit"}
 		selected, err := settingsChoice(p, "Settings", choices, cursor)
 		if settingsCancelled(err) {
@@ -243,6 +248,7 @@ func settingsProfile(p settingsPrompt, cfg *config.Config) error {
 	if len(names) == 0 {
 		return settingsWizard(p, cfg, "", true)
 	}
+	currentName, _, currentErr := cfg.Resolve(cfg.Default)
 	labels := make([]string, 0, len(names)+3)
 	cursor := 0
 	for i, name := range names {
@@ -250,6 +256,9 @@ func settingsProfile(p settingsPrompt, cfg *config.Config) error {
 		label := fmt.Sprintf("%s | %s | %s", name, profile.BackendName(), firstNonEmpty(profile.Model, "(native default)"))
 		if profile.Endpoint != "" {
 			label += " | endpoint: " + profile.Endpoint
+		}
+		if len(profile.Aliases) > 0 {
+			label += " | aliases: " + strings.Join(profile.Aliases, ", ")
 		}
 		if profile.ReasoningEffort != "" {
 			label += " | reasoning: " + profile.ReasoningEffort
@@ -262,12 +271,11 @@ func settingsProfile(p settingsPrompt, cfg *config.Config) error {
 			label += " | " + speed
 		}
 		labels = append(labels, label)
-		if name == cfg.Default {
+		if name == currentName {
 			cursor = i
 		}
 	}
 	labels = append(labels, "Add profile")
-	_, _, currentErr := cfg.Resolve(cfg.Default)
 	canEdit := cfg.Default != "" && currentErr == nil
 	if canEdit {
 		labels = append(labels, "Edit current profile")
@@ -284,7 +292,7 @@ func settingsProfile(p settingsPrompt, cfg *config.Config) error {
 		return settingsWizard(p, cfg, "", true)
 	}
 	if canEdit && index == len(names)+1 {
-		return settingsWizard(p, cfg, cfg.Default, false)
+		return settingsWizard(p, cfg, currentName, false)
 	}
 	return nil
 }
@@ -401,6 +409,16 @@ func settingsWizard(p settingsPrompt, cfg *config.Config, name string, add bool)
 			} else {
 				profile.Token = value
 			}
+		}
+	}
+	aliases, err := p.Ask("Aliases (comma-separated, empty removes all)", strings.Join(profile.Aliases, ", "))
+	if err != nil {
+		return err
+	}
+	profile.Aliases = nil
+	if strings.TrimSpace(aliases) != "" {
+		for _, alias := range strings.Split(aliases, ",") {
+			profile.Aliases = append(profile.Aliases, strings.TrimSpace(alias))
 		}
 	}
 	profile.Model = strings.TrimSpace(profile.Model)

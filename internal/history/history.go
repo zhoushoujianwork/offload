@@ -12,39 +12,54 @@ import (
 
 // Record is one line of the run log.
 type Record struct {
-	TS              string      `json:"ts"`
-	Status          string      `json:"status"` // ok | error | timeout
-	ExitCode        *int        `json:"exit_code"`
-	Profile         string      `json:"profile"`
-	Backend         string      `json:"backend,omitempty"`
-	Model           string      `json:"model"`
-	ServiceTier     string      `json:"service_tier,omitempty"`
-	Dir             string      `json:"dir"`
-	AddDirs         []string    `json:"add_dirs,omitempty"` // effective extra directories of this run (absolute); absent in old records
-	Task            string      `json:"task"`
-	Session         string      `json:"session"`
-	Turns           int         `json:"turns"`                        // for an interrupted run: tool calls made
-	Denials         int         `json:"permission_denials,omitempty"` // tool calls the worker was refused
-	CostUSD         *float64    `json:"cost_usd"`                     // worker estimate, never verified billing; nil means unavailable
-	CostIsEstimate  bool        `json:"cost_is_estimate"`
-	Usage           *TokenUsage `json:"usage,omitempty"`
-	CumulativeUsage *TokenUsage `json:"cumulative_usage,omitempty"`
-	// CumulativeCostUSD is the session-total cost a Claude result reported (total_cost_usd). It is a
-	// baseline for the next resume, never a per-run cost, and must not be summed across runs.
-	CumulativeCostUSD *float64         `json:"cumulative_cost_usd,omitempty"`
-	UsageSource       string           `json:"usage_source,omitempty"`
-	UsageScope        string           `json:"usage_scope,omitempty"`
-	UsageUnavailable  string           `json:"usage_unavailable,omitempty"`
-	CostUnavailable   string           `json:"cost_unavailable,omitempty"`
-	CostBasis         string           `json:"cost_basis,omitempty"`
-	Pricing           *PricingSnapshot `json:"pricing,omitempty"`
+	ProfileAlias     string           `json:"profile_alias,omitempty"`
+	StopReason       string           `json:"stop_reason,omitempty"`
+	IdleTimeout      string           `json:"idle_timeout"`
+	RunID            string           `json:"run_id,omitempty"`
+	CallerRunID      string           `json:"caller_run_id,omitempty"`
+	ExecutionPolicy  string           `json:"execution_policy,omitempty"`
+	ErrorKind        string           `json:"error_kind,omitempty"`
+	TS               string           `json:"ts"`
+	Status           string           `json:"status"` // ok | error | timeout
+	ExitCode         *int             `json:"exit_code"`
+	Profile          string           `json:"profile"`
+	Backend          string           `json:"backend,omitempty"`
+	Model            string           `json:"model"`
+	ModelSource      string           `json:"model_source,omitempty"`
+	ModelUnavailable string           `json:"model_unavailable,omitempty"`
+	ServiceTier      string           `json:"service_tier,omitempty"`
+	Dir              string           `json:"dir"`
+	Task             string           `json:"task"`
+	Session          string           `json:"session"`
+	Turns            int              `json:"turns"`                        // for an interrupted run: tool calls made
+	Denials          int              `json:"permission_denials,omitempty"` // tool calls the worker was refused
+	CostUSD          *float64         `json:"cost_usd"`                     // worker estimate, never verified billing; nil means unavailable
+	CostIsEstimate   bool             `json:"cost_is_estimate"`
+	Usage            *TokenUsage      `json:"usage,omitempty"`
+	CumulativeUsage  *TokenUsage      `json:"cumulative_usage,omitempty"`
+	UsageSource      string           `json:"usage_source,omitempty"`
+	UsageScope       string           `json:"usage_scope,omitempty"`
+	UsageUnavailable string           `json:"usage_unavailable,omitempty"`
+	CostUnavailable  string           `json:"cost_unavailable,omitempty"`
+	CostBasis        string           `json:"cost_basis,omitempty"`
+	Pricing          *PricingSnapshot `json:"pricing,omitempty"`
+	AddDirs          []string         `json:"add_dirs,omitempty"` // effective absolute extra directories
+	// Session cumulative cost is a resume baseline, never a per-run cost.
+	CumulativeCostUSD *float64 `json:"cumulative_cost_usd,omitempty"`
 	// CostNote explains why CostUSD is nil. Read derives it for display only; it is never persisted.
 	CostNote   string `json:"-"`
 	DurationMs int64  `json:"duration_ms"` // duration reported by the worker (legacy field)
-	ElapsedMs  *int64 `json:"elapsed_ms"`  // measured end-to-end, including setup; nil for older records
-	Result     string `json:"result"`
-	Error      string `json:"error,omitempty"`
-	Salvaged   bool   `json:"salvaged,omitempty"` // Result is a report written after the worker was stopped
+	ElapsedMs  *int64 `json:"elapsed_ms"`  // measured end-to-end, including queue wait and setup; nil for older records
+	// WaitMs is time spent queued for a worker slot, ExecMs the time from admission to finish
+	// (worker, salvage and cleanup). The -t timeout applies to the worker alone, not to WaitMs.
+	WaitMs *int64 `json:"wait_ms,omitempty"`
+	ExecMs *int64 `json:"exec_ms,omitempty"`
+	// Cleanup is set when worker processes could not be confirmed stopped. Their slot stays
+	// unavailable until they exit.
+	Cleanup  string `json:"cleanup,omitempty"`
+	Result   string `json:"result"`
+	Error    string `json:"error,omitempty"`
+	Salvaged bool   `json:"salvaged,omitempty"` // Result is a report written after the worker was stopped
 }
 
 // Path is the run log location.
