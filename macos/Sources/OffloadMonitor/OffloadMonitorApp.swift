@@ -26,6 +26,7 @@ struct MenuBarLabel: View {
             Image(nsImage: BrandMarkImage.menuBar)
             if warn { Image(systemName: "exclamationmark.triangle.fill") }
             Text(count).monospacedDigit()
+            NewTaskPulseBadge(pulse: model.pulse, fontSize: 11)
             if case .available = updates.phase { Image(systemName: "arrow.down.circle") }
         }
         .help(helpText)

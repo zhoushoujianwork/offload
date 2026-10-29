@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import SwiftUI
 
@@ -11,6 +12,8 @@ final class MonitorModel: ObservableObject {
     @Published private(set) var lastSuccess: Date?
     @Published private(set) var lastError: String?
     @Published private(set) var isLoading = false
+    /// The current "+N" hint for newly observed tasks, nil when none is showing.
+    @Published private(set) var pulse: NewTaskPulse?
     @Published var period: StatsPeriod {
         didSet {
             guard period != oldValue else { return }
@@ -28,6 +31,16 @@ final class MonitorModel: ObservableObject {
     private var sleeper: Task<Void, Never>?
     private var inFlight = false
     private var wakeRequested = false
+    /// Lives as long as the model, so period switches and failed refreshes keep the baseline.
+    private var tracker = ObservedTaskTracker()
+    private var pulseCounter = 0
+    private var pulseExpiry: Task<Void, Never>?
+    /// Spoken change notice for VoiceOver. The default posts an announcement only when an app exists.
+    var announce: (String) -> Void = { text in
+        guard NSApp != nil else { return }
+        NSAccessibility.post(element: NSApp as Any, notification: .announcementRequested,
+                             userInfo: [.announcement: text, .priority: NSAccessibilityPriorityLevel.medium.rawValue])
+    }
 
     init(prefs: Preferences = Preferences(), client: StatsClient? = nil) {
         self.prefs = prefs
@@ -72,6 +85,32 @@ final class MonitorModel: ObservableObject {
         if inFlight { wakeRequested = true } else { sleeper?.cancel() }
     }
 
+    /// Applies one successful snapshot. Only `active` can produce a "new task" hint; totals, recent
+    /// runs, tokens and cost never do.
+    func ingest(_ result: StatsSnapshot, at now: Date) {
+        snapshot = result
+        lastSuccess = now
+        lastError = nil
+        if let p = pulse, p.isExpired(at: now) { pulse = nil }   // e.g. after sleep
+        if let event = tracker.observe(result.active, at: now), event.newCount > 0 {
+            showPulse(newCount: event.newCount, at: now)
+        }
+    }
+
+    private func showPulse(newCount: Int, at now: Date) {
+        if pulse == nil || pulse!.isExpired(at: now) { pulseCounter += 1 }
+        let merged = NewTaskPulsePolicy.merge(pulse, newCount: newCount, nextID: pulseCounter, at: now)
+        pulse = merged
+        announce(merged.accessibilityText)
+        pulseExpiry?.cancel()
+        let wait = max(0, merged.expiresAt.timeIntervalSince(now))
+        pulseExpiry = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(wait * 1_000_000_000))
+            guard !Task.isCancelled else { return }
+            self?.pulse = nil
+        }
+    }
+
     private func fetchOnce() async {
         guard let client else { return }
         inFlight = true
@@ -81,9 +120,7 @@ final class MonitorModel: ObservableObject {
         do {
             let result = try await client.fetch(period: asked)
             guard asked == period else { wakeRequested = true; return } // period changed meanwhile
-            snapshot = result
-            lastSuccess = Date()
-            lastError = nil
+            ingest(result, at: Date())
         } catch {
             guard asked == period else { wakeRequested = true; return }
             lastError = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
