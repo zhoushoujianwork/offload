@@ -200,3 +200,21 @@ func TestConversationMatchesAnyRun(t *testing.T) {
 		t.Error("absent matched")
 	}
 }
+
+func TestConversationExposesAddDirsAdditively(t *testing.T) {
+	old := convRec("2026-10-29 10:00:00", "A", "t", "r")
+	first := convRec("2026-10-29 11:00:00", "A", "t2", "r")
+	first.AddDirs = []string{"/x", "/y"}
+	cleared := convRec("2026-10-29 12:00:00", "A", "t3", "r")
+	c := BuildConversations([]Record{old, first, cleared}, nil, time.UTC)[0]
+	if len(c.Summary.AddDirs) != 0 {
+		t.Errorf("summary shows the latest run's set, got %v", c.Summary.AddDirs)
+	}
+	if len(c.Runs[0].AddDirs) != 0 || len(c.Runs[1].AddDirs) != 2 || c.Runs[1].AddDirs[0] != "/x" {
+		t.Errorf("runs: %+v", c.Runs)
+	}
+	first.AddDirs[0] = "mutated"
+	if c.Runs[1].AddDirs[0] != "/x" {
+		t.Error("DTO aliases the record")
+	}
+}

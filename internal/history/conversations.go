@@ -3,6 +3,7 @@ package history
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -30,6 +31,7 @@ type ConversationSummary struct {
 	Session   string      `json:"session"`
 	Title     string      `json:"title"`
 	Dir       string      `json:"dir"`
+	AddDirs   []string    `json:"add_dirs,omitempty"` // the latest run's effective set
 	Profile   string      `json:"profile"`
 	Backend   string      `json:"backend"`
 	Model     string      `json:"model"`
@@ -55,6 +57,7 @@ type ConversationRun struct {
 	Result   string      `json:"result"`
 	Error    string      `json:"error"`
 	Dir      string      `json:"dir"`
+	AddDirs  []string    `json:"add_dirs,omitempty"`
 	Profile  string      `json:"profile"`
 	Backend  string      `json:"backend"`
 	Model    string      `json:"model"`
@@ -212,7 +215,7 @@ func summarize(id string, runs []convRun, activeSessions map[string]bool) Conver
 		r := e.r
 		acc.add(r, r.ElapsedMs != nil && *r.ElapsedMs >= 0)
 		dtos[i] = ConversationRun{ID: runIDPrefix + recordHash(r, e.idx), TS: r.TS, Status: r.Status, ExitCode: r.ExitCode,
-			Task: r.Task, Result: r.Result, Error: r.Error, Dir: r.Dir, Profile: r.Profile, Backend: r.Backend,
+			Task: r.Task, Result: r.Result, Error: r.Error, Dir: r.Dir, AddDirs: slices.Clone(r.AddDirs), Profile: r.Profile, Backend: r.Backend,
 			Model: r.Model, Session: r.Session, Usage: runUsage(r), CostUSD: runCost(r), Salvaged: r.Salvaged,
 			Elapsed: r.ElapsedMs, Turns: r.Turns}
 	}
@@ -221,6 +224,7 @@ func summarize(id string, runs []convRun, activeSessions map[string]bool) Conver
 	session := last.Session
 	s := ConversationSummary{ID: id, Session: session, Title: title(first.Task),
 		Dir:       latest(runs, func(r Record) string { return r.Dir }),
+		AddDirs:   slices.Clone(last.AddDirs),
 		Profile:   latest(runs, func(r Record) string { return r.Profile }),
 		Backend:   latest(runs, func(r Record) string { return r.Backend }),
 		Model:     latest(runs, func(r Record) string { return r.Model }),

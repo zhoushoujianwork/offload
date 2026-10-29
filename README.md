@@ -101,7 +101,7 @@ offload -p minimax -d /absolute/path/app "Summarize README.md, max 5 bullets."
 OFFLOAD_PROFILE=deepseek offload -d /absolute/path/app "Find retry entry points, max 10 file:line rows."
 ```
 
-`offload default <profile>` validates the profile and saves it without changing other configuration fields. `OFFLOAD_PROFILE` still overrides the saved default for new runs. Resuming a known session reuses its original profile and directory; `-p` and `-d` explicitly override them.
+`offload default <profile>` validates the profile and saves it without changing other configuration fields. `OFFLOAD_PROFILE` still overrides the saved default for new runs. Resuming a known session reuses its original profile and directory; `-p` and `-d` explicitly override them. Additional `--add-dir` directories are inherited from the latest run unless replaced or cleared.
 
 `-m` overrides the selected profile's model for that run.
 
@@ -258,9 +258,20 @@ offload version
   -w           task intent: the task may modify files (default: told to stay read-only); instruction only, no tool or sandbox limit either way
   -r session   resume a session; reuses its original dir unless -d is given
   -d dir       working directory (default: cwd)
+  --add-dir d  additional directory for the worker; repeatable; a resume inherits the saved set unless this replaces it
+  --clear-add-dirs  resume without the saved additional directories (not combinable with --add-dir)
   -t 30m       worker timeout; a worker silent for 10 minutes is stopped earlier
   -no-salvage  do not ask a stopped worker for a report from what it already read
   -json        emit one JSON run record instead of report-only stdout
+```
+
+- **Additional directories**: `--add-dir DIR` (repeatable) is forwarded to the backend's native `--add-dir` (Claude Code and Codex) so one worker can span repositories. `-d` still sets the working directory. Relative paths resolve against the directory you run `offload` from, as `-d` does, so absolute paths are recommended in handoffs. Each must be an existing directory, or offload exits 2 before starting a worker. Duplicates and the working directory itself are dropped, and symlinks are not resolved. The effective set is recorded per run as `add_dirs` (shown by `offload show`, `-json` and `history`). A resume inherits the set saved by the session's latest run; any `--add-dir` replaces it entirely and `--clear-add-dirs` empties it. A saved directory that no longer exists stops the resume with both recovery options. Older history without the field means no extra directories. The worker does not read added code automatically, and this is not an access allowlist: workers still run with permission checks bypassed, so name the allowed read and write scope in the task.
+
+```bash
+offload -json -d /abs/app --add-dir /abs/lib "Compare retry config parsing in app and lib. Read-only."
+offload -r <session> -json "Follow-up"                      # inherits /abs/lib
+offload -r <session> -json --add-dir /abs/shared "Follow-up" # replaces the saved set
+offload -r <session> -json --clear-add-dirs "Follow-up"      # clears it
 ```
 
 - **stdout**: the final report by default, or one record with `-json`. **stderr**: one summary line with status, exit code, profile/model, turns, estimated cost, elapsed time, and session.

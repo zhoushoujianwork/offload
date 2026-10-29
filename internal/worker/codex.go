@@ -32,6 +32,10 @@ func buildCodexArgs(o Opts) []string {
 	if o.Profile.ServiceTier != "" {
 		args = append(args, "-c", "service_tier="+strconv.Quote(o.Profile.ServiceTier))
 	}
+	// exec accepts --add-dir only before the resume subcommand.
+	for _, d := range o.AddDirs {
+		args = append(args, "--add-dir", d)
+	}
 	if o.Resume != "" {
 		args = append(args, "resume")
 	}

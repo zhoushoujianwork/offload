@@ -9,7 +9,7 @@ Delegation mode: proactive
 
 Follow the active mode above. `offload mode` shows the saved user default; a project installation may override it.
 
-`offload [-p profile] [-m model] [-w] [-r session] [-d dir] [-t 30m] [-json] "task"`
+`offload [-p profile] [-m model] [-w] [-r session] [-d dir] [--add-dir dir]... [--clear-add-dirs] [-t 30m] [-json] "task"`
 
 The CLI supports `claude` (default) and `codex` profile backends. Set `"backend": "codex"` in a profile to use `codex exec --json` with native Codex authentication/configuration; model is optional. Run `offload default <profile>` to save either backend as the default, or `offload default` to show the saved choice. `-p` and `OFFLOAD_PROFILE` override it for new runs. Known session resumes retain their original profile unless `-p` is given.
 
@@ -104,6 +104,23 @@ Rules for resumes:
 - A resume uses the session's recorded profile. If that profile was renamed or deleted, offload stops with recovery guidance and does not fall back to the default provider. Restore the profile, or start a new session with `-p` and restate the context (`offload show <session>` has the earlier reports).
 - Inspect an interrupted run first (`offload show <session>`, `git diff`). Partial edits stay in the working tree; the follow-up says what to keep, fix, or finish rather than starting over.
 - `-p` and `-d` on a resume are explicit overrides; use them only when you intend to change them.
+- A resume inherits the additional directories saved by the session's latest run. Any `--add-dir` on the resume replaces the whole saved set (it does not merge), and `--clear-add-dirs` drops it. If a saved directory no longer exists, offload stops and names these two recovery options instead of dropping it.
+
+### Additional directories
+
+`--add-dir DIR` (repeatable) gives the worker extra directories besides its working directory, for tasks that span repositories. offload forwards each one to the backend's native `--add-dir` (Claude Code and Codex). The working directory is still set only by `-d`. Relative paths resolve against the directory you run `offload` from, not against `-d`, so pass absolute paths in handoffs. Each must be an existing directory, or offload exits 2 before starting a worker. Duplicates and the working directory itself are dropped. The effective set is recorded per run (`add_dirs` in `-json` and history, shown by `offload show`).
+
+```bash
+# New read-only task across two repositories.
+offload -json -d /abs/app --add-dir /abs/lib --add-dir /abs/shared "Compare how app and lib parse retry config. Read-only: do not modify files. Return file:line | finding."
+# Resume inherits /abs/lib and /abs/shared.
+offload -r <session> -json "Follow-up: ..."
+# Replace the saved set, or clear it.
+offload -r <session> -json --add-dir /abs/other "..."
+offload -r <session> -json --clear-add-dirs "..."
+```
+
+An added directory only makes it reachable; the worker does not read its code automatically, so name what to look at. It is not an access allowlist or sandbox: offload runs workers with permission checks bypassed, so the working directory and added directories do not limit what the worker can do. State in the task which directories the worker may read and which, if any, it may edit.
 
 ## Keep the parent's share small
 

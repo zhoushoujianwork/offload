@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -96,6 +97,7 @@ type Opts struct {
 	Write       bool
 	Resume      string
 	Dir         string
+	AddDirs     []string // absolute extra directories forwarded to the backend; Dir stays the cwd
 	Task        string
 	Timeout     time.Duration
 	StartedAt   time.Time
@@ -134,6 +136,11 @@ func buildArgs(o Opts, promptPath string) []string {
 	args := []string{"-p", "--bare", "--setting-sources", "", "--output-format", "stream-json", "--verbose"}
 	if o.Resume != "" {
 		args = append(args, "--resume", o.Resume)
+	}
+
+	// Repeated flags precede another known flag, so Claude's variadic --add-dir cannot swallow the task.
+	for _, d := range o.AddDirs {
+		args = append(args, "--add-dir", d)
 	}
 
 	// offload adds no permission barrier: nobody can answer a prompt in a headless run, so every
@@ -223,7 +230,7 @@ func Run(ctx context.Context, o Opts) (rec history.Record, err error) {
 		started = time.Now()
 	}
 	rec = history.Record{TS: started.Format("2006-01-02 15:04:05"), Profile: o.ProfileName, Model: o.Model,
-		Backend: o.Profile.BackendName(), Dir: o.Dir, Task: o.Task, Status: "error", CostIsEstimate: true}
+		Backend: o.Profile.BackendName(), Dir: o.Dir, AddDirs: slices.Clone(o.AddDirs), Task: o.Task, Status: "error", CostIsEstimate: true}
 	var pub *publisher
 	defer func() {
 		elapsed := time.Since(started).Milliseconds()

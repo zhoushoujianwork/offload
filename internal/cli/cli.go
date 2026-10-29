@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -118,6 +119,9 @@ func cmdRun(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	write := fs.Bool("w", false, "task intent: the task may modify files (default: told to stay read-only). Instruction only; offload adds no tool or sandbox limits either way")
 	resume := fs.String("r", "", "resume a session id; reuses its original dir unless -d is given")
 	dir := fs.String("d", "", "working directory (default: cwd)")
+	var addDirs dirList
+	fs.Var(&addDirs, "add-dir", "additional directory the worker may use (repeatable; relative paths resolve against the current directory; absolute recommended). A resume inherits the session's saved set unless this replaces it")
+	clearAddDirs := fs.Bool("clear-add-dirs", false, "resume without the session's saved additional directories (cannot be combined with --add-dir)")
 	timeout := fs.Duration("t", 30*time.Minute, "timeout")
 	noSalvage := fs.Bool("no-salvage", false, "skip automatic report salvage for stopped Claude workers")
 	jsonOutput := fs.Bool("json", false, "print one structured run result instead of plain report")
@@ -144,6 +148,11 @@ func cmdRun(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		rec.ElapsedMs = &elapsed
 		return printRun(rec, logPath, *jsonOutput, stdout, stderr)
 	}
+	explicitDirs, err := normalizeAddDirs(addDirs, *clearAddDirs)
+	if err != nil {
+		return failRun(err)
+	}
+	rec.AddDirs = slices.Clone(explicitDirs)
 	if *resume != "" {
 		if s, busy := activeSessionRun(*resume); busy {
 			return failRun(fmt.Errorf("session %s already has an active run (pid %d); do not send overlapping follow-ups to one session. "+
@@ -188,8 +197,13 @@ func cmdRun(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		}
 		return failRun(err)
 	}
+	effectiveDirs, err := resolveAddDirs(explicitDirs, *clearAddDirs, *resume, logPath, wd)
+	rec.AddDirs = slices.Clone(effectiveDirs)
+	if err != nil {
+		return failRun(err)
+	}
 	o := worker.Opts{ProfileName: name, Profile: prof, Model: firstNonEmpty(*model, prof.Model), Write: *write,
-		Resume: *resume, Dir: wd, Task: task, Timeout: *timeout, StartedAt: started, NoSalvage: *noSalvage}
+		Resume: *resume, Dir: wd, AddDirs: effectiveDirs, Task: task, Timeout: *timeout, StartedAt: started, NoSalvage: *noSalvage}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -293,6 +307,89 @@ func resolveDir(dir, resume, logPath string) (string, error) {
 	return abs, nil
 }
 
+// dirList collects every --add-dir value in order; validation happens after parsing so a bad value
+// is recorded and reported like other setup errors.
+type dirList []string
+
+func (d *dirList) String() string {
+	if d == nil {
+		return ""
+	}
+	return strings.Join(*d, ",")
+}
+
+func (d *dirList) Set(v string) error {
+	*d = append(*d, v)
+	return nil
+}
+
+// normalizeAddDirs validates the explicit flags before any config, token or provider is touched.
+// Paths resolve against the invocation directory, exactly like -d, not against the worker's cwd.
+func normalizeAddDirs(raw []string, clear bool) ([]string, error) {
+	if clear && len(raw) > 0 {
+		return nil, errors.New("--clear-add-dirs cannot be combined with --add-dir")
+	}
+	var out []string
+	for _, p := range raw {
+		if p == "" {
+			return nil, errors.New("--add-dir: empty path")
+		}
+		abs, err := filepath.Abs(p)
+		if err != nil {
+			return nil, fmt.Errorf("--add-dir %q: %w", p, err)
+		}
+		if st, err := os.Stat(abs); err != nil || !st.IsDir() {
+			return nil, fmt.Errorf("--add-dir: not a directory: %s", abs)
+		}
+		out = append(out, abs)
+	}
+	return out, nil
+}
+
+// uniqueDirs keeps order, drops duplicates and the primary working directory. It returns nil for none.
+func uniqueDirs(dirs []string, primary string) []string {
+	var out []string
+	seen := map[string]bool{filepath.Clean(primary): true}
+	for _, d := range dirs {
+		d = filepath.Clean(d)
+		if !seen[d] {
+			seen[d] = true
+			out = append(out, d)
+		}
+	}
+	return out
+}
+
+// resolveAddDirs picks the run's additional directories. Explicit --add-dir replaces the whole saved
+// set, --clear-add-dirs empties it, and otherwise a known resumed session inherits the set recorded
+// by its latest run. Inherited paths are revalidated; a missing one is an error, never dropped silently.
+// On an inheritance error the saved set is still returned so the failure record keeps it.
+func resolveAddDirs(explicit []string, clear bool, resume, logPath, primary string) ([]string, error) {
+	if len(explicit) > 0 {
+		return uniqueDirs(explicit, primary), nil
+	}
+	if clear || resume == "" {
+		return nil, nil
+	}
+	rs, err := history.Read(logPath)
+	if err != nil {
+		return nil, err
+	}
+	hit := history.BySession(rs, resume)
+	if len(hit) == 0 {
+		return nil, nil
+	}
+	saved := uniqueDirs(hit[len(hit)-1].AddDirs, primary)
+	for _, d := range saved {
+		if st, err := os.Stat(d); err != nil || !st.IsDir() {
+			return saved, fmt.Errorf("cannot resume session %s: its saved additional directory is not a directory: %s. "+
+				"Pass --clear-add-dirs to resume without saved directories, or --add-dir <dir> to replace them; offload show %s has the previous reports",
+				resume, d, resume)
+		}
+	}
+	return saved, nil
+}
+
 func cmdShow(args []string, stdout, stderr io.Writer) int {
 	if len(args) != 1 {
 		return fail(stderr, errors.New("usage: offload show <session>"))
@@ -308,6 +405,9 @@ func cmdShow(args []string, stdout, stderr io.Writer) int {
 	for _, r := range hit {
 		fmt.Fprintf(stdout, "## %s %s %s/%s %s\nexit_code=%s turns=%d estimated_cost=%s elapsed=%s session=%s\n",
 			r.TS, r.Status, r.Profile, r.Model, r.Dir, exitText(r), r.Turns, costText(r), elapsedText(r), r.Session)
+		if len(r.AddDirs) > 0 {
+			fmt.Fprintf(stdout, "add_dirs=%q\n", r.AddDirs)
+		}
 		showCostDetails(stdout, r)
 		fmt.Fprintf(stdout, "> %s\n\n%s\n\n", r.Task, r.Result)
 	}

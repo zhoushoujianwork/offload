@@ -11,12 +11,12 @@ Both commands print one JSON document (`schema_version` 1) on stdout. Failures e
 - `--limit` defaults to 50 and must be 1 to 200. `--offset` defaults to 0.
 - With `--search-stdin`, the search text is read from stdin (at most 4096 bytes, valid UTF-8). It is trimmed and matched case-insensitively against task, result, profile, model, dir and session of every run. A conversation matches if any of its runs matches. Search text never goes in argv.
 - A missing run log gives an empty list.
-- Output: `schema_version`, `total`, `offset`, `limit`, `has_more`, `conversations`. Each conversation summary has `id`, `session`, `title`, `dir`, `profile`, `backend`, `model`, `started_at`, `updated_at`, `run_count`, `status`, `active`, `usage`, `usage_runs`, `cost_usd`, `cost_runs`. The list carries no reports.
+- Output: `schema_version`, `total`, `offset`, `limit`, `has_more`, `conversations`. Each conversation summary has `id`, `session`, `title`, `dir`, `profile`, `backend`, `model`, optional `add_dirs` (the latest run's extra directories), `started_at`, `updated_at`, `run_count`, `status`, `active`, `usage`, `usage_runs`, `cost_usd`, `cost_runs`. The list carries no reports.
 
 ### `offload history show --json --id <id>`
 
 - `id` is matched exactly.
-- Output: `schema_version`, `conversation` (the same summary), `runs` and `active`. Each run has `id`, `ts`, `status`, `exit_code`, `task`, `result`, `error`, `dir`, `profile`, `backend`, `model`, `session`, `usage`, `cost_usd`, `salvaged`, `elapsed_ms`, `turns`. Task and result are complete, not truncated.
+- Output: `schema_version`, `conversation` (the same summary), `runs` and `active`. Each run has `id`, `ts`, `status`, `exit_code`, `task`, `result`, `error`, `dir`, optional `add_dirs`, `profile`, `backend`, `model`, `session`, `usage`, `cost_usd`, `salvaged`, `elapsed_ms`, `turns`. Task and result are complete, not truncated.
 - `active` is the live worker state for the session, or null. It is advisory.
 
 ## Conversations

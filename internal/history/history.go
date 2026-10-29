@@ -20,6 +20,7 @@ type Record struct {
 	Model           string      `json:"model"`
 	ServiceTier     string      `json:"service_tier,omitempty"`
 	Dir             string      `json:"dir"`
+	AddDirs         []string    `json:"add_dirs,omitempty"` // effective extra directories of this run (absolute); absent in old records
 	Task            string      `json:"task"`
 	Session         string      `json:"session"`
 	Turns           int         `json:"turns"`                        // for an interrupted run: tool calls made
