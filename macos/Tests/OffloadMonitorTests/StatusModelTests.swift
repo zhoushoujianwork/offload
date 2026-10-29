@@ -202,7 +202,7 @@ final class StatusLayoutTests: XCTestCase {
 
     func labelWidth(_ model: MonitorModel) -> CGFloat {
         let u = UpdateManager(prefs: Preferences(defaults: UserDefaults(suiteName: "om-test-\(UUID().uuidString)")!), consumeReport: false)
-        return NSHostingView(rootView: MenuBarLabel(model: model, updates: u)).fittingSize.width
+        return NSHostingView(rootView: MenuBarLabel(model: model, updates: u, motion: MotionController(monitor: model, prefs: Preferences(defaults: UserDefaults(suiteName: "om-test-\(UUID().uuidString)")!), scheduler: ManualScheduler(), observeSystem: false).menuBar)).fittingSize.width
     }
 
     func testMenuBarLabelWidthIsIdenticalForEveryStateAndCount() throws {
@@ -234,7 +234,7 @@ final class StatusLayoutTests: XCTestCase {
         let models = [MonitorModel(testingSnapshot: nil, loading: true), MonitorModel(testingSnapshot: nil, error: "x"),
                       MonitorModel(testingSnapshot: full), MonitorModel(testingSnapshot: full, error: "x")]
         for m in models {
-            let host = NSHostingView(rootView: StatusSummary(model: m))
+            let host = NSHostingView(rootView: StatusSummary(model: m, motion: MotionController(monitor: m, prefs: Preferences(defaults: UserDefaults(suiteName: "om-test-\(UUID().uuidString)")!), scheduler: ManualScheduler(), observeSystem: false).header))
             XCTAssertEqual(host.fittingSize.width, StatusSummary.textWidth, accuracy: 0.5)
             XCTAssertLessThanOrEqual(host.fittingSize.height, 40)
         }

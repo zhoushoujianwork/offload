@@ -616,7 +616,7 @@ final class ControlsLayoutTests: XCTestCase {
         let d = UserDefaults(suiteName: "om-test-\(UUID().uuidString)")!
         let updates = UpdateManager(prefs: Preferences(defaults: d), consumeReport: false)
         for tab in SettingsTab.allCases {
-            let host = NSHostingView(rootView: SettingsView(profiles: profiles, skills: skills, updates: updates, tab: tab))
+            let host = NSHostingView(rootView: SettingsView(profiles: profiles, skills: skills, updates: updates, motion: MotionController(monitor: MonitorModel(testingSnapshot: nil), prefs: Preferences(defaults: d), scheduler: ManualScheduler(), observeSystem: false), tab: tab))
             host.frame = NSRect(x: 0, y: 0, width: SettingsLayout.width, height: SettingsLayout.height)
             host.layoutSubtreeIfNeeded()
             XCTAssertLessThanOrEqual(host.fittingSize.height, SettingsLayout.height + 1, "\(tab) overflows")
