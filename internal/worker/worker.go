@@ -20,6 +20,7 @@ import (
 	"github.com/zhoushoujianwork/offload/internal/config"
 	"github.com/zhoushoujianwork/offload/internal/history"
 	"github.com/zhoushoujianwork/offload/internal/live"
+	"github.com/zhoushoujianwork/offload/internal/procutil"
 	"github.com/zhoushoujianwork/offload/internal/text"
 )
 
@@ -253,7 +254,7 @@ func Run(ctx context.Context, o Opts) (rec history.Record, err error) {
 			return rec, fmt.Errorf("codex CLI not found: %w", err)
 		}
 	} else {
-		token, err = o.Profile.ResolveToken()
+		token, err = o.Profile.ResolveTokenContext(ctx)
 		if err != nil {
 			return rec, err
 		}
@@ -384,7 +385,7 @@ func runAttempt(ctx context.Context, bin string, o Opts, promptPath, token strin
 	var claudeBase claudeBaseline
 	if o.Profile.BackendName() == "codex" {
 		baseline, baselineError = codexBaseline(o.Resume)
-		cmd = exec.CommandContext(ctx, bin, buildCodexArgs(o)...)
+		cmd = procutil.CommandContext(ctx, bin, buildCodexArgs(o)...)
 		cmd.Dir = o.Dir
 		cmd.Env = os.Environ()
 		prompt, err := os.ReadFile(promptPath)
@@ -398,7 +399,7 @@ func runAttempt(ctx context.Context, bin string, o Opts, promptPath, token strin
 			// Capture before the child starts: the result's cost and modelUsage are session totals.
 			claudeBase = captureClaudeBaseline(history.Path(), o.Resume)
 		}
-		cmd = exec.CommandContext(ctx, bin, buildArgs(o, promptPath)...)
+		cmd = procutil.CommandContext(ctx, bin, buildArgs(o, promptPath)...)
 		cmd.Dir = o.Dir
 		cmd.Env = childEnv(os.Environ(), o, token)
 	}

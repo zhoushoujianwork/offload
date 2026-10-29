@@ -8,6 +8,7 @@ struct Preferences {
         static let autoInstall = "autoInstallUpdates"
         static let lastCheck = "lastUpdateCheck"
         static let dashboardShown = "dashboardShownOnce"
+        static let lastWorkspace = "chatLastWorkspace"
     }
 
     var defaults: UserDefaults = .standard
@@ -27,6 +28,11 @@ struct Preferences {
     var dashboardShown: Bool {
         get { defaults.bool(forKey: Key.dashboardShown) }
         nonmutating set { defaults.set(newValue, forKey: Key.dashboardShown) }
+    }
+    /// The last folder chosen for a new chat. Nil means the default General workspace.
+    var lastWorkspace: String? {
+        get { defaults.string(forKey: Key.lastWorkspace) }
+        nonmutating set { defaults.set(newValue, forKey: Key.lastWorkspace) }
     }
     /// Default off.
     var autoInstall: Bool {

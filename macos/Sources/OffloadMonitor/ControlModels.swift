@@ -32,6 +32,9 @@ final class ProfilesModel: ObservableObject {
         loadError = error
     }
 
+    /// Headless tests only.
+    func setSnapshotForTesting(_ s: ProfilesSnapshot?) { snapshot = s }
+
     var isAvailable: Bool { cli != nil }
 
     /// A snapshot is on screen but the latest read failed, so it may no longer match the config.

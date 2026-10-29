@@ -10,6 +10,9 @@ final class AppState {
     let updates = UpdateManager()
     let profiles: ProfilesModel
     let skills: AgentSkillsModel
+    let history: HistoryModel
+    let chats: ChatStore
+    private var chatWindow: NSWindow?
     private var settingsWindow: NSWindow?
     private var window: NSWindow?
     private var auxWindows: [String: NSWindow] = [:]
@@ -18,6 +21,8 @@ final class AppState {
         let cli = StatsClient.locateCLI().map { OffloadCLI(executable: $0) }
         profiles = ProfilesModel(cli: cli)
         skills = AgentSkillsModel(cli: cli)
+        history = HistoryModel(cli: cli)
+        chats = ChatStore(env: ChatEnv(cli: cli, profiles: profiles, monitor: model, history: history))
     }
 
     /// Shows the dashboard window, creating it on first use. Closing it leaves the menu bar app running.
@@ -38,6 +43,40 @@ final class AppState {
 }
 
 extension AppState {
+    /// The chat and history browser. Closing the window keeps any run this app started alive in `chats`.
+    func showChat() {
+        if chatWindow == nil {
+            let hosting = NSHostingController(rootView: ChatWindowView(store: chats, history: history, profiles: profiles))
+            let w = NSWindow(contentViewController: hosting)
+            w.title = "Offload Chat"
+            w.styleMask = [.titled, .closable, .miniaturizable, .resizable]
+            w.setContentSize(NSSize(width: ChatLayout.width, height: ChatLayout.height))
+            w.contentMinSize = NSSize(width: 760, height: 520)
+            w.isReleasedWhenClosed = false
+            w.center()
+            chatWindow = w
+        }
+        NSApp.activate(ignoringOtherApps: true)
+        chatWindow?.makeKeyAndOrderFront(nil)
+    }
+
+    func newChat() {
+        profiles.refreshIfStale()
+        chats.newChat()
+        showChat()
+    }
+
+    /// From a main-panel history row.
+    func openChat(for run: RecentRun) {
+        chats.focus(run: run)
+        showChat()
+    }
+
+    func browseHistory() {
+        showChat()
+        Task { await history.reload() }
+    }
+
     /// The Settings window is created once, so edits in progress survive closing and reopening it.
     func showSettings() {
         if settingsWindow == nil {
@@ -83,6 +122,23 @@ extension AppState {
 }
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    /// Quitting while this app has runs of its own in flight asks first. Runs started elsewhere are never touched.
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        let chats = MainActor.assumeIsolated { AppState.shared.chats }
+        guard MainActor.assumeIsolated({ chats.hasRunningOwn }) else { return .terminateNow }
+        let alert = NSAlert()
+        alert.messageText = "A chat is still running"
+        alert.informativeText = "Stopping sends the worker an interrupt and waits for it to finish. Runs started outside this app are not affected."
+        alert.addButton(withTitle: "Keep Open")
+        alert.addButton(withTitle: "Stop and Quit")
+        guard alert.runModal() == .alertSecondButtonReturn else { return .terminateCancel }
+        Task { @MainActor in
+            await chats.stopAllOwn()
+            NSApp.reply(toApplicationShouldTerminate: true)
+        }
+        return .terminateLater
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         MainActor.assumeIsolated {
             if LaunchPolicy.shouldShowDashboard(arguments: CommandLine.arguments, prefs: Preferences()) {

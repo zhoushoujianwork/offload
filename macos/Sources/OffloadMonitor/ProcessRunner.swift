@@ -6,6 +6,86 @@ struct ProcessOutput {
     var status: Int32
     var timedOut: Bool
     var truncated: Bool
+    /// The caller's `ProcessControl` asked the process to stop (an interrupt was sent).
+    var cancelled: Bool = false
+}
+
+/// Stops one running child cleanly: SIGINT first so the program can finish and print its result, then SIGTERM
+/// after `intGrace`, then SIGKILL after `termGrace`.
+///
+/// The control is bound to the `Process` it signals. Binding, exit notification and every signal happen under one
+/// lock, and a signal is sent only if that process is still the bound one, has not been reported as exited, and
+/// `isRunning` is true. So a delayed escalation can never reach a process that already exited, and a process that
+/// exited before it was bound is refused. A cancel before the start prevents the start.
+final class ProcessControl: @unchecked Sendable {
+    let intGrace: TimeInterval
+    let termGrace: TimeInterval
+    private let lock = NSLock()
+    private var process: Process?
+    private var exited = Set<ObjectIdentifier>()
+    private var cancelledFlag = false
+    private var sentSignals: [Int32] = []
+
+    init(intGrace: TimeInterval = 30, termGrace: TimeInterval = 5) {
+        self.intGrace = intGrace
+        self.termGrace = termGrace
+    }
+
+    var isCancelled: Bool { lock.lock(); defer { lock.unlock() }; return cancelledFlag }
+    var runningPID: Int32? { lock.lock(); defer { lock.unlock() }; return process?.processIdentifier }
+    /// Signals actually sent, in order (for tests).
+    var signals: [Int32] { lock.lock(); defer { lock.unlock() }; return sentSignals }
+
+    /// Binds the control to a just-launched process. Returns false, and binds nothing, when the process already
+    /// exited (its termination was reported first) or has no valid pid.
+    @discardableResult
+    func bind(_ p: Process) -> Bool {
+        lock.lock()
+        guard !exited.contains(ObjectIdentifier(p)), p.isRunning, p.processIdentifier > 1 else { lock.unlock(); return false }
+        process = p
+        let c = cancelledFlag
+        lock.unlock()
+        if c { escalate(p) }
+        return true
+    }
+
+    /// Called from the termination handler. Nothing is signalled to this process afterwards, even if it was not bound yet.
+    func processExited(_ p: Process) {
+        lock.lock()
+        exited.insert(ObjectIdentifier(p))
+        if process === p { process = nil }
+        lock.unlock()
+    }
+
+    func cancel() {
+        lock.lock()
+        if cancelledFlag { lock.unlock(); return }
+        cancelledFlag = true
+        let p = process
+        lock.unlock()
+        if let p { escalate(p) }
+    }
+
+    /// Sends `sig` only to the still-running, still-bound process, under the lock.
+    private func signal(_ p: Process, _ sig: Int32) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        guard process === p, !exited.contains(ObjectIdentifier(p)), p.isRunning else { return false }
+        let pid = p.processIdentifier
+        guard pid > 1 else { return false }
+        kill(pid, sig)
+        sentSignals.append(sig)
+        return true
+    }
+
+    private func escalate(_ p: Process) {
+        guard signal(p, SIGINT) else { return }
+        DispatchQueue.global().asyncAfter(deadline: .now() + intGrace) { [self] in
+            guard signal(p, SIGTERM) else { return }
+            DispatchQueue.global().asyncAfter(deadline: .now() + termGrace) { [self] in
+                _ = signal(p, SIGKILL)
+            }
+        }
+    }
 }
 
 /// Runs one child process without blocking any thread the caller owns.
@@ -16,6 +96,8 @@ struct ProcessOutput {
 /// - Optional `stdin` bytes are written on a background queue through a non-blocking descriptor with
 ///   SIGPIPE disabled for that descriptor only (no process-wide signal change). A child that never reads or
 ///   exits early cannot hang or crash the caller; the writer stops when the call finishes or the deadline passes.
+/// - With a `control`, a cancel (or the timeout) interrupts the child with SIGINT and escalates on a bounded
+///   schedule; `onStart` receives the child's pid right after launch.
 /// - After the process exits, pipes are drained for at most `drainGrace`. A descendant that inherited
 ///   a pipe and keeps it open cannot hold the call open; whatever was read by then is returned.
 enum ProcessRunner {
@@ -48,8 +130,10 @@ enum ProcessRunner {
 
     static func run(executable: URL, arguments: [String], environment: [String: String]? = nil,
                     timeout: TimeInterval, maxOutput: Int = 8_000_000, stdin: Data? = nil,
-                    killGrace: TimeInterval = 2, drainGrace: TimeInterval = 1) async throws -> ProcessOutput {
-        try await withCheckedThrowingContinuation { (cont: CheckedContinuation<ProcessOutput, Error>) in
+                    killGrace: TimeInterval = 2, drainGrace: TimeInterval = 1,
+                    control: ProcessControl? = nil, onStart: (@Sendable (Int32) -> Void)? = nil) async throws -> ProcessOutput {
+        if control?.isCancelled == true { throw CancellationError() }
+        return try await withCheckedThrowingContinuation { (cont: CheckedContinuation<ProcessOutput, Error>) in
             let process = Process()
             process.executableURL = executable
             process.arguments = arguments
@@ -77,7 +161,8 @@ enum ProcessRunner {
                 if state.finished { state.lock.unlock(); return }
                 state.finished = true
                 let result = ProcessOutput(stdout: state.out, stderr: state.err, status: state.status,
-                                           timedOut: state.timedOut, truncated: state.truncated)
+                                           timedOut: state.timedOut, truncated: state.truncated,
+                                           cancelled: control?.isCancelled == true)
                 state.lock.unlock()
                 outHandle.readabilityHandler = nil
                 errHandle.readabilityHandler = nil
@@ -104,13 +189,14 @@ enum ProcessRunner {
                         maybeFinish()
                         return
                     }
-                    if state.append(chunk, toErr: isErr) { terminate() }
+                    if state.append(chunk, toErr: isErr) { terminate() } // flooding output: stop at once, no graceful wait
                 }
             }
             watch(outHandle, isErr: false)
             watch(errHandle, isErr: true)
 
             process.terminationHandler = { p in
+                control?.processExited(p)
                 state.lock.lock()
                 state.exited = true
                 state.status = p.terminationStatus
@@ -135,6 +221,8 @@ enum ProcessRunner {
                 cont.resume(throwing: error)
                 return
             }
+            control?.bind(process)
+            onStart?(process.processIdentifier)
             // The parent's copy of the write ends must close, or EOF never arrives.
             try? outPipe.fileHandleForWriting.close()
             try? errPipe.fileHandleForWriting.close()
@@ -164,7 +252,7 @@ enum ProcessRunner {
             DispatchQueue.global().asyncAfter(deadline: .now() + timeout) {
                 guard process.isRunning else { return }
                 state.lock.lock(); state.timedOut = true; state.lock.unlock()
-                terminate()
+                if let control { control.cancel() } else { terminate() }
             }
         }
     }

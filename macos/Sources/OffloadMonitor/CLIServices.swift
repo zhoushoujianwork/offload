@@ -29,10 +29,10 @@ struct OffloadCLI {
     var executable: URL
     var timeout: TimeInterval = 15
 
-    func run(_ args: [String], stdin: Data? = nil, secrets: [String] = []) async throws -> Data {
+    func run(_ args: [String], stdin: Data? = nil, secrets: [String] = [], maxOutput: Int = 2_000_000) async throws -> Data {
         let out: ProcessOutput
         do {
-            out = try await ProcessRunner.run(executable: executable, arguments: args, timeout: timeout, maxOutput: 2_000_000, stdin: stdin)
+            out = try await ProcessRunner.run(executable: executable, arguments: args, timeout: timeout, maxOutput: maxOutput, stdin: stdin)
         } catch { throw CLIError.launch }
         if out.timedOut { throw CLIError.timedOut }
         if out.truncated { throw CLIError.tooLarge }
@@ -87,5 +87,29 @@ struct OffloadCLI {
     func setAgent(_ agent: String, enabled: Bool) async throws {
         guard AgentSkill.knownAgents.contains(agent) else { throw CLIError.invalidArgument("Unknown agent.") }
         _ = try await run(["agent", enabled ? "enable" : "disable", "--agent", agent, "--json"])
+    }
+}
+
+// MARK: - History (read-only)
+
+extension OffloadCLI {
+    static let maxSearchBytes = 4096
+
+    /// A page of conversations, latest first. The query goes through stdin as raw UTF-8 (never argv), capped at 4096 bytes.
+    func historyList(search: String, offset: Int, limit: Int = 50) async throws -> HistoryList {
+        var q = Data(search.utf8)
+        if q.count > Self.maxSearchBytes {
+            // Cut on a character boundary so the query stays valid UTF-8.
+            var cut = Self.maxSearchBytes
+            while cut > 0, (q[cut] & 0xC0) == 0x80 { cut -= 1 }
+            q = q.prefix(cut)
+        }
+        let args = ["history", "list", "--json", "--limit", String(max(1, min(limit, 200))), "--offset", String(max(0, offset)), "--search-stdin"]
+        return try HistoryList.decode(try await run(args, stdin: q, maxOutput: 16 << 20))
+    }
+
+    func historyShow(id: String) async throws -> HistoryDetail {
+        guard Self.validArgumentName(id) else { throw CLIError.invalidArgument("That conversation cannot be opened.") }
+        return try HistoryDetail.decode(try await run(["history", "show", "--json", "--id", id], maxOutput: 16 << 20))
     }
 }

@@ -56,6 +56,9 @@ struct PopoverView: View {
                 StatusPill(model: model)
                 Spacer(minLength: 2)
                 ProfileMenu(profiles: profiles)
+                Button { AppState.shared.newChat() } label: { Image(systemName: "plus.bubble") }
+                    .buttonStyle(.borderless)
+                    .help("New Chat")
                 if model.isLoading { ProgressView().controlSize(.mini) }
                 Button { model.refreshNow() } label: { Image(systemName: "arrow.clockwise") }
                     .buttonStyle(.borderless)
@@ -124,7 +127,7 @@ struct StatusPill: View {
         }
         .padding(.horizontal, 7).padding(.vertical, 2)
         .background(tint.opacity(0.14), in: Capsule())
-        .frame(maxWidth: 92)
+        .frame(maxWidth: 84)
         .help(fullText)
     }
 
@@ -186,7 +189,7 @@ struct ProfileMenu: View {
         }
         .menuStyle(.borderlessButton)
         .menuIndicator(.visible)
-        .frame(width: 128, alignment: .trailing)
+        .frame(width: 104, alignment: .trailing)
         .disabled(profiles.busy)
         .help(help)
         .onAppear { profiles.refreshIfStale() }
@@ -432,6 +435,10 @@ struct SnapshotView: View {
             HStack(spacing: 6) {
                 Text(Pagination.rangeLabel(page: p, total: items.count, size: size)).font(.system(size: 9)).foregroundStyle(.secondary)
                 Spacer()
+                if tab == .history {
+                    Button("Browse all") { AppState.shared.browseHistory() }
+                        .help("Search and open every conversation")
+                }
                 if pages > 1 {
                     Button { page = p - 1 } label: { Image(systemName: "chevron.left") }.disabled(p == 0).help("Previous page")
                     Button { page = p + 1 } label: { Image(systemName: "chevron.right") }.disabled(p >= pages - 1).help("Next page")
@@ -626,7 +633,7 @@ struct RecentRow: View {
     let run: RecentRun
 
     var body: some View {
-        Button { AppState.shared.showReport(run) } label: {
+        Button { AppState.shared.openChat(for: run) } label: {
             HStack(spacing: 6) {
                 Image(systemName: icon.0).foregroundStyle(icon.1).font(.system(size: 11))
                 VStack(alignment: .leading, spacing: 0) {
@@ -643,7 +650,7 @@ struct RecentRow: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .help("Open the full report")
+        .help("Open this conversation")
     }
 
     private var icon: (String, Color) {

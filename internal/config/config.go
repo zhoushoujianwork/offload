@@ -2,13 +2,16 @@
 package config
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
+
+	"github.com/zhoushoujianwork/offload/internal/procutil"
 )
 
 // Profile selects a worker backend and its model/configuration.
@@ -157,14 +160,26 @@ func SetDefault(path, name string) error {
 
 // ResolveToken returns the profile's token, running token_cmd when set.
 func (p Profile) ResolveToken() (string, error) {
+	return p.ResolveTokenContext(context.Background())
+}
+
+// ResolveTokenContext is ResolveToken, except that cancelling ctx stops token_cmd and its
+// descendants and returns promptly. A cancelled ctx never starts token_cmd.
+func (p Profile) ResolveTokenContext(ctx context.Context) (string, error) {
 	if p.TokenCmd == "" {
 		if p.Token == "" {
 			return "", errors.New("profile has neither token_cmd nor token")
 		}
 		return p.Token, nil
 	}
-	out, err := exec.Command("sh", "-c", p.TokenCmd).Output()
+	cmd := procutil.CommandContext(ctx, "sh", "-c", p.TokenCmd)
+	// Do not wait indefinitely for a descendant that holds the output pipe after cancellation.
+	cmd.WaitDelay = 100 * time.Millisecond
+	out, err := cmd.Output()
 	if err != nil {
+		if ctx.Err() != nil {
+			return "", fmt.Errorf("token_cmd cancelled: %w", ctx.Err())
+		}
 		return "", fmt.Errorf("token_cmd failed: %w", err)
 	}
 	t := strings.TrimSpace(string(out))

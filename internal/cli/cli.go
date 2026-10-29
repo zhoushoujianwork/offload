@@ -14,6 +14,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/zhoushoujianwork/offload/internal/agentinstall"
@@ -31,6 +32,8 @@ usage:
   offload config               open interactive settings (also: offload in a terminal)
   offload ls [n]                list the last n runs (default 10)
   offload show <session>        print every report of a session
+  offload history list|show --json
+                                structured full conversation history for native clients
   offload status                what each worker is doing right now
   offload stats [--json] [--period today|week|month|all]
                                 run, token and cost totals for a period (default today)
@@ -61,6 +64,8 @@ func Run(version string, args []string, stdin io.Reader, stdout, stderr io.Write
 			return cmdList(args[1:], stdout, stderr)
 		case "show":
 			return cmdShow(args[1:], stdout, stderr)
+		case "history":
+			return cmdHistory(args[1:], stdin, stdout, stderr)
 		case "status":
 			return cmdStatus(stdout, stderr)
 		case "watch":
@@ -186,7 +191,7 @@ func cmdRun(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	o := worker.Opts{ProfileName: name, Profile: prof, Model: firstNonEmpty(*model, prof.Model), Write: *write,
 		Resume: *resume, Dir: wd, Task: task, Timeout: *timeout, StartedAt: started, NoSalvage: *noSalvage}
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	rec, _ = worker.Run(ctx, o)
 	return printRun(rec, logPath, *jsonOutput, stdout, stderr)

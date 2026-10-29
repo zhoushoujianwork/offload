@@ -48,6 +48,9 @@ final class MonitorModel: ObservableObject {
         self.isLoading = loading
     }
 
+    /// Headless tests only.
+    func setSnapshotForTesting(_ s: StatsSnapshot?) { snapshot = s }
+
     var hasCLI: Bool { client != nil }
 
     func start() {

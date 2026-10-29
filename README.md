@@ -293,6 +293,12 @@ offload agent enable --agent codex --json     # also: disable, --agent claude|al
 
 ### Stats and the macOS menu bar monitor
 
+The monitor's **New Chat** button opens a native conversation window. Pick a profile and workspace, enter a task, and press Command–Return to send. New tasks default to read-only; **Allow file changes** adds the existing `-w` task instruction. It is not a sandbox. Progress shows activity while the worker runs; formatted responses appear when each run finishes. **Stop** cancels that conversation's own run.
+
+History opens a searchable conversation browser with full reports, Markdown formatting, code blocks, and run metrics. Send a follow-up to continue the same session with its recorded profile and workspace. Missing profiles must be restored in Settings; a missing workspace can be replaced explicitly. Closing a chat window leaves its task running. The compact menu panel still uses pages without scrolling.
+
+Native clients can use `offload history list --json` and `offload history show --json --id <id>`; private search text goes through stdin with `--search-stdin`. See the [native chat design](docs/native-chat-design.md) for scope and the JSON contract.
+
 ```sh
 offload stats                       # today, local time
 offload stats --period week         # since Monday 00:00
