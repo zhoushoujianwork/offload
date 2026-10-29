@@ -36,10 +36,13 @@ usage:
                                 run, token and cost totals for a period (default today)
   offload watch [-t dur]        one line per event (start, progress, STALLED, finish) until all workers end;
                                 with -t, stop after dur and exit 124 if workers are still active
-  offload profiles              list profiles (* = the one a run would use)
+  offload profiles [--json]     list profiles (* = the one a run would use)
+  offload profile save --json   create or edit a profile from a JSON request on stdin
   offload default [profile]     show or set the saved default profile
   offload mode [basic|proactive] show or switch delegation mode and agent rules
   offload install-agent [flags] install delegation instructions for a host agent
+  offload agent status|enable|disable [--agent codex|claude|all] [--json]
+                                inspect or toggle the user-scope offload skill
   offload version
 
 flags:
@@ -81,13 +84,17 @@ func Run(version string, args []string, stdin io.Reader, stdout, stderr io.Write
 		case "stats":
 			return cmdStats(args[1:], stdout, stderr)
 		case "profiles":
-			return cmdProfiles(stdout, stderr)
+			return cmdProfilesArgs(args[1:], stdout, stderr)
+		case "profile":
+			return cmdProfile(args[1:], stdin, stdout, stderr)
 		case "default":
 			return cmdDefault(args[1:], stdout, stderr)
 		case "mode":
 			return agentinstall.RunMode(args[1:], stdout, stderr)
 		case "install-agent":
 			return agentinstall.Run(args[1:], stdout, stderr)
+		case "agent":
+			return agentinstall.RunControl(args[1:], stdout, stderr)
 		case "version":
 			fmt.Fprintln(stdout, version)
 			return 0
