@@ -13,12 +13,13 @@ import (
 
 // Profile selects a worker backend and its model/configuration.
 type Profile struct {
-	IdleTimeout     string `json:"idle_timeout,omitempty"`
-	Backend         string `json:"backend,omitempty"` // claude (default) or codex
-	BaseURL         string `json:"base_url"`
-	Model           string `json:"model"`
-	ReasoningEffort string `json:"reasoning_effort,omitempty"`
-	ServiceTier     string `json:"service_tier,omitempty"`
+	Aliases         []string `json:"aliases,omitempty"`
+	IdleTimeout     string   `json:"idle_timeout,omitempty"`
+	Backend         string   `json:"backend,omitempty"` // claude (default) or codex
+	BaseURL         string   `json:"base_url"`
+	Model           string   `json:"model"`
+	ReasoningEffort string   `json:"reasoning_effort,omitempty"`
+	ServiceTier     string   `json:"service_tier,omitempty"`
 	// TokenCmd prints the token on stdout (e.g. `security find-generic-password -s offload-minimax -w`).
 	// Preferred over Token so secrets stay out of the config file.
 	TokenCmd string `json:"token_cmd,omitempty"`
@@ -81,10 +82,13 @@ func Load(path string) (*Config, error) {
 	if err := json.Unmarshal(b, &c); err != nil {
 		return nil, fmt.Errorf("parse %s: %w", path, err)
 	}
+	if err := c.ValidateAliases(); err != nil {
+		return nil, fmt.Errorf("parse %s: %w", path, err)
+	}
 	return &c, nil
 }
 
-// Resolve picks a profile by name ("" means OFFLOAD_PROFILE, then config default).
+// Resolve picks a profile by name or alias ("" means OFFLOAD_PROFILE, then config default).
 func (c *Config) Resolve(name string) (string, Profile, error) {
 	if name == "" {
 		name = os.Getenv("OFFLOAD_PROFILE")
@@ -94,7 +98,21 @@ func (c *Config) Resolve(name string) (string, Profile, error) {
 	}
 	p, ok := c.Profiles[name]
 	if !ok {
-		return name, p, fmt.Errorf("unknown profile %q", name)
+		match := ""
+		for full, candidate := range c.Profiles {
+			for _, alias := range candidate.Aliases {
+				if alias == name {
+					if match != "" {
+						return name, Profile{}, fmt.Errorf("ambiguous profile %q; available: %s", name, c.ProfileChoices())
+					}
+					match, p = full, candidate
+				}
+			}
+		}
+		if match == "" {
+			return name, p, fmt.Errorf("unknown profile %q; available: %s", name, c.ProfileChoices())
+		}
+		name = match
 	}
 	if p.BackendName() != "claude" && p.BackendName() != "codex" {
 		return name, p, fmt.Errorf("profile %q has unknown backend %q", name, p.Backend)
@@ -124,7 +142,8 @@ func SetDefault(path, name string) error {
 	if name == "" {
 		return errors.New("default profile name must not be empty")
 	}
-	if _, _, err := c.Resolve(name); err != nil {
+	resolved, _, err := c.Resolve(name)
+	if err != nil {
 		return err
 	}
 	b, err := os.ReadFile(path)
@@ -135,7 +154,7 @@ func SetDefault(path, name string) error {
 	if err := json.Unmarshal(b, &fields); err != nil {
 		return err
 	}
-	fields["default"], _ = json.Marshal(name)
+	fields["default"], _ = json.Marshal(resolved)
 	return writeSettings(path, fields)
 }
 

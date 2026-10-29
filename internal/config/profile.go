@@ -4,8 +4,50 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
+	"regexp"
+	"sort"
 	"strings"
 )
+
+var aliasPattern = regexp.MustCompile(`^[a-z0-9-]{1,32}$`)
+
+// ValidateAliases checks the shared namespace of profile names and aliases.
+func (c *Config) ValidateAliases() error {
+	owners := make(map[string]string)
+	names := make([]string, 0, len(c.Profiles))
+	for name := range c.Profiles {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		for _, alias := range c.Profiles[name].Aliases {
+			if !aliasPattern.MatchString(alias) {
+				return fmt.Errorf("profile %q: invalid alias %q (must match [a-z0-9-]{1,32})", name, alias)
+			}
+			if _, exists := c.Profiles[alias]; exists {
+				return fmt.Errorf("profile %q: alias %q conflicts with a profile name", name, alias)
+			}
+			if owner, exists := owners[alias]; exists {
+				return fmt.Errorf("duplicate alias %q in profiles %q and %q", alias, owner, name)
+			}
+			owners[alias] = name
+		}
+	}
+	return nil
+}
+
+// ProfileChoices lists profile names and their aliases in a stable order.
+func (c *Config) ProfileChoices() string {
+	choices := make([]string, 0, len(c.Profiles))
+	for name, p := range c.Profiles {
+		if len(p.Aliases) > 0 {
+			name += " (aliases: " + strings.Join(p.Aliases, ", ") + ")"
+		}
+		choices = append(choices, name)
+	}
+	sort.Strings(choices)
+	return strings.Join(choices, "; ")
+}
 
 // ValidateCodexSettings checks optional overrides without requiring native defaults.
 func (p Profile) ValidateCodexSettings() error {
@@ -89,7 +131,7 @@ func SaveProfile(path, name string, p Profile, add bool) error {
 	if err := json.Unmarshal(encoded, &known); err != nil {
 		return err
 	}
-	for _, key := range []string{"backend", "base_url", "model", "token", "token_cmd", "reasoning_effort", "service_tier", "idle_timeout"} {
+	for _, key := range []string{"aliases", "backend", "base_url", "model", "token", "token_cmd", "reasoning_effort", "service_tier", "idle_timeout"} {
 		delete(profile, key)
 	}
 	for key, value := range known {
@@ -101,6 +143,13 @@ func SaveProfile(path, name string, p Profile, add bool) error {
 	}
 	fields["profiles"], err = json.Marshal(profiles)
 	if err != nil {
+		return err
+	}
+	var candidate Config
+	if err := json.Unmarshal(fields["profiles"], &candidate.Profiles); err != nil {
+		return err
+	}
+	if err := candidate.ValidateAliases(); err != nil {
 		return err
 	}
 	if add {

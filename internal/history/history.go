@@ -12,6 +12,7 @@ import (
 
 // Record is one line of the run log.
 type Record struct {
+	ProfileAlias     string           `json:"profile_alias,omitempty"`
 	StopReason       string           `json:"stop_reason,omitempty"`
 	IdleTimeout      string           `json:"idle_timeout"`
 	RunID            string           `json:"run_id,omitempty"`
