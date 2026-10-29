@@ -241,9 +241,9 @@ func TestSettingsAddBundlesFromMissingConfig(t *testing.T) {
 		steps   []step
 		backend string
 	}{
-		{"codex", []step{ask(" quick "), choose(0), ask("gpt-test"), choose(1), choose(2)}, "codex"},
-		{"command", []step{ask("quick"), choose(1), ask("https://gateway.example"), ask("m"), choose(0), ask("never-execute-this-command")}, "claude"},
-		{"token", []step{ask("quick"), choose(1), ask("http://localhost:8080"), ask("m"), choose(1), ask("secret-value")}, "claude"},
+		{"codex", []step{ask(" quick "), choose(0), ask("gpt-test"), choose(1), choose(2), ask("")}, "codex"},
+		{"command", []step{ask("quick"), choose(1), ask("https://gateway.example"), ask("m"), choose(0), ask("never-execute-this-command"), ask("")}, "claude"},
+		{"token", []step{ask("quick"), choose(1), ask("http://localhost:8080"), ask("m"), choose(1), ask("secret-value"), ask("")}, "claude"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			settingsEnv(t)
@@ -292,9 +292,9 @@ func TestSettingsAddBundlesFromMissingConfig(t *testing.T) {
 
 func TestSettingsWizardCancellationEveryStage(t *testing.T) {
 	for _, answers := range [][]step{
-		{ask("new"), choose(0), ask("m"), choose(2), choose(1)},
-		{ask("new"), choose(1), ask("https://x"), ask("m"), choose(0), ask("command")},
-		{ask("new"), choose(1), ask("https://x"), ask("m"), choose(1), ask("secret")},
+		{ask("new"), choose(0), ask("m"), choose(2), choose(1), ask("")},
+		{ask("new"), choose(1), ask("https://x"), ask("m"), choose(0), ask("command"), ask("")},
+		{ask("new"), choose(1), ask("https://x"), ask("m"), choose(1), ask("secret"), ask("")},
 	} {
 		for stage := range answers {
 			t.Run(fmt.Sprintf("%d-%d", len(answers), stage), func(t *testing.T) {
@@ -326,7 +326,7 @@ func TestSettingsEditAuthenticationAndUnknownFields(t *testing.T) {
 			if auth.choice != 0 {
 				steps = append(steps, ask(auth.value))
 			}
-			steps = append(steps, choose(2))
+			steps = append(steps, ask(""), choose(2))
 			f := &fakePrompt{steps: steps}
 			code, out, errOut := runSettingsTest(f)
 			if code != 0 || errOut != "" {
@@ -488,8 +488,8 @@ func TestTerminalSettingsSecretIsMasked(t *testing.T) {
 func TestSettingsRejectedWizardKeepsMenuUsable(t *testing.T) {
 	for _, answers := range [][]step{
 		{ask(" ")}, {ask(" a ")},
-		{ask("new"), choose(1), ask("file:///tmp"), ask("m"), choose(1), ask("secret")},
-		{ask("new"), choose(1), ask("https://x"), ask(" "), choose(1), ask("secret")},
+		{ask("new"), choose(1), ask("file:///tmp"), ask("m"), choose(1), ask("secret"), ask("")},
+		{ask("new"), choose(1), ask("https://x"), ask(" "), choose(1), ask("secret"), ask("")},
 	} {
 		t.Run(fmt.Sprint(len(answers), answers[0].text), func(t *testing.T) {
 			settingsEnv(t)
@@ -511,15 +511,15 @@ func TestSettingsRejectedWizardKeepsMenuUsable(t *testing.T) {
 
 func TestSettingsEditCancellationEveryStage(t *testing.T) {
 	for _, answers := range [][]step{
-		{ask("model"), choose(2), choose(1)},
-		{ask("https://y"), ask("model"), choose(1), ask("new-command")},
-		{ask("https://y"), ask("model"), choose(2), ask("new-token")},
+		{ask("model"), choose(2), choose(1), ask("")},
+		{ask("https://y"), ask("model"), choose(1), ask("new-command"), ask("")},
+		{ask("https://y"), ask("model"), choose(2), ask("new-token"), ask("")},
 	} {
 		for stage := range answers {
 			t.Run(fmt.Sprint(len(answers), stage, answers[len(answers)-1]), func(t *testing.T) {
 				settingsEnv(t)
 				original := `{"default":"a","profiles":{"a":{"backend":"claude","base_url":"https://x","model":"m","token":"old"}},"future":true}`
-				if len(answers) == 3 {
+				if answers[0].text == "model" {
 					original = `{"default":"a","profiles":{"a":{"backend":"codex","model":"m","reasoning_effort":"ultra","service_tier":"priority"}},"future":true}`
 				}
 				writeSettingsConfig(t, original)
@@ -568,7 +568,7 @@ func TestSettingsEditPreservesAdvancedReasoning(t *testing.T) {
 		t.Run(effort, func(t *testing.T) {
 			settingsEnv(t)
 			writeSettingsConfig(t, `{"default":"a","profiles":{"a":{"backend":"codex","model":"m","reasoning_effort":"`+effort+`","service_tier":"priority"}}}`)
-			f := &fakePrompt{steps: []step{choose(0), choose(2), ask("m"), choose(5), choose(2), choose(2)}}
+			f := &fakePrompt{steps: []step{choose(0), choose(2), ask("m"), choose(5), choose(2), ask(""), choose(2)}}
 			code, _, errOut := runSettingsTest(f)
 			if code != 0 || errOut != "" {
 				t.Fatalf("%d %s", code, errOut)
@@ -579,6 +579,43 @@ func TestSettingsEditPreservesAdvancedReasoning(t *testing.T) {
 			cfg, err := config.Load(config.Path())
 			if err != nil || cfg.Profiles["a"].ReasoningEffort != effort {
 				t.Fatalf("reasoning changed: %v", err)
+			}
+		})
+	}
+}
+
+func TestSettingsAliasesAddRemoveAndReject(t *testing.T) {
+	for _, aliases := range []string{"cc, fast", "", "taken", "a", "b", "cc, cc", "UPPER"} {
+		t.Run(aliases, func(t *testing.T) {
+			settingsEnv(t)
+			original := `{"default":"a","profiles":{"a":{"backend":"codex","aliases":["old"]},"b":{"backend":"codex","aliases":["taken"]}}}`
+			writeSettingsConfig(t, original)
+			f := &fakePrompt{steps: []step{choose(0), choose(3), ask(""), choose(0), choose(0), ask(aliases), choose(2)}}
+			code, _, errOut := runSettingsTest(f)
+			valid := aliases == "cc, fast" || aliases == ""
+			if code != 0 || (errOut == "") != valid || f.pos != len(f.steps) {
+				t.Fatalf("code=%d err=%q pos=%d", code, errOut, f.pos)
+			}
+			if f.calls[5].initial != "old" {
+				t.Fatalf("alias initial value: %+v", f.calls[5])
+			}
+			if valid {
+				cfg, err := config.Load(config.Path())
+				if err != nil {
+					t.Fatal(err)
+				}
+				want := []string(nil)
+				if aliases != "" {
+					want = []string{"cc", "fast"}
+				}
+				if !slices.Equal(cfg.Profiles["a"].Aliases, want) {
+					t.Fatal(cfg.Profiles["a"].Aliases)
+				}
+			} else {
+				got, _ := os.ReadFile(config.Path())
+				if string(got) != original {
+					t.Fatal("rejected aliases wrote configuration")
+				}
 			}
 		})
 	}

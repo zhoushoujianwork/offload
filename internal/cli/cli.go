@@ -102,7 +102,7 @@ func cmdRun(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("offload", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = func() { fmt.Fprint(stderr, usage); fs.PrintDefaults() }
-	profile := fs.String("p", "", "profile name (default: $OFFLOAD_PROFILE, then config default)")
+	profile := fs.String("p", "", "profile name or alias (default: $OFFLOAD_PROFILE, then config default)")
 	model := fs.String("m", "", "override the profile's model")
 	write := fs.Bool("w", false, "write mode: edit files in -d + build/test commands (default read-only)")
 	resume := fs.String("r", "", "resume a session id; reuses its original dir unless -d is given")
@@ -219,7 +219,17 @@ func cmdRun(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 			resumedProfile = selected
 		}
 	}
+	selected = firstNonEmpty(selected, firstNonEmpty(os.Getenv("OFFLOAD_PROFILE"), cfg.Default))
 	name, prof, err := cfg.Resolve(selected)
+	if resumedProfile != "" {
+		if _, exists := cfg.Profiles[resumedProfile]; !exists {
+			name, prof = resumedProfile, config.Profile{}
+			err = fmt.Errorf("unknown profile %q; available: %s", resumedProfile, cfg.ProfileChoices())
+		}
+	}
+	if err == nil && selected != name {
+		rec.ProfileAlias = selected
+	}
 	rec.Profile, rec.Model = name, firstNonEmpty(*model, prof.Model)
 	rec.Backend = prof.BackendName()
 	if err != nil {
@@ -281,7 +291,9 @@ func cmdRun(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		case <-ctx.Done():
 		}
 	}()
+	profileAlias := rec.ProfileAlias
 	rec, _ = worker.Run(ctx, o)
+	rec.ProfileAlias = profileAlias
 	return finish()
 }
 
@@ -432,7 +444,11 @@ func cmdProfiles(stdout, stderr io.Writer) int {
 			mark = "*"
 		}
 		p := cfg.Profiles[n]
-		fmt.Fprintf(stdout, "%s %-12s %-8s %-24s %s\n", mark, n, p.BackendName(), p.Model, p.BaseURL)
+		aliases := ""
+		if len(p.Aliases) > 0 {
+			aliases = " (aliases: " + strings.Join(p.Aliases, ", ") + ")"
+		}
+		fmt.Fprintf(stdout, "%s %-12s %-8s %-24s %s%s\n", mark, n, p.BackendName(), p.Model, p.BaseURL, aliases)
 	}
 	return 0
 }

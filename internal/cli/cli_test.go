@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"encoding/json"
 	"net"
 	"os"
 	"path/filepath"
@@ -400,5 +401,72 @@ func TestLiveStateRecordsFailureExitCode(t *testing.T) {
 	states, _ := live.List()
 	if len(states) != 1 || states[0].Phase != live.Done || states[0].Status != "error" || states[0].ExitCode != 1 {
 		t.Fatalf("%+v", states)
+	}
+}
+
+func TestProfileAliasRunAndResume(t *testing.T) {
+	for _, selection := range []string{"flag", "env", "default"} {
+		t.Run(selection, func(t *testing.T) {
+			work, record := setup(t, okReply)
+			writeSettingsConfig(t, `{"default":"cheap","profiles":{"cheap":{"aliases":["cc"],"base_url":"https://gw.example/anthropic","model":"m-1","token":"tok"}}}`)
+			args := []string{"-json", "-d", work}
+			switch selection {
+			case "flag":
+				args = append(args, "-p", "cc")
+			case "env":
+				t.Setenv("OFFLOAD_PROFILE", "cc")
+			case "default":
+				if code, out, errOut := runCLI("default", "cc"); code != 0 || strings.TrimSpace(out) != "cheap" {
+					t.Fatalf("default: %d %q %q", code, out, errOut)
+				}
+			}
+			code, out, errOut := runCLI(append(args, "test alias")...)
+			if code != 0 {
+				t.Fatalf("run: %d %q %q", code, out, errOut)
+			}
+			var result history.Record
+			if err := json.Unmarshal([]byte(out), &result); err != nil {
+				t.Fatal(err)
+			}
+			wantAlias := "cc"
+			if selection == "default" {
+				wantAlias = ""
+			}
+			if result.Profile != "cheap" || result.ProfileAlias != wantAlias {
+				t.Fatalf("result: %+v", result)
+			}
+			if data, err := os.ReadFile(record); err != nil || !strings.Contains(string(data), "model=m-1") {
+				t.Fatalf("backend: %q %v", data, err)
+			}
+			rs, err := history.Read(history.Path())
+			if err != nil || len(rs) != 1 || rs[0].Profile != "cheap" || rs[0].ProfileAlias != wantAlias {
+				t.Fatalf("history: %+v %v", rs, err)
+			}
+			if code, out, errOut := runCLI("profiles"); code != 0 || !strings.Contains(out, "aliases: cc") || !strings.Contains(out, "* cheap") {
+				t.Fatalf("profiles: %d %q %q", code, out, errOut)
+			}
+			if code, out, errOut := runCLI("ls"); code != 0 || !strings.Contains(out, "cheap") {
+				t.Fatalf("ls: %d %q %q", code, out, errOut)
+			}
+			if code, _, errOut := runCLI("-p", "missing", "-d", work, "test"); code != 2 || !strings.Contains(errOut, "cheap (aliases: cc)") {
+				t.Fatalf("unknown alias: %d %s", code, errOut)
+			}
+			// The stored full name remains authoritative after the alias is reassigned.
+			writeSettingsConfig(t, `{"default":"other","profiles":{"cheap":{"base_url":"https://gw.example/anthropic","model":"m-1","token":"tok"},"other":{"aliases":["cc"],"backend":"codex"}}}`)
+			code, out, errOut = runCLI("-json", "-r", "s-1", "follow up")
+			if code != 0 {
+				t.Fatalf("resume: %d %q %q", code, out, errOut)
+			}
+			// Decode into a fresh value because profile_alias may be omitted.
+			var resumed history.Record
+			json.Unmarshal([]byte(out), &resumed)
+			if resumed.Profile != "cheap" || resumed.ProfileAlias != "" {
+				t.Fatalf("resume changed profile: %+v", resumed)
+			}
+			writeSettingsConfig(t, `{"default":"other","profiles":{"other":{"aliases":["cheap"],"backend":"codex"}}}`)
+			if code, _, errOut := runCLI("-r", "s-1", "follow up"); code != 2 || !strings.Contains(errOut, "Restore that profile") {
+				t.Fatalf("deleted profile reused as alias: %d %q", code, errOut)
+			}
+		})
 	}
 }

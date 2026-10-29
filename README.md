@@ -87,6 +87,8 @@ Interrupted Codex runs retain progress and a resume command. Automatic tool-less
 
 Choose per run with `-p name`, per shell with `OFFLOAD_PROFILE=name`, otherwise through `default` in the config. `offload profiles` lists profiles, with `*` marking the selected default; it never prints tokens.
 
+Profiles may declare `"aliases": ["cc", "fast"]`. Each alias must match `[a-z0-9-]{1,32}`, be unique across all profiles, and differ from every profile name. Use aliases with `-p cc`, `OFFLOAD_PROFILE=cc`, or `offload default cc`; the saved default and run records use the resolved full name. JSON results and history also include `profile_alias` when an alias selected the run. Resuming a session keeps its stored profile name. `offload profiles` displays aliases, and `offload config` lets you edit a comma-separated alias list (clear it to remove all aliases).
+
 ```bash
 offload profiles
 offload default codex     # save Codex as the default
