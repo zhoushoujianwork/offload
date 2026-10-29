@@ -12,6 +12,8 @@ import (
 	"regexp"
 	"strings"
 	"syscall"
+
+	"github.com/zhoushoujianwork/offload/internal/config"
 )
 
 const managedPrompt = `You are a worker delegated a task by a supervising agent. Complete the assigned task autonomously within its authorized scope.
@@ -30,6 +32,9 @@ type configError struct {
 
 func (e *configError) Error() string { return e.err.Error() }
 func ErrorKind(err error) string {
+	if errors.Is(err, config.ErrDisabled) {
+		return "globally_disabled"
+	}
 	var e *configError
 	if errors.As(err, &e) {
 		return e.kind

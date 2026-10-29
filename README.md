@@ -457,3 +457,21 @@ in final stdout JSON; a failed event destination cannot guarantee a final event.
 The supervisor must parse the final record even when the process exits nonzero.
 
 停止原因通过最终事件、`-json` 和运行记录的 `stop_reason` 输出：`deadline`、`idle`、`signal` 或 `canceled`；正常完成时省略。三处同时输出 `idle_timeout`，记录按 `-t` 截断后的有效配置（禁用为 `0s`）。deadline 和 idle 保持 `error_kind: "timeout"` 及退出码 124。没有新增自动重试或跨调用计时机制。
+
+### 全局暂停 offload
+
+运行 `offload disable` 持久关闭所有新任务和 resume；运行 `offload enable` 恢复。
+开关保存在同一全局配置目录（`$XDG_CONFIG_HOME/offload`，默认
+`~/.config/offload`），优先于 profile、项目 delegation mode 和旧会话指令。
+不同配置目录属于独立配置。关闭时 CLI 返回退出码 2，JSON 的
+`error_kind` 为 `globally_disabled`。排队任务在等待期间和启动前复查开关；
+已运行的 worker 继续完成，不会被关闭操作终止。
+
+切换保留 profiles、默认 profile、凭据、历史及原 basic/proactive mode。
+`offload status` 和交互配置界面显示全局开关；历史和管理命令仍可使用。
+切换会更新用户级 Codex、Claude Code 的受管理策略区块和 offload 技能，
+保留自定义指令。两种宿主都需要新建会话加载更新；旧会话仍受 CLI 拒绝检查保护。
+已有项目级指令不会被遍历改写，可在项目内执行
+`offload install-agent -scope project` 刷新受管理区块。
+若技能所有权或文件权限导致指令更新失败，开关仍已保存，CLI 会明确报错；
+修复冲突后重试 `offload install-agent`。

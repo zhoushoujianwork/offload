@@ -84,3 +84,41 @@ func writeSettings(path string, fields map[string]json.RawMessage) error {
 	}
 	return os.Rename(f.Name(), path)
 }
+
+// ErrDisabled is stable across profiles and delegation modes.
+var ErrDisabled = errors.New("offload is globally disabled; complete work directly or run offload enable")
+
+func LoadDisabled(path string) (bool, error) {
+	fields, err := modeSettings(path)
+	if err != nil {
+		return false, err
+	}
+	var disabled bool
+	if raw, ok := fields["disabled"]; ok {
+		if err := json.Unmarshal(raw, &disabled); err != nil {
+			return false, fmt.Errorf("invalid disabled: %w", err)
+		}
+	}
+	return disabled, nil
+}
+
+func CheckEnabled() error {
+	disabled, err := LoadDisabled(Path())
+	if err != nil {
+		return err
+	}
+	if disabled {
+		return ErrDisabled
+	}
+	return nil
+}
+
+// SetDisabled preserves profiles, credentials, mode and unknown settings.
+func SetDisabled(path string, disabled bool) error {
+	fields, err := modeSettings(path)
+	if err != nil {
+		return err
+	}
+	fields["disabled"], _ = json.Marshal(disabled)
+	return writeSettings(path, fields)
+}

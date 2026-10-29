@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/zhoushoujianwork/offload/internal/config"
 	"github.com/zhoushoujianwork/offload/internal/live"
 	"github.com/zhoushoujianwork/offload/internal/proc"
 )
@@ -591,5 +592,49 @@ func TestInvalidWorkerLimitIsAUsageError(t *testing.T) {
 	}
 	if _, err := os.Stat(record); err == nil {
 		t.Fatal("worker started despite an invalid limit")
+	}
+}
+
+func TestDisabledQueuedRunNeverLaunchesBackend(t *testing.T) {
+	needUnix(t)
+	work, _ := setup(t, okReply)
+	bin := offloadBin(t)
+	mark := filepath.Join(t.TempDir(), "queued-start")
+	gate := filepath.Join(t.TempDir(), "holder-finish")
+	fake := os.Getenv("OFFLOAD_CLAUDE")
+	script, err := os.ReadFile(fake)
+	if err != nil {
+		t.Fatal(err)
+	}
+	script = []byte(strings.Replace(string(script), "cat <<'EOF'", "if [ -n \"$FAKE_FINISH_GATE\" ]; then while [ ! -e \"$FAKE_FINISH_GATE\" ]; do sleep 0.02; done; fi\ncat <<'EOF'", 1))
+	if err := os.WriteFile(fake, script, 0700); err != nil {
+		t.Fatal(err)
+	}
+	holder := start(t, bin, []string{"OFFLOAD_MAX_WORKERS=1", "FAKE_FINISH_GATE=" + gate}, "-d", work, "holder")
+	waitFor(t, "holder running", 10*time.Second, func() bool { return phases(t)[live.Running] == 1 })
+	queued := start(t, bin, []string{"OFFLOAD_MAX_WORKERS=1", "FAKE_MARK=" + mark}, "-json", "-d", work, "queued")
+	waitFor(t, "queued", 10*time.Second, func() bool { return phases(t)[live.Queued] == 1 })
+	if err := config.SetDisabled(config.Path(), true); err != nil {
+		t.Fatal(err)
+	}
+	if code := queued.wait(t); code != 2 || decodeRun(t, queued.out.String()).ErrorKind != "globally_disabled" {
+		t.Fatalf("code=%d %s", code, queued.out.String())
+	}
+	if _, err := os.Stat(mark); !os.IsNotExist(err) {
+		t.Fatalf("queued backend started: %v", err)
+	}
+	if phases(t)[live.Running] != 1 {
+		t.Fatal("running worker interrupted by disable")
+	}
+	if err := os.WriteFile(gate, nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if code := holder.wait(t); code != 0 {
+		t.Fatalf("running worker interrupted: %d %s", code, holder.err.String())
+	}
+	// A fresh CLI process must observe the same persisted switch.
+	fresh := start(t, bin, nil, "-json", "-r", "s-1", "-d", work, "resume")
+	if code := fresh.wait(t); code != 2 || decodeRun(t, fresh.out.String()).ErrorKind != "globally_disabled" {
+		t.Fatalf("code=%d %s", code, fresh.out.String())
 	}
 }

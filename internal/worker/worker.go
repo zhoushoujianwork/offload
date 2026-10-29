@@ -297,6 +297,10 @@ func Run(ctx context.Context, o Opts) (rec history.Record, err error) {
 			pub.finish(rec, leftover)
 		}
 	}()
+	if err = config.CheckEnabled(); err != nil {
+		rec.ErrorKind = ErrorKind(err)
+		return rec, err
+	}
 	if err = Validate(&o); err != nil {
 		rec.ErrorKind = ErrorKind(err)
 		return rec, err
@@ -336,14 +340,19 @@ func Run(ctx context.Context, o Opts) (rec history.Record, err error) {
 	}
 	rec.ErrorKind = "launch"
 	pub = newPublisher(o, started)
-	slot, err = slots.Acquire(ctx, slots.Options{Dir: slots.Dir(), Max: o.MaxWorkers, OnWait: pub.waiting})
+	slot, err = slots.Acquire(ctx, slots.Options{Dir: slots.Dir(), Max: o.MaxWorkers, OnWait: pub.waiting, Check: config.CheckEnabled})
 	if err != nil {
 		if ctx.Err() != nil {
 			rec.StopReason = stopReason(context.Cause(ctx))
 			rec.ErrorKind = "canceled"
 			return rec, errors.New("cancelled while waiting for a worker slot; no worker was started")
 		}
+		rec.ErrorKind = ErrorKind(err)
 		return rec, fmt.Errorf("acquire worker slot: %w", err)
+	}
+	if err = config.CheckEnabled(); err != nil {
+		rec.ErrorKind = ErrorKind(err)
+		return rec, err
 	}
 	admitted = time.Now()
 	pub.admitted(slot.Index(), admitted.Sub(started))

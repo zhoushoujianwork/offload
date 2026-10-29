@@ -34,6 +34,9 @@ func RunMode(args []string, stdout, stderr io.Writer) int {
 }
 
 func policyForMode(mode string) string {
+	if mode == "off" {
+		return offloadPolicyBegin + "\n## Offload disabled\n\nOffload is globally disabled. Complete work directly; do not launch or resume offload workers. This overrides project delegation modes and older instructions. Only an explicit user request to enable offload should change this setting.\n" + offloadPolicyEnd
+	}
 	if mode == config.ModeProactive {
 		return offloadAgentPolicy
 	}
@@ -55,8 +58,29 @@ func policyForMode(mode string) string {
 }
 
 func skillForMode(skill []byte, mode string) []byte {
+	if mode == "off" {
+		return []byte("---\nname: offload\ndescription: Offload is globally disabled; complete work directly.\n---\n\n" + policyForMode(mode))
+	}
 	if mode == config.ModeProactive {
 		return skill
 	}
 	return []byte(strings.Replace(string(skill), "Delegation mode: proactive", "Delegation mode: basic", 1))
+}
+
+// RunSwitch saves the gate first so instruction update failures cannot undo a disable.
+func RunSwitch(args []string, stdout, stderr io.Writer) int {
+	if len(args) != 1 || (args[0] != "disable" && args[0] != "enable") {
+		return fail(stderr, fmt.Errorf("usage: offload disable | enable"))
+	}
+	disabled := args[0] == "disable"
+	if err := config.SetDisabled(config.Path(), disabled); err != nil {
+		return fail(stderr, err)
+	}
+	fmt.Fprintf(stdout, "Offload globally disabled: %t\n", disabled)
+	if code := Run(nil, stdout, stderr); code != 0 {
+		fmt.Fprintln(stderr, "Global switch saved; agent instructions could not be fully updated. Fix the reported conflict and retry install-agent.")
+		return code
+	}
+	fmt.Fprintln(stdout, "Start new Codex and Claude Code sessions to load updated instructions. Existing workers continue; CLI checks also protect sessions with old instructions.")
+	return 0
 }
