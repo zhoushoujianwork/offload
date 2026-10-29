@@ -43,6 +43,7 @@ type State struct {
 	Profile     string    `json:"profile"`
 	Model       string    `json:"model"`
 	Session     string    `json:"session,omitempty"`
+	Caller      string    `json:"caller"` // "unspecified" when not given (also for legacy state files)
 	StartedAt   time.Time `json:"started_at"`
 	UpdatedAt   time.Time `json:"updated_at"`
 	LastEventAt time.Time `json:"last_event_at"`
@@ -85,6 +86,7 @@ func Dir() string { return filepath.Join(filepath.Dir(history.Path()), "live") }
 // Publish atomically writes the state for its process.
 func Publish(s State) error {
 	s.UpdatedAt = time.Now()
+	s.Caller = history.CallerOrUnspecified(s.Caller)
 	if err := os.MkdirAll(Dir(), 0o700); err != nil {
 		return err
 	}
@@ -134,6 +136,7 @@ func ListChecked() (out []State, unreadable int, err error) {
 			unreadable++
 			continue
 		}
+		s.Caller = history.CallerOrUnspecified(s.Caller)
 		age := time.Since(s.UpdatedAt)
 		stale := s.Active() && age > StaleAfter
 		// A heartbeat that stopped says nothing about the worker's processes. Check the recorded

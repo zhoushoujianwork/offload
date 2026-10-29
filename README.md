@@ -620,6 +620,36 @@ in `error` and `result`, never the raw provider message. Successful reports and
 existing lifecycle error kinds are unchanged. Exit codes remain 0 for success, 1 for
 worker failure/cancellation, 2 for setup or event-file errors, and 124 for timeout.
 
+### Caller attribution
+
+`-caller ID` (also `--caller ID`) optionally names the tool that invoked this run. It is
+metadata only and is separate from `-caller-run-id`, which correlates one run with one
+supervisor job. It changes no execution, authentication, profile or sandbox behavior.
+
+```sh
+offload -json -caller agh -p codex -d /absolute/repo "Implement the assigned task"
+offload -json -caller clawflow -caller-run-id clawflow:run-123 -d /absolute/repo "Review the change"
+offload -json -caller my-tool.v2 -d /absolute/repo "Summarize the module"
+```
+
+Rules:
+
+- The canonical form is lowercase ASCII matching `[a-z0-9][a-z0-9._-]{0,63}`. ASCII uppercase
+  is lowercased (`-caller AGH` records `agh`).
+- An explicitly supplied empty value, whitespace, non-ASCII characters or any other character
+  is rejected, and so is a repeated `-caller`. The run does not start; with `-json` the
+  error record carries `caller: "unspecified"`.
+- Omitting `-caller` records `unspecified`. This applies to every invocation separately,
+  resumes (`-r`) included: a resume never inherits the caller of an earlier run in the session,
+  so pass `-caller` again if the resume should be attributed.
+- `caller` is added to the `-json` result and the run log record, to every `-events-file`
+  event, and to the live worker state shown by `offload status` and `offload watch` (`caller=...`).
+- Records written before this field existed are read as `unspecified` in memory. The run
+  log is append-only and older lines are never rewritten.
+- A supervisor must confirm that the installed binary supports the flag before relying on it,
+  for example `offload -h 2>&1 | grep -- -caller`. An older binary fails with
+  `flag provided but not defined: -caller`; offload does not silently ignore the flag.
+
 `-events-file` must be absolute and nonexistent; exclusive creation rejects existing
 files and symlinks before provider launch and uses mode 0600. It contains bounded
 NDJSON with common fields `schema_version: 1`, `type` (`start`, `progress`, `final`),

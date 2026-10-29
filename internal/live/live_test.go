@@ -1,6 +1,7 @@
 package live
 
 import (
+	"os"
 	"os/exec"
 	"path/filepath"
 	"testing"
@@ -111,5 +112,28 @@ func TestStaleStateChecksWorkerProcessGroup(t *testing.T) {
 	}
 	if rs, _ := List(); len(rs) != 0 {
 		t.Errorf("state should expire once the processes are gone: %+v", rs)
+	}
+}
+
+func TestCallerInLiveState(t *testing.T) {
+	setState(t)
+	now := time.Now()
+	if err := Publish(State{PID: 1, Phase: Running, Caller: "agh", StartedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	if err := Publish(State{PID: 2, Phase: Running, StartedAt: now.Add(time.Second)}); err != nil {
+		t.Fatal(err)
+	}
+	// A state file written before the field existed.
+	legacy := []byte(`{"pid":3,"phase":"running","dir":"d","task":"t","profile":"p","model":"m","started_at":"` + now.Add(2*time.Second).Format(time.RFC3339Nano) + `","updated_at":"` + now.Format(time.RFC3339Nano) + `","last_event_at":"` + now.Format(time.RFC3339Nano) + `","tool_calls":0,"permission_denials":0}`)
+	if err := os.WriteFile(filepath.Join(Dir(), "3.json"), legacy, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rs, err := List()
+	if err != nil || len(rs) != 3 || rs[0].Caller != "agh" || rs[1].Caller != "unspecified" || rs[2].Caller != "unspecified" {
+		t.Fatalf("%+v %v", rs, err)
+	}
+	if b, _ := os.ReadFile(filepath.Join(Dir(), "3.json")); string(b) != string(legacy) {
+		t.Fatalf("legacy state rewritten: %s", b)
 	}
 }

@@ -33,6 +33,7 @@ type supervisorEvent struct {
 	Status           string  `json:"status,omitempty"`
 	ExitCode         *int    `json:"exit_code,omitempty"`
 	ErrorKind        *string `json:"error_kind,omitempty"`
+	Caller           string  `json:"caller"`
 }
 type eventWriter struct {
 	mu   sync.Mutex
@@ -50,7 +51,7 @@ func openEvents(path string, rec history.Record) (*eventWriter, *os.File, error)
 	if err != nil {
 		return nil, nil, err
 	}
-	e := &eventWriter{w: f, base: supervisorEvent{SchemaVersion: 1, RunID: rec.RunID, CallerRunID: safeMeta(rec.CallerRunID), Session: safeMeta(rec.Session), Backend: safeMeta(rec.Backend), Model: safeMeta(rec.Model)}}
+	e := &eventWriter{w: f, base: supervisorEvent{SchemaVersion: 1, RunID: rec.RunID, CallerRunID: safeMeta(rec.CallerRunID), Caller: safeCaller(rec.Caller), Session: safeMeta(rec.Session), Backend: safeMeta(rec.Backend), Model: safeMeta(rec.Model)}}
 	return e, f, nil
 }
 func (e *eventWriter) emit(kind, native, tool string, rec *history.Record) error {
@@ -195,4 +196,12 @@ func safeKind(kind string) string {
 	default:
 		return "execution"
 	}
+}
+
+// safeCaller reports only a canonical caller; anything else is unspecified.
+func safeCaller(s string) string {
+	if c, err := history.NormalizeCaller(s); err == nil {
+		return c
+	}
+	return history.CallerUnspecified
 }
