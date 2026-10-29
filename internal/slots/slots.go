@@ -59,8 +59,9 @@ func (w Wait) Reason() string {
 // Options configures Acquire.
 type Options struct {
 	Dir    string
-	Max    int        // <= 0 disables admission control
-	OnWait func(Wait) // called on every failed attempt
+	Max    int          // <= 0 disables admission control
+	Check  func() error // checked before every admission attempt
+	OnWait func(Wait)   // called on every failed attempt
 }
 
 // Slot is one admitted worker run. The zero value and the value returned when admission is
@@ -124,6 +125,11 @@ func (s *Slot) Release() (clean bool) {
 // Acquire waits for a free slot. It returns as soon as ctx is cancelled, so a queued run that is
 // interrupted never starts a backend.
 func Acquire(ctx context.Context, o Options) (*Slot, error) {
+	if o.Check != nil {
+		if err := o.Check(); err != nil {
+			return nil, err
+		}
+	}
 	if o.Max <= 0 || !Supported {
 		return &Slot{idx: -1}, nil
 	}
@@ -131,6 +137,11 @@ func Acquire(ctx context.Context, o Options) (*Slot, error) {
 		return nil, err
 	}
 	for {
+		if o.Check != nil {
+			if err := o.Check(); err != nil {
+				return nil, err
+			}
+		}
 		s, wait, err := tryAcquire(o)
 		if err != nil {
 			return nil, err

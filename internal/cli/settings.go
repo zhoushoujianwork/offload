@@ -194,6 +194,11 @@ func runSettings(p settingsPrompt, stdout, stderr io.Writer) int {
 		if err != nil {
 			return fail(stderr, err)
 		}
+		disabled, err := config.LoadDisabled(config.Path())
+		if err != nil {
+			return fail(stderr, err)
+		}
+		fmt.Fprintf(stdout, "Offload globally disabled: %t (offload disable / enable)\n", disabled)
 		choices := []string{"Profile: " + firstNonEmpty(cfg.Default, "(not configured)"), "Offload level: " + offloadLevelLabel(mode), "Exit"}
 		selected, err := settingsChoice(p, "Settings", choices, cursor)
 		if settingsCancelled(err) {

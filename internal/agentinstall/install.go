@@ -93,6 +93,13 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return fail(stderr, err)
 	}
+	disabled, err := config.LoadDisabled(config.Path())
+	if err != nil {
+		return fail(stderr, err)
+	}
+	if disabled {
+		*mode = "off"
+	}
 	files, err := planAgentInstallMode(targets, skills.Offload, *mode)
 	if err != nil {
 		return fail(stderr, err)

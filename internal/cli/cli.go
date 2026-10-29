@@ -38,6 +38,7 @@ usage:
                                 with -t, stop after dur and exit 124 if workers are still active
   offload profiles              list profiles (* = the one a run would use)
   offload default [profile]     show or set the saved default profile
+  offload disable / enable     persistently stop / allow new workers
   offload mode [basic|proactive] show or switch delegation mode and agent rules
   offload install-agent [flags] install delegation instructions for a host agent
   offload version
@@ -82,6 +83,8 @@ func Run(version string, args []string, stdin io.Reader, stdout, stderr io.Write
 			return cmdProfiles(stdout, stderr)
 		case "default":
 			return cmdDefault(args[1:], stdout, stderr)
+		case "disable", "enable":
+			return agentinstall.RunSwitch(args, stdout, stderr)
 		case "mode":
 			return agentinstall.RunMode(args[1:], stdout, stderr)
 		case "install-agent":
@@ -118,10 +121,6 @@ func cmdRun(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	disallowedTools := fs.String("disallowed-tools", "", "explicit comma-separated Claude tool denylist")
 	parseErr := fs.Parse(args)
 	task := strings.Join(fs.Args(), " ")
-	if parseErr == nil && task == "" && !isTerminal(stdin) {
-		b, _ := io.ReadAll(stdin)
-		task = strings.TrimSpace(string(b))
-	}
 
 	logPath := history.Path()
 	rec := history.Record{RunID: worker.NewRunID(), CallerRunID: *callerRunID, ExecutionPolicy: *executionPolicy, Session: *resume, TS: started.Format("2006-01-02 15:04:05"), Status: "error", Profile: *profile,
@@ -163,6 +162,14 @@ func cmdRun(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	}
 	if parseErr != nil {
 		return failRun(parseErr)
+	}
+	if err := config.CheckEnabled(); err != nil {
+		return failRun(err)
+	}
+	if task == "" && !isTerminal(stdin) {
+		b, _ := io.ReadAll(stdin)
+		task = strings.TrimSpace(string(b))
+		rec.Task = task
 	}
 	if task == "" {
 		fs.Usage()

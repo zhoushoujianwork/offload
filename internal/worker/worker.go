@@ -297,6 +297,10 @@ func Run(ctx context.Context, o Opts) (rec history.Record, err error) {
 			pub.finish(rec, leftover)
 		}
 	}()
+	if err = config.CheckEnabled(); err != nil {
+		rec.ErrorKind = ErrorKind(err)
+		return rec, err
+	}
 	if err = Validate(&o); err != nil {
 		rec.ErrorKind = ErrorKind(err)
 		return rec, err
@@ -336,20 +340,29 @@ func Run(ctx context.Context, o Opts) (rec history.Record, err error) {
 	}
 	rec.ErrorKind = "launch"
 	pub = newPublisher(o, started)
-	slot, err = slots.Acquire(ctx, slots.Options{Dir: slots.Dir(), Max: o.MaxWorkers, OnWait: pub.waiting})
+	slot, err = slots.Acquire(ctx, slots.Options{Dir: slots.Dir(), Max: o.MaxWorkers, OnWait: pub.waiting, Check: config.CheckEnabled})
 	if err != nil {
 		if ctx.Err() != nil {
 			rec.StopReason = stopReason(context.Cause(ctx))
 			rec.ErrorKind = "canceled"
 			return rec, errors.New("cancelled while waiting for a worker slot; no worker was started")
 		}
+		rec.ErrorKind = ErrorKind(err)
 		return rec, fmt.Errorf("acquire worker slot: %w", err)
+	}
+	if err = config.CheckEnabled(); err != nil {
+		rec.ErrorKind = ErrorKind(err)
+		return rec, err
 	}
 	admitted = time.Now()
 	pub.admitted(slot.Index(), admitted.Sub(started))
 	hooks := hooks{started: func(g proc.Group) { slot.Track(g); pub.group(g) }, cleaning: func() { pub.phase(live.Cleaning) }, cleaned: slot.Clear}
 
 	a := runAttempt(ctx, bin, o, promptPath, token, o.Timeout, pub.update, hooks)
+	if a.gateErr != nil {
+		rec.ErrorKind = ErrorKind(a.gateErr)
+		return rec, a.gateErr
+	}
 	pub.phase(live.Running)
 	if a.leftover != nil {
 		leftover = a.leftover
@@ -414,9 +427,14 @@ func Run(ctx context.Context, o Opts) (rec history.Record, err error) {
 		// not while the first worker's processes are still alive, and never for managed development.
 		if o.ExecutionPolicy != "managed-development" && !o.NoSalvage && o.Profile.BackendName() == "claude" && s.Session != "" && ctx.Err() == nil && leftover == nil {
 			pub.phase(live.Salvaging)
-			report, cost, ok, left := salvage(ctx, bin, o, promptPath, token, s.Session, pub.keepAlive, hooks)
+			report, cost, ok, left, gateErr := salvage(ctx, bin, o, promptPath, token, s.Session, pub.keepAlive, hooks)
 			if left != nil {
 				leftover = left
+			}
+			if gateErr != nil {
+				rec.ErrorKind = ErrorKind(gateErr)
+				rec.Error += "; automatic salvage refused: " + gateErr.Error()
+				rec.Result = rec.Error + s.progress()
 			}
 			if ok {
 				rec.Salvaged, rec.CostUSD = true, cost
@@ -465,6 +483,7 @@ func Run(ctx context.Context, o Opts) (rec history.Record, err error) {
 
 // attempt is the outcome of one worker process.
 type attempt struct {
+	gateErr        error // admission failure before any backend process starts
 	baseline       *history.TokenUsage
 	baselineError  string
 	s              streamSummary
@@ -540,6 +559,10 @@ func runAttempt(ctx context.Context, bin string, o Opts, promptPath, token strin
 	// Do not wait indefinitely for a worker descendant to close inherited pipes.
 	cmd.WaitDelay = 100 * time.Millisecond
 	files := newSessionActivity(o)
+	// Every process launch, including automatic salvage, must observe the saved switch.
+	if err := config.CheckEnabled(); err != nil {
+		return attempt{runErr: err, gateErr: err}
+	}
 	if err := cmd.Start(); err != nil {
 		return attempt{runErr: err}
 	}
@@ -656,19 +679,19 @@ func (b *cappedBuffer) String() string {
 
 // salvage resumes a stopped session with no tools and returns the report it writes.
 func salvage(ctx context.Context, bin string, o Opts, promptPath, token, session string,
-	tick func(streamSummary, time.Time), h hooks) (string, *float64, bool, *proc.Group) {
+	tick func(streamSummary, time.Time), h hooks) (string, *float64, bool, *proc.Group, error) {
 	so := o
 	so.Resume, so.Salvage, so.Write, so.Task = session, true, false, salvageTask
 	a := runAttempt(ctx, bin, so, promptPath, token, SalvageTimeout, tick, h)
 	r := a.s.Result
 	if r == nil || r.IsError || strings.TrimSpace(r.Result) == "" {
-		return "", nil, false, a.leftover
+		return "", nil, false, a.leftover, a.gateErr
 	}
 	cost := r.CostUSD
 	if cost != nil && !history.ValidCost(*cost) {
 		cost = nil
 	}
-	return r.Result, cost, true, a.leftover
+	return r.Result, cost, true, a.leftover, nil
 }
 
 // publishEvery is how often a running worker refreshes its live state.

@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/zhoushoujianwork/offload/internal/config"
 	"github.com/zhoushoujianwork/offload/internal/live"
 	"github.com/zhoushoujianwork/offload/internal/proc"
 )
@@ -591,5 +592,105 @@ func TestInvalidWorkerLimitIsAUsageError(t *testing.T) {
 	}
 	if _, err := os.Stat(record); err == nil {
 		t.Fatal("worker started despite an invalid limit")
+	}
+}
+
+func TestDisabledQueuedRunNeverLaunchesBackend(t *testing.T) {
+	needUnix(t)
+	work, _ := setup(t, okReply)
+	bin := offloadBin(t)
+	mark := filepath.Join(t.TempDir(), "queued-start")
+	gate := filepath.Join(t.TempDir(), "holder-finish")
+	fake := os.Getenv("OFFLOAD_CLAUDE")
+	script, err := os.ReadFile(fake)
+	if err != nil {
+		t.Fatal(err)
+	}
+	script = []byte(strings.Replace(string(script), "cat <<'EOF'", "if [ -n \"$FAKE_FINISH_GATE\" ]; then while [ ! -e \"$FAKE_FINISH_GATE\" ]; do sleep 0.02; done; fi\ncat <<'EOF'", 1))
+	if err := os.WriteFile(fake, script, 0700); err != nil {
+		t.Fatal(err)
+	}
+	holder := start(t, bin, []string{"OFFLOAD_MAX_WORKERS=1", "FAKE_FINISH_GATE=" + gate}, "-d", work, "holder")
+	waitFor(t, "holder running", 10*time.Second, func() bool { return phases(t)[live.Running] == 1 })
+	queued := start(t, bin, []string{"OFFLOAD_MAX_WORKERS=1", "FAKE_MARK=" + mark}, "-json", "-d", work, "queued")
+	waitFor(t, "queued", 10*time.Second, func() bool { return phases(t)[live.Queued] == 1 })
+	if err := config.SetDisabled(config.Path(), true); err != nil {
+		t.Fatal(err)
+	}
+	if code := queued.wait(t); code != 2 || decodeRun(t, queued.out.String()).ErrorKind != "globally_disabled" {
+		t.Fatalf("code=%d %s", code, queued.out.String())
+	}
+	if _, err := os.Stat(mark); !os.IsNotExist(err) {
+		t.Fatalf("queued backend started: %v", err)
+	}
+	if phases(t)[live.Running] != 1 {
+		t.Fatal("running worker interrupted by disable")
+	}
+	if err := os.WriteFile(gate, nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if code := holder.wait(t); code != 0 {
+		t.Fatalf("running worker interrupted: %d %s", code, holder.err.String())
+	}
+	// A fresh CLI process must observe the same persisted switch.
+	fresh := start(t, bin, nil, "-json", "-r", "s-1", "-d", work, "resume")
+	if code := fresh.wait(t); code != 2 || decodeRun(t, fresh.out.String()).ErrorKind != "globally_disabled" {
+		t.Fatalf("code=%d %s", code, fresh.out.String())
+	}
+}
+
+func TestGlobalDisablePreventsAutomaticSalvage(t *testing.T) {
+	needUnix(t)
+	work, _ := setup(t, okReply)
+	// Build before isolating HOME so Go does not put read-only module caches in t.TempDir.
+	bin := offloadBin(t)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CODEX_HOME", filepath.Join(home, ".codex"))
+	t.Setenv("CLAUDE_CONFIG_DIR", filepath.Join(home, ".claude"))
+	gate := filepath.Join(t.TempDir(), "release")
+	mark := filepath.Join(t.TempDir(), "launches")
+	script := `#!/bin/sh
+echo "$*" >> "$FAKE_MARK"
+case " $* " in
+ *" --resume "*)
+  printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"UNEXPECTED SALVAGE","session_id":"s-disabled"}'
+  exit 0
+  ;;
+esac
+printf '%s\n' '{"type":"system","subtype":"init","session_id":"s-disabled"}'
+touch "$FAKE_GATE.ready"
+while [ ! -e "$FAKE_GATE" ]; do sleep 0.02; done
+`
+	if err := os.WriteFile(os.Getenv("OFFLOAD_CLAUDE"), []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	running := start(t, bin, []string{"FAKE_MARK=" + mark, "FAKE_GATE=" + gate}, "-json", "-d", work, "task")
+	t.Cleanup(func() { os.WriteFile(gate, nil, 0600) })
+	waitFor(t, "original worker ready", 10*time.Second, func() bool {
+		_, err := os.Stat(gate + ".ready")
+		return err == nil
+	})
+	disabling := start(t, bin, nil, "disable")
+	if code := disabling.wait(t); code != 0 {
+		t.Fatalf("disable=%d %s", code, disabling.err.String())
+	}
+	if err := config.CheckEnabled(); err != config.ErrDisabled {
+		t.Fatalf("switch not saved: %v", err)
+	}
+	if err := os.WriteFile(gate, nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	code := running.wait(t)
+	rec := decodeRun(t, running.out.String())
+	launches, err := os.ReadFile(mark)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(strings.Split(strings.TrimSpace(string(launches)), "\n")) != 1 || rec.Salvaged {
+		t.Fatalf("disabled salvage launched: code=%d launches=%s rec=%+v", code, launches, rec)
+	}
+	if code == 0 || rec.ErrorKind != "globally_disabled" || !strings.Contains(rec.Error, "globally disabled") || rec.Session != "s-disabled" {
+		t.Fatalf("missing disabled reason or original session: code=%d rec=%+v", code, rec)
 	}
 }

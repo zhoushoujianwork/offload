@@ -7,6 +7,7 @@ import (
 	"io"
 	"time"
 
+	"github.com/zhoushoujianwork/offload/internal/config"
 	"github.com/zhoushoujianwork/offload/internal/live"
 	"github.com/zhoushoujianwork/offload/internal/text"
 )
@@ -51,6 +52,11 @@ func describe(s live.State) string {
 
 // cmdStatus prints one line per known worker: what is running, and what finished recently.
 func cmdStatus(stdout, stderr io.Writer) int {
+	disabled, err := config.LoadDisabled(config.Path())
+	if err != nil {
+		return fail(stderr, err)
+	}
+	fmt.Fprintf(stdout, "Offload globally disabled: %t\n", disabled)
 	states, err := live.List()
 	if err != nil {
 		return fail(stderr, err)
