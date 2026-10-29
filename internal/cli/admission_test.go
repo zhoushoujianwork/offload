@@ -638,3 +638,58 @@ func TestDisabledQueuedRunNeverLaunchesBackend(t *testing.T) {
 		t.Fatalf("code=%d %s", code, fresh.out.String())
 	}
 }
+
+func TestGlobalDisablePreventsAutomaticSalvage(t *testing.T) {
+	needUnix(t)
+	work, _ := setup(t, okReply)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CODEX_HOME", filepath.Join(home, ".codex"))
+	t.Setenv("CLAUDE_CONFIG_DIR", filepath.Join(home, ".claude"))
+	bin := offloadBin(t)
+	gate := filepath.Join(t.TempDir(), "release")
+	mark := filepath.Join(t.TempDir(), "launches")
+	script := `#!/bin/sh
+echo "$*" >> "$FAKE_MARK"
+case " $* " in
+ *" --resume "*)
+  printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"UNEXPECTED SALVAGE","session_id":"s-disabled"}'
+  exit 0
+  ;;
+esac
+printf '%s\n' '{"type":"system","subtype":"init","session_id":"s-disabled"}'
+touch "$FAKE_GATE.ready"
+while [ ! -e "$FAKE_GATE" ]; do sleep 0.02; done
+`
+	if err := os.WriteFile(os.Getenv("OFFLOAD_CLAUDE"), []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	running := start(t, bin, []string{"FAKE_MARK=" + mark, "FAKE_GATE=" + gate}, "-json", "-d", work, "task")
+	t.Cleanup(func() { os.WriteFile(gate, nil, 0600) })
+	waitFor(t, "original worker ready", 10*time.Second, func() bool {
+		_, err := os.Stat(gate + ".ready")
+		return err == nil
+	})
+	disabling := start(t, bin, nil, "disable")
+	if code := disabling.wait(t); code != 0 {
+		t.Fatalf("disable=%d %s", code, disabling.err.String())
+	}
+	if err := config.CheckEnabled(); err != config.ErrDisabled {
+		t.Fatalf("switch not saved: %v", err)
+	}
+	if err := os.WriteFile(gate, nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	code := running.wait(t)
+	rec := decodeRun(t, running.out.String())
+	launches, err := os.ReadFile(mark)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(strings.Split(strings.TrimSpace(string(launches)), "\n")) != 1 || rec.Salvaged {
+		t.Fatalf("disabled salvage launched: code=%d launches=%s rec=%+v", code, launches, rec)
+	}
+	if code == 0 || rec.ErrorKind != "globally_disabled" || !strings.Contains(rec.Error, "globally disabled") || rec.Session != "s-disabled" {
+		t.Fatalf("missing disabled reason or original session: code=%d rec=%+v", code, rec)
+	}
+}
