@@ -1,0 +1,38 @@
+name: macos-release
+on:
+  push:
+    tags: ["v*"]
+permissions:
+  contents: write
+jobs:
+  package:
+    strategy:
+      matrix:
+        include:
+          - arch: arm64
+            runner: macos-15
+          - arch: amd64
+            runner: macos-15-intel
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Test the app
+        run: swift test --package-path macos
+      - name: Package
+        env:
+          OFFLOAD_VERSION: ${{ github.ref_name }}
+          OFFLOAD_ARCH: ${{ matrix.arch }}
+        run: scripts/package-macos-release.sh
+      - name: Upload to release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          asset="dist/offload-monitor-macos-${{ matrix.arch }}.zip"
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            gh release create "$TAG" --title "$TAG" --generate-notes --verify-tag || gh release view "$TAG" >/dev/null
+          fi
+          gh release upload "$TAG" "$asset" --clobber

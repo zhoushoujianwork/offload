@@ -240,6 +240,8 @@ offload config               open interactive settings (terminal only)
 offload ls [n]                list the last n runs (default 10)
 offload show <session>        print every report of a session
 offload status                what each worker is doing right now
+offload stats [--json] [--period today|week|month|all]
+                              run, token and cost totals for a period (default today)
 offload watch [-t dur]        one line per event (started, progress, STALLED, finished) until all workers end;
                               with -t, stop after dur and exit 124 if workers are still active
 offload profiles              list profiles (* = the one a run would use)
@@ -271,9 +273,36 @@ offload version
   Session: 12345678-1234-1234-1234-123456789abc
 ```
 
+### Stats and the macOS menu bar monitor
+
+```sh
+offload stats                       # today, local time
+offload stats --period week         # since Monday 00:00
+offload stats --period month        # since the 1st, 00:00
+offload stats --period all          # entire history
+offload stats --json --period week  # one JSON document for tools
+```
+
+Periods use the local time zone. An invalid flag, period, or extra argument exits 2. Totals come only from what each run recorded: per-run `usage` (never the session-cumulative figure, so resumed sessions are not double counted), `cost_usd`, and `elapsed_ms`. Input tokens already include cached and cache-write tokens. New Claude runs record per-run token usage. A resumed run's cost is recorded only when its baseline was validated. Claude runs from before this accounting have no token usage and, because Claude reports a session-cumulative cost, their recorded cost may overlap other runs of the same session. Those legacy costs are left out of the cost totals and the `recent` list, with a warning, and history is not recomputed. The output states how many runs the token, cost, and elapsed sums cover (`usage_runs`, `cost_runs`, `elapsed_runs`). A missing value stays `null`; it is never shown as zero. Salvaged runs count as runs, but their cost and usage are incomplete and may contain session totals, so they are left out of the totals (`excluded_salvage_cost_runs` counts raw salvaged records that carry either, plus a warning). Costs are worker or API-baseline estimates, not billing, and exclude the supervising agent's own spending. Records with an unreadable or future timestamp are skipped with a warning.
+
+`--json` fields: `schema_version` (1), `generated_at` (RFC3339), `period`, `totals`, `trend`, `projects` (grouped by full directory), `models` (grouped by backend and model), `active`, `recent`, `warnings`. Each `totals` object has `runs`, `sessions`, `ok`, `error`, `timeout`, `salvaged`, `elapsed_ms`, `elapsed_runs`, `usage` (`input_tokens`, `cached_input_tokens`, `cache_write_input_tokens`, `output_tokens`, or `null`), `usage_runs`, `cost_usd` (or `null`), `cost_runs`, and `excluded_salvage_cost_runs`. Groups sort by run count, then key. `active` lists running, salvaging, and lost workers regardless of the period, with the `offload status` fields plus `stalled` (no event for 60 seconds); it is never added to the totals. `recent` holds up to 20 runs, newest first, with results cut at 4000 characters. A salvaged entry always has `cost_usd` and `usage` set to `null` and keeps `salvaged: true`, because its recorded accounting is not a reliable full-run figure. The stored history is not changed. Arrays are always present, empty when there is nothing to list.
+
+`trend` (added to schema 1 without changing existing fields) is `{interval, label, points}` for charting. Each point is `{start, label, totals}` where `start` is RFC3339 in the local zone, `label` reads like `14:00` or `Oct 29`, and `totals` has the same fields as the overall `totals`. `today` uses hourly points from local midnight through the current hour. `week` (from Monday) and `month` use daily points through today. `all` charts only the last 30 calendar days (label `Last 30 days`) while the overall `totals` still cover the entire history. Hourly points advance by real hours, so on the day clocks go back the repeated hour appears twice with the zone offset added to its label (`01:00 -0400`, `01:00 -0500`); daily points start at local midnight. A point counts the runs that started in its window, with the same per-run usage, cost, salvage, and legacy rules as the overall totals, so run, token and cost sums reconcile with the overall totals except for `all`. A point with no runs has `runs` 0 and `null` usage and cost, and a point whose runs lack usage or cost shows it in `usage_runs` and `cost_runs`. Charts should show missing coverage as a gap, not as zero. `sessions` counts distinct sessions within that point, so a session resumed in several points counts once in each.
+
+To build and open the menu bar monitor on macOS:
+
+```sh
+scripts/build-macos-app.sh
+open "dist/Offload Monitor.app"
+```
+
+The app shows the output of `offload stats --json`. Its compact panel has no scrolling: task, history, project and model lists use pages. Trend bars can be selected for exact values and coverage. Token details, accounting notes and full run reports open in separate windows; long text there scrolls with indicators hidden. The script creates `dist/Offload Monitor.app`; you can copy it to `~/Applications` for daily use. Nothing is published. On its first launch it opens a native dashboard window. Later launches show only the menu bar item, and the menu's **Open Dashboard** action opens the dashboard again. Closing the dashboard leaves the menu bar item running. Launching with `--dashboard` opens the dashboard on any launch, for example `open "dist/Offload Monitor.app" --args --dashboard`. Its update check queries the stable GitHub release every 6 hours. Automatic installation is optional and off by default, and an update is installed only when the release provides a digest to verify. A local build publishes no release.
+
 ### Cost and elapsed time
 
-For Claude, `cost_usd` remains the worker-reported estimate. For Codex, offload estimates only an explicitly selected `gpt-6.1-sol` with explicit `service_tier` `default` or `priority`. The [model reference](https://developers.openai.com/api/docs/models/gpt-6.1-sol), verified 2026-10-26, supplies USD per million tokens: standard input 2, cached input 0.10, 30m cache-write input 2.50, output 10; priority/Fast doubles all four. The formula is `((input-cached-write)*input_rate + cached*cached_rate + write*write_rate + output*output_rate)/1e6`. Input includes cached/write tokens, and reasoning output is already included in output.
+For Claude, final-result `usage` records invocation tokens. `total_cost_usd` is session cumulative: fresh runs use that estimate, while resumed runs use a cost delta only when the previous cumulative snapshot and token delta validate it. Missing or mismatched baselines leave cost unavailable. `cumulative_cost_usd` preserves the session snapshot separately; never sum it across runs.
+
+For Codex, offload estimates only an explicitly selected `gpt-6.1-sol` with explicit `service_tier` `default` or `priority`. The [model reference](https://developers.openai.com/api/docs/models/gpt-6.1-sol), verified 2026-10-26, supplies USD per million tokens: standard input 2, cached input 0.10, 30m cache-write input 2.50, output 10; priority/Fast doubles all four. The formula is `((input-cached-write)*input_rate + cached*cached_rate + write*write_rate + output*output_rate)/1e6`. Input includes cached/write tokens, and reasoning output is already included in output.
 
 Codex values are labeled **API baseline est.**, an API-equivalent short-context/30m cache-write baseline, not actual billing. They exclude long-context (>272k per request), regional and tool surcharges and subscription accounting; actual service delivery may differ. Aggregated run input cannot establish individual request context size, so offload does not infer long-context rates from run totals. Model, tier, rate snapshot, reference source/date, assumptions, usage source/scope and missing reasons are persisted; historical estimates never recompute from current rates.
 
@@ -333,7 +362,7 @@ Before launching Claude, a reachability preflight attempts a TCP connection to t
 ## Known limits
 
 - The worker is headless, so prompts cannot be answered. offload adds no command, file or network allowlist, but the host OS, network and credentials still apply and can fail a step. `permission_denials=N` in the summary line counts steps that the host or Claude Code still refused. If Grep or Glob is not exposed to a Claude worker, it is told to fall back to a simple `rg` or `rtk grep` and `ls`.
-- A Claude worker stopped by `-t`, by 10 minutes of silence, or ending without a result is asked once, with all tools off, for a report from what it already read. The result starts with `[SALVAGED REPORT ...]`, the summary line shows `salvaged=true`, and `-json` has `"salvaged": true`. Its `cost_usd` covers only that step. It is partial and unverified. `-no-salvage` skips the step; if nothing could be salvaged you get the progress and an `offload -r <session>` command. For such runs `turns` counts tool calls.
+- A Claude worker stopped by `-t`, by 10 minutes of silence, or ending without a result is asked once, with all tools off, for a report from what it already read. The result starts with `[SALVAGED REPORT ...]`, the summary line shows `salvaged=true`, and `-json` has `"salvaged": true`. Its recorded `cost_usd` and tokens are incomplete and may contain session totals, so they are not a reliable full-run cost, and `offload stats` leaves them out of totals and the recent list. The report is partial and unverified. `-no-salvage` skips the step; if nothing could be salvaged you get the progress and an `offload -r <session>` command. For such runs `turns` counts tool calls.
 - A worker that prints nothing for 10 minutes (a hung model request) is stopped without waiting for `-t`; the idle limit is fixed. Large tasks are slow (20-40s per turn). Split broad audits instead of raising `-t`; keep `-t` at its default unless the task needs more.
 - Requires network access and writes state outside the project (`~/.claude` or `$CODEX_HOME`, plus the offload history directory). Use host-approved permissions; when offloading is unavailable, report the failure and continue with local tools or native subagents.
 - Some gateways reject Claude Code's `anthropic-beta: claude-code-*` header and cannot be used as workers.
