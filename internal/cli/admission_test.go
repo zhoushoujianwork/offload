@@ -642,11 +642,12 @@ func TestDisabledQueuedRunNeverLaunchesBackend(t *testing.T) {
 func TestGlobalDisablePreventsAutomaticSalvage(t *testing.T) {
 	needUnix(t)
 	work, _ := setup(t, okReply)
+	// Build before isolating HOME so Go does not put read-only module caches in t.TempDir.
+	bin := offloadBin(t)
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("CODEX_HOME", filepath.Join(home, ".codex"))
 	t.Setenv("CLAUDE_CONFIG_DIR", filepath.Join(home, ".claude"))
-	bin := offloadBin(t)
 	gate := filepath.Join(t.TempDir(), "release")
 	mark := filepath.Join(t.TempDir(), "launches")
 	script := `#!/bin/sh
