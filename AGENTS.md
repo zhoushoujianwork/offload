@@ -9,6 +9,13 @@
 - For documentation-only changes, do not manufacture a binary release solely for the documentation; include the change in an already pending release or report the documentation commit and checks.
 - Preserve unrelated work. If the shared checkout has unfinished changes, release from an isolated worktree containing only reviewed, committed changes.
 
+## Shared checkout hygiene
+
+- Keep `/Users/mikas/github/offload` on `main`, fast-forwarded to `origin/main`, with a clean working tree whenever a task ends.
+- Do feature and fix work in a separate worktree or branch. When its PR is merged, return the shared checkout to `main` and update it with `git fetch origin --prune && git merge --ff-only origin/main`.
+- Before switching branches, run `git status`. Commit or stash unfinished changes first, and never discard work that is not committed or pushed.
+- Do not delete branches or worktrees without listing them and getting confirmation.
+
 ## Acceptance and reporting
 
 - Use quiet headless checks and offscreen renders by default. Desktop smoke checks still require the user's explicit scoped request or an agreed testing window; release authorization alone does not authorize arbitrary desktop input.
