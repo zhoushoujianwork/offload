@@ -152,7 +152,40 @@ struct ProfileDraft: Equatable {
 
     var isNew: Bool { original == nil }
 
-    static func new() -> ProfileDraft { ProfileDraft() }
+    /// A new profile starts with Fast off (the standard service tier), never inheriting Fast from the native CLI.
+    static func new() -> ProfileDraft { var d = ProfileDraft(); d.tier = "default"; return d }
+
+    /// The explicit Fast choices. `notSet` is only offered while editing a profile that has no saved tier, so
+    /// the form can show that state honestly instead of guessing On or Off.
+    enum Fast: String, CaseIterable, Identifiable {
+        case off, on, notSet
+        var id: String { rawValue }
+        var title: String {
+            switch self {
+            case .off: return "Off"
+            case .on: return "On"
+            case .notSet: return "Not set"
+            }
+        }
+        var tier: String {
+            switch self {
+            case .off: return "default"
+            case .on: return "priority"
+            case .notSet: return ""
+            }
+        }
+    }
+
+    var fast: Fast {
+        get { tier == "priority" ? .on : tier == "default" ? .off : .notSet }
+        set { tier = newValue.tier }
+    }
+
+    /// Off and On always; Not set only while the saved profile has no tier and the user has not chosen one yet.
+    var fastChoices: [Fast] {
+        let inherited = (original?.serviceTier ?? "").isEmpty && !isNew
+        return inherited ? Fast.allCases : [.off, .on]
+    }
 
     init() {}
 

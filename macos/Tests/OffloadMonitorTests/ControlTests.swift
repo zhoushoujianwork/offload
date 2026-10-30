@@ -207,6 +207,49 @@ final class ProfileDraftTests: XCTestCase {
         XCTAssertNil(j["secret"])
     }
 
+    func codexEntry(tier: String) throws -> ProfileEntry {
+        try ProfilesSnapshot.decode(Data(Fixtures.profiles([Fixtures.profile(name: "cx", backend: "codex", model: "m", effort: "high", tier: tier, auth: "none")]).utf8)).profiles[0]
+    }
+
+    func testFastSwitchNewProfileIsOffAndSerializesExplicitly() throws {
+        var d = ProfileDraft.new()
+        d.name = "cx"; d.backend = "codex"
+        XCTAssertEqual(d.fast, .off, "a new profile never opts into Fast")
+        XCTAssertEqual(d.fastChoices, [.off, .on])
+        XCTAssertEqual(try json(d.request(existingNames: []))["service_tier"] as? String, "default")
+        d.fast = .on
+        XCTAssertEqual(try json(d.request(existingNames: []))["service_tier"] as? String, "priority")
+        XCTAssertEqual(d.fast.title, "On")
+    }
+
+    func testFastSwitchOpeningAnExistingProfileSendsNothing() throws {
+        for tier in ["", "default", "priority"] {
+            let d = ProfileDraft(editing: try codexEntry(tier: tier))
+            XCTAssertNil(try json(d.request(existingNames: ["cx"]))["service_tier"], "tier \(tier) must not be rewritten on open")
+            XCTAssertEqual(d.fast, tier == "priority" ? .on : tier == "default" ? .off : .notSet)
+        }
+        XCTAssertEqual(ProfileDraft(editing: try codexEntry(tier: "")).fastChoices, [.off, .on, .notSet])
+        XCTAssertEqual(ProfileDraft(editing: try codexEntry(tier: "default")).fastChoices, [.off, .on])
+    }
+
+    func testFastSwitchDeliberateChangePersistsExplicitChoice() throws {
+        var d = ProfileDraft(editing: try codexEntry(tier: ""))
+        d.fast = .off
+        var j = try json(d.request(existingNames: ["cx"]))
+        XCTAssertEqual(j["service_tier"] as? String, "default", "Off is explicit, not inherited")
+        XCTAssertNil(j["reasoning_effort"]); XCTAssertNil(j["model"])
+        d.fast = .on
+        j = try json(d.request(existingNames: ["cx"]))
+        XCTAssertEqual(j["service_tier"] as? String, "priority")
+    }
+
+    func testClaudeProfileNeverSendsServiceTier() throws {
+        var d = ProfileDraft(editing: try entry())
+        d.fast = .on
+        d.model = "other"
+        XCTAssertNil(try json(d.request(existingNames: ["work"]))["service_tier"])
+    }
+
     func testSecretNeverAppearsInDescriptions() {
         let r = ProfileSaveRequest(name: "n", create: true, secret: "sk-supersecret")
         XCTAssertFalse("\(r)".contains("supersecret"))
