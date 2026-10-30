@@ -241,7 +241,7 @@ func TestSettingsAddBundlesFromMissingConfig(t *testing.T) {
 		steps   []step
 		backend string
 	}{
-		{"codex", []step{ask(" quick "), choose(0), ask("gpt-test"), choose(1), choose(2), ask("")}, "codex"},
+		{"codex", []step{ask(" quick "), choose(0), ask("gpt-test"), choose(1), choose(1), ask("")}, "codex"},
 		{"command", []step{ask("quick"), choose(1), ask("https://gateway.example"), ask("m"), choose(0), choose(0), ask("never-execute-this-command"), ask("")}, "claude"},
 		{"token", []step{ask("quick"), choose(1), ask("http://localhost:8080"), ask("m"), choose(2), choose(1), ask("secret-value"), ask("")}, "claude"},
 	} {
@@ -603,7 +603,7 @@ func TestSettingsSwitchBundlesPreservesProfiles(t *testing.T) {
 	if code != 0 || errOut != "" {
 		t.Fatalf("%d %s", code, errOut)
 	}
-	want := []string{"deep | codex | same | reasoning: xhigh | Fast", "quick | codex | same | reasoning: low | Standard", "Add profile", "Edit current profile", "Back"}
+	want := []string{"deep | codex | same | reasoning: xhigh | Fast on", "quick | codex | same | reasoning: low | Fast off", "Add profile", "Edit current profile", "Back"}
 	if !slices.Equal(f.calls[1].choices, want) || f.calls[1].cursor != 1 {
 		t.Fatal(f.calls[1])
 	}
@@ -624,7 +624,7 @@ func TestSettingsEditPreservesAdvancedReasoning(t *testing.T) {
 		t.Run(effort, func(t *testing.T) {
 			settingsEnv(t)
 			writeSettingsConfig(t, `{"default":"a","profiles":{"a":{"backend":"codex","model":"m","reasoning_effort":"`+effort+`","service_tier":"priority"}}}`)
-			f := &fakePrompt{steps: []step{choose(0), choose(2), ask("m"), choose(5), choose(2), ask(""), choose(2)}}
+			f := &fakePrompt{steps: []step{choose(0), choose(2), ask("m"), choose(5), choose(1), ask(""), choose(2)}}
 			code, _, errOut := runSettingsTest(f)
 			if code != 0 || errOut != "" {
 				t.Fatalf("%d %s", code, errOut)
@@ -674,5 +674,149 @@ func TestSettingsAliasesAddRemoveAndReject(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// fastCall returns the recorded Fast prompt from a fake prompt session.
+func fastCall(t *testing.T, f *fakePrompt) recordedCall {
+	t.Helper()
+	for _, c := range f.calls {
+		if strings.HasPrefix(c.label, "Fast") {
+			return c
+		}
+	}
+	t.Fatal("no Fast prompt was shown", f.calls)
+	return recordedCall{}
+}
+
+func TestSettingsFastSwitchSerializesOnAndOff(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		choice int
+		want   string
+	}{{"off", 0, "default"}, {"on", 1, "priority"}} {
+		t.Run(tc.name, func(t *testing.T) {
+			settingsEnv(t)
+			f := &fakePrompt{steps: []step{choose(0), ask("quick"), choose(0), ask("m"), choose(0), choose(tc.choice), ask(""), choose(2)}}
+			code, _, errOut := runSettingsTest(f)
+			if code != 0 || errOut != "" {
+				t.Fatalf("%d %s", code, errOut)
+			}
+			call := fastCall(t, f)
+			if !slices.Equal(call.choices, []string{"Off (standard service)", "On (Fast service)"}) || call.cursor != 0 {
+				t.Fatalf("a new profile must offer exactly Off/On and default to Off: %+v", call)
+			}
+			if !strings.Contains(call.label, "does not guarantee a shorter task time") || strings.Contains(call.label, "service_tier") {
+				t.Fatal(call.label)
+			}
+			cfg, err := config.Load(config.Path())
+			if err != nil || cfg.Profiles["quick"].ServiceTier != tc.want {
+				t.Fatalf("%v %+v", err, cfg.Profiles["quick"])
+			}
+			raw, _ := os.ReadFile(config.Path())
+			if !strings.Contains(string(raw), `"service_tier": "`+tc.want+`"`) && !strings.Contains(string(raw), `"service_tier":"`+tc.want+`"`) {
+				t.Fatalf("service tier is not serialized explicitly: %s", raw)
+			}
+		})
+	}
+}
+
+func TestSettingsFastNewProfileDefaultIsOff(t *testing.T) {
+	settingsEnv(t)
+	// Accepting every default (choice 0) must never opt a new profile into Fast.
+	f := &fakePrompt{steps: []step{choose(0), ask("quick"), choose(0), ask(""), choose(0), choose(0), ask(""), choose(2)}}
+	if code, _, errOut := runSettingsTest(f); code != 0 || errOut != "" {
+		t.Fatalf("%d %s", code, errOut)
+	}
+	cfg, err := config.Load(config.Path())
+	if err != nil || cfg.Profiles["quick"].ServiceTier != "default" {
+		t.Fatalf("%v %+v", err, cfg.Profiles["quick"])
+	}
+}
+
+func TestSettingsFastExistingValuesAreShownHonestly(t *testing.T) {
+	for _, tc := range []struct {
+		name, tier  string
+		wantChoices []string
+		wantCursor  int
+		confirmed   int
+		wantTier    string
+	}{
+		{"priority", "priority", []string{"Off (standard service)", "On (Fast service)"}, 1, 1, "priority"},
+		{"default", "default", []string{"Off (standard service)", "On (Fast service)"}, 0, 0, "default"},
+		{"inherited", "", []string{"Off (standard service)", "On (Fast service)", "Not set (follows the native Codex configuration)"}, 2, 2, ""},
+		{"inherited switched on", "", []string{"Off (standard service)", "On (Fast service)", "Not set (follows the native Codex configuration)"}, 2, 1, "priority"},
+		{"inherited switched off", "", []string{"Off (standard service)", "On (Fast service)", "Not set (follows the native Codex configuration)"}, 2, 0, "default"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			settingsEnv(t)
+			tier := ""
+			if tc.tier != "" {
+				tier = `,"service_tier":"` + tc.tier + `"`
+			}
+			writeSettingsConfig(t, `{"default":"a","profiles":{"a":{"backend":"codex","model":"m","reasoning_effort":"high"`+tier+`,"extra":1}},"future":true}`)
+			f := &fakePrompt{steps: []step{choose(0), choose(2), ask("m"), choose(3), choose(tc.confirmed), ask(""), choose(2)}}
+			if code, _, errOut := runSettingsTest(f); code != 0 || errOut != "" {
+				t.Fatalf("%d %s", code, errOut)
+			}
+			call := fastCall(t, f)
+			if !slices.Equal(call.choices, tc.wantChoices) || call.cursor != tc.wantCursor {
+				t.Fatalf("%+v", call)
+			}
+			cfg, err := config.Load(config.Path())
+			if err != nil {
+				t.Fatal(err)
+			}
+			p := cfg.Profiles["a"]
+			if p.ServiceTier != tc.wantTier || p.Model != "m" || p.ReasoningEffort != "high" {
+				t.Fatalf("%+v", p)
+			}
+			raw, _ := os.ReadFile(config.Path())
+			if !strings.Contains(string(raw), `"extra"`) || !strings.Contains(string(raw), `"future"`) {
+				t.Fatalf("unrelated fields were lost: %s", raw)
+			}
+		})
+	}
+}
+
+func TestSettingsFastOpenAndCancelDoNotRewriteProfiles(t *testing.T) {
+	for _, tier := range []string{"", "default", "priority"} {
+		t.Run("tier="+tier, func(t *testing.T) {
+			settingsEnv(t)
+			value := ""
+			if tier != "" {
+				value = `,"service_tier":"` + tier + `"`
+			}
+			original := `{"default":"a","profiles":{"a":{"backend":"codex","model":"m"` + value + `}}}`
+			writeSettingsConfig(t, original)
+			// Cancel (EOF) at the Fast prompt itself.
+			f := &fakePrompt{steps: []step{choose(0), choose(2), ask("m"), choose(0), failStep(io.EOF), choose(2)}}
+			if code, _, errOut := runSettingsTest(f); code != 0 || errOut != "" {
+				t.Fatalf("%d %s", code, errOut)
+			}
+			fastCall(t, f)
+			if b, _ := os.ReadFile(config.Path()); string(b) != original {
+				t.Fatalf("opening and cancelling changed the config: %s", b)
+			}
+		})
+	}
+}
+
+func TestSettingsClaudeProfileHasNoFastControl(t *testing.T) {
+	settingsEnv(t)
+	original := `{"default":"a","profiles":{"a":{"backend":"claude","base_url":"https://x","model":"m","token":"old"}}}`
+	writeSettingsConfig(t, original)
+	f := &fakePrompt{steps: []step{choose(0), choose(2), ask("https://x"), ask("m"), choose(0), choose(0), ask(""), choose(2)}}
+	if code, _, errOut := runSettingsTest(f); code != 0 || errOut != "" {
+		t.Fatalf("%d %s", code, errOut)
+	}
+	for _, c := range f.calls {
+		if strings.Contains(c.label, "Fast") || strings.Contains(strings.Join(c.choices, "|"), "Fast service") {
+			t.Fatalf("Claude profile offered a Fast control: %+v", c)
+		}
+	}
+	cfg, err := config.Load(config.Path())
+	if err != nil || cfg.Profiles["a"].ServiceTier != "" {
+		t.Fatalf("%v %+v", err, cfg.Profiles["a"])
 	}
 }

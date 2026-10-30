@@ -204,12 +204,19 @@ struct ProfilesSettingsView: View {
             .labelsHidden().frame(width: 200)
         }
         GridRow {
-            label("Service tier")
-            Picker("Service tier", selection: $draft.tier) {
-                Text("inherit").tag("")
-                ForEach(ProfileDraft.tiers.dropFirst(), id: \.self) { Text($0).tag($0) }
+            label("Fast")
+            VStack(alignment: .leading, spacing: 3) {
+                Picker("Fast", selection: $draft.fast) {
+                    ForEach(draft.fastChoices) { Text($0.title).tag($0) }
+                }
+                .pickerStyle(.segmented).labelsHidden().frame(width: 200)
+                .accessibilityLabel("Fast")
+                .accessibilityValue(draft.fast.title)
+                Text(draft.fast == .notSet
+                     ? "Not set: follows your native Codex configuration. Choose Off or On to set it for this profile."
+                     : "Fast changes the execution service tier. It does not guarantee a shorter task time.")
+                    .font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(2).fixedSize(horizontal: false, vertical: true)
             }
-            .labelsHidden().frame(width: 200)
         }
     }
 
