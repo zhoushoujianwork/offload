@@ -1,0 +1,129 @@
+package history
+
+import (
+	"fmt"
+	"testing"
+	"time"
+)
+
+func rec(ts string) Record { return Record{TS: ts, Status: "ok"} }
+
+func TestCountDailyCallsSevenCompleteDaysWithZeros(t *testing.T) {
+	now := time.Date(2026, 10, 29, 12, 0, 0, 0, time.UTC)
+	rs := []Record{rec("2026-10-20 00:00:00"), rec("2026-10-22 08:00:00"), rec("2026-10-22 09:00:00"), rec("2026-10-28 23:59:59"),
+		rec("2026-10-29 01:00:00"), rec("2026-10-29 11:00:00")}
+	w := CountDailyCalls(rs, now, 7)
+	want := []int{2, 0, 0, 0, 0, 0, 1} // Oct 22..28
+	if len(w.Days) != 7 || w.Days[0].Start.Day() != 22 || w.Days[6].Start.Day() != 28 {
+		t.Fatalf("window %+v", w.Days)
+	}
+	for i, d := range w.Days {
+		if d.Calls != want[i] || !d.Covered {
+			t.Errorf("day %d = %+v, want %d covered", i, d, want[i])
+		}
+	}
+	if w.Today.Calls != 2 || w.Today.Start.Day() != 29 {
+		t.Errorf("today %+v", w.Today)
+	}
+}
+
+func TestCountDailyCallsPartialCoverageAndEmpty(t *testing.T) {
+	now := time.Date(2026, 10, 29, 12, 0, 0, 0, time.UTC)
+	w := CountDailyCalls([]Record{rec("2026-10-26 10:00:00")}, now, 7)
+	covered := 0
+	for _, d := range w.Days {
+		if d.Covered {
+			covered++
+		}
+	}
+	if covered != 3 || w.Days[2].Covered || !w.Days[4].Covered { // Oct 26,27,28 covered
+		t.Fatalf("covered %d: %+v", covered, w.Days)
+	}
+	e := CountDailyCalls(nil, now, 7)
+	for _, d := range e.Days {
+		if d.Covered {
+			t.Fatalf("empty log vouches for nothing: %+v", d)
+		}
+	}
+	if !e.Today.Covered || e.Today.Calls != 0 {
+		t.Fatalf("today of an empty log is a real zero: %+v", e.Today)
+	}
+}
+
+func TestCountDailyCallsSkipsUnreadableAndFuture(t *testing.T) {
+	now := time.Date(2026, 10, 29, 12, 0, 0, 0, time.UTC)
+	w := CountDailyCalls([]Record{rec("garbage"), rec("2026-10-30 00:00:00"), rec("2026-10-29 10:00:00")}, now, 7)
+	if w.Skipped != 2 || w.Today.Calls != 1 {
+		t.Fatalf("%+v", w)
+	}
+}
+
+func TestCountDailyCallsDSTDays(t *testing.T) {
+	loc, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		t.Skip("no tzdata")
+	}
+	now := time.Date(2026, 11, 3, 12, 0, 0, 0, loc)
+	rs := []Record{rec("2026-11-01 00:00:00"), rec("2026-11-01 23:59:59"), rec("2026-11-02 00:00:00"), rec("2026-03-08 12:00:00")}
+	w := CountDailyCalls(rs, now, 7)
+	// Window is Oct 27..Nov 2; Nov 1 is 25 hours long but is one calendar day.
+	if w.Days[0].Start.Format("2006-01-02") != "2026-10-27" || w.Days[5].Calls != 2 || w.Days[6].Calls != 1 {
+		t.Fatalf("%+v", w.Days)
+	}
+	// The spring-forward day is also a single calendar day.
+	spring := time.Date(2026, 3, 9, 12, 0, 0, 0, loc)
+	w = CountDailyCalls([]Record{rec("2026-03-08 00:00:00"), rec("2026-03-08 23:59:59")}, spring, 7)
+	if w.Days[6].Calls != 2 {
+		t.Fatalf("%+v", w.Days)
+	}
+}
+
+func TestUncoveredByIgnoresNeverAdmittedRuns(t *testing.T) {
+	exec := int64(5)
+	rs := []Record{
+		{TS: "2026-10-20 10:00:00", RunID: "seen", ExecMs: &exec},
+		{TS: "2026-10-20 10:00:01", RunID: "old", ExecMs: &exec},
+		{TS: "2026-10-20 10:00:02"},                           // setup failure: not admitted
+		{TS: "2026-10-20 10:00:03", RunID: "", ExecMs: &exec}, // admitted legacy run without id
+	}
+	log := ProcessingLog{Seen: map[string]bool{"seen": true}}
+	if n := UncoveredBy(rs, t0, t0.Add(24*time.Hour), log); n != 2 {
+		t.Fatalf("uncovered %d", n)
+	}
+}
+
+// 70,000 records (10,000 a day for a week) and 100 simultaneous spans aggregate in one pass each.
+func TestSyntheticWeekAggregationIsBounded(t *testing.T) {
+	now := time.Date(2026, 10, 29, 12, 0, 0, 0, time.UTC)
+	var rs []Record
+	for d := 7; d >= 1; d-- {
+		day := time.Date(2026, 10, 29-d, 0, 0, 0, 0, time.UTC)
+		for i := 0; i < 10000; i++ {
+			rs = append(rs, Record{TS: day.Add(time.Duration(i) * 8 * time.Second).Format("2006-01-02 15:04:05"), RunID: fmt.Sprint(d, "-", i)})
+		}
+	}
+	start := time.Now()
+	w := CountDailyCalls(rs, now, 7)
+	took := time.Since(start)
+	for _, d := range w.Days {
+		if d.Calls != 10000 {
+			t.Fatalf("%+v", d)
+		}
+	}
+	log := ProcessingLog{HasEvents: true, Since: now.AddDate(0, 0, -8), Open: map[string]time.Time{}}
+	for i := 0; i < 100; i++ {
+		log.Open[fmt.Sprint("w", i)] = now.Add(-time.Hour)
+	}
+	alive := map[string]bool{}
+	for id := range log.Open {
+		alive[id] = true
+	}
+	p := log.PeakInDay(log.Resolve(now, alive), now.Add(-12*time.Hour), now.Add(time.Nanosecond))
+	if val(p) != 100 {
+		t.Fatalf("%+v", p)
+	}
+	if took > 2*time.Second {
+		t.Errorf("counting 70,000 records took %v", took)
+	}
+	t.Logf("CountDailyCalls over %d records: %v", len(rs), took)
+}

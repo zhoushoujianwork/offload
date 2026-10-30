@@ -23,6 +23,13 @@ final class StatsDecodeTests: XCTestCase {
      "projects":[],"models":[],"active":[],"recent":[],"warnings":[]}
     """
 
+    /// `full` with the additive workload and daily sections appended.
+    static func fullData(workload: String, daily: String) -> Data {
+        var s = full
+        s.removeLast()
+        return Data((s + ",\"workload\":\(workload),\"daily\":\(daily)}").utf8)
+    }
+
     func testDecodesFullDocument() throws {
         let s = try StatsDecoder.decode(Data(Self.full.utf8))
         XCTAssertEqual(s.period, "today")

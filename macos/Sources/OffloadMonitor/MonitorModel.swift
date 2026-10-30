@@ -103,5 +103,5 @@ final class MonitorModel: ObservableObject {
         guard let s = snapshot else { return false }
         return s.stalledCount > 0 || s.lostCount > 0
     }
-    var runningCount: Int? { snapshot?.runningCount }
+    var runningCount: Int? { snapshot?.processingCount }
 }

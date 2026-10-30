@@ -134,7 +134,8 @@ struct StatusPill: View {
     private var fullText: String {
         if model.hasProblem { return model.lastError ?? "Problem reading stats" }
         guard let s = model.snapshot else { return "Loading" }
-        var t = "\(s.runningCount) running"
+        var t = s.processingCount.map { "\($0) processing" } ?? "processing unavailable"
+        if let q = s.workload?.queued, q > 0 { t += ", \(q) queued" }
         if s.stalledCount > 0 { t += ", \(s.stalledCount) stalled" }
         if s.lostCount > 0 { t += ", \(s.lostCount) lost" }
         return t
@@ -143,10 +144,11 @@ struct StatusPill: View {
     private var state: (String, Color) {
         if model.hasProblem { return (model.snapshot == nil ? "Offline" : "Stale", .orange) }
         guard let s = model.snapshot else { return ("Loading", .secondary) }
+        guard let n = s.processingCount else { return ("Live n/a", .orange) }
         if s.stalledCount > 0 || s.lostCount > 0 {
-            return ("\(s.runningCount) running ⚠", .orange)
+            return ("\(n) running ⚠", .orange)
         }
-        return (s.runningCount == 0 ? "Idle" : "\(s.runningCount) running", s.runningCount == 0 ? .secondary : .omTeal)
+        return (n == 0 ? "Idle" : "\(n) running", n == 0 ? .secondary : .omTeal)
     }
 }
 
@@ -381,7 +383,8 @@ struct SnapshotView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            MetricGrid(totals: snapshot.totals)
+            WorkloadPanel(snapshot: snapshot)
+            SummaryStrip(totals: snapshot.totals)
             TrendCard(trend: snapshot.trend)
             Picker("Detail", selection: $tab) {
                 ForEach(DetailTab.allCases) { t in
@@ -498,7 +501,7 @@ struct TrendCard: View {
                 }
                 if let message = TrendData.emptyMessage(trend, metric: metric) {
                     Text(message).font(.system(size: 10)).foregroundStyle(.secondary)
-                        .frame(maxWidth: .infinity, minHeight: 90, maxHeight: 90)
+                        .frame(maxWidth: .infinity, minHeight: 44, maxHeight: 44)
                 } else {
                     chart
                 }
@@ -551,7 +554,7 @@ struct TrendCard: View {
                     })
             }
         }
-        .frame(height: 90)
+        .frame(height: 44)
     }
 
     @ViewBuilder private var detail: some View {

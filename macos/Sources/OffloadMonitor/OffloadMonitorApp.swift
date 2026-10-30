@@ -34,7 +34,8 @@ struct MenuBarLabel: View {
     private var helpText: String {
         if model.hasProblem { return "Offload Monitor: \(model.lastError ?? "problem")" }
         guard let s = model.snapshot else { return "Offload Monitor: loading" }
-        var t = "\(s.runningCount) running"
+        var t = s.processingCount.map { "\($0) processing" } ?? "processing unavailable"
+        if let q = s.workload?.queued, q > 0 { t += ", \(q) queued" }
         if s.stalledCount > 0 { t += ", \(s.stalledCount) stalled" }
         if s.lostCount > 0 { t += ", \(s.lostCount) lost" }
         return t

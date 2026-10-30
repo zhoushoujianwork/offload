@@ -604,7 +604,7 @@ final class ControlsLayoutTests: XCTestCase {
         let a = fit.fitHeight(MonitorModel(testingSnapshot: snap), fit.updates(), profiles: withProfile)
         let b = fit.fitHeight(MonitorModel(testingSnapshot: snap), fit.updates(), profiles: ProfilesModel(testingSnapshot: nil))
         XCTAssertEqual(a, b, accuracy: 1)
-        XCTAssertLessThanOrEqual(a, 633 + 6, "previous populated height was 633")
+        XCTAssertLessThanOrEqual(a, ChatLayoutTests.populatedBaseline + 6, "populated height baseline is \(ChatLayoutTests.populatedBaseline)")
     }
 
     func testSettingsWindowFitsItsFixedSize() throws {

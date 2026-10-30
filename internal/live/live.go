@@ -34,6 +34,7 @@ var (
 
 type State struct {
 	PID         int       `json:"pid"`
+	RunID       string    `json:"run_id,omitempty"` // the invocation's run_id, as in the run log and processing log
 	Phase       string    `json:"phase"`
 	Status      string    `json:"status,omitempty"` // set once Done: ok | error | timeout
 	ExitCode    int       `json:"exit_code,omitempty"`
@@ -60,6 +61,10 @@ type State struct {
 	// this state is no longer being refreshed or the run is over.
 	Unresolved bool `json:"-"`
 }
+
+// Processing reports whether the invocation currently occupies a worker: running, or salvaging
+// inside that same invocation. Queued, cleaning, lost, unresolved and finished states do not.
+func (s State) Processing() bool { return s.Phase == Running || s.Phase == Salvaging }
 
 // Active reports whether the worker is still doing something.
 func (s State) Active() bool {
@@ -98,14 +103,20 @@ func Publish(s State) error {
 // List returns the known workers oldest first. Expired files are deleted, and an active state
 // that stopped being refreshed is reported as Lost.
 func List() ([]State, error) {
+	out, _, err := ListChecked()
+	return out, err
+}
+
+// ListChecked is List that also reports how many state files could not be read or parsed. Such a
+// file may have been a worker, so a caller counting workers must treat its result as a lower bound.
+func ListChecked() (out []State, unreadable int, err error) {
 	entries, err := os.ReadDir(Dir())
 	if os.IsNotExist(err) {
-		return nil, nil
+		return nil, 0, nil
 	}
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
-	var out []State
 	for _, e := range entries {
 		if !strings.HasSuffix(e.Name(), ".json") {
 			continue
@@ -113,10 +124,14 @@ func List() ([]State, error) {
 		path := filepath.Join(Dir(), e.Name())
 		b, err := os.ReadFile(path)
 		if err != nil {
+			if !os.IsNotExist(err) { // a file that vanished between listing and reading was just expired
+				unreadable++
+			}
 			continue
 		}
 		var s State
 		if json.Unmarshal(b, &s) != nil {
+			unreadable++
 			continue
 		}
 		age := time.Since(s.UpdatedAt)
@@ -139,5 +154,5 @@ func List() ([]State, error) {
 		out = append(out, s)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].StartedAt.Before(out[j].StartedAt) })
-	return out, nil
+	return out, unreadable, nil
 }

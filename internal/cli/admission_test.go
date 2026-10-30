@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/zhoushoujianwork/offload/internal/config"
+	"github.com/zhoushoujianwork/offload/internal/history"
 	"github.com/zhoushoujianwork/offload/internal/live"
 	"github.com/zhoushoujianwork/offload/internal/proc"
 )
@@ -129,6 +130,15 @@ func TestConcurrentInvocationsNeverExceedLimit(t *testing.T) {
 	if n := len(strings.Fields(string(b))) / 2; n != 5 {
 		t.Fatalf("expected 5 backend starts, got %d", n)
 	}
+	// The durable processing log, written by the five real processes, bounds the peak by the limit.
+	plog, err := history.ReadProcessing(history.ProcessingPath(), time.Time{})
+	if err != nil || len(plog.Open) != 0 || plog.Unmatched != 0 || plog.Corrupt != 0 || len(plog.Closed) != 5 {
+		t.Fatalf("processing log: closed=%d open=%d unmatched=%d corrupt=%d err=%v", len(plog.Closed), len(plog.Open), plog.Unmatched, plog.Corrupt, err)
+	}
+	dayStart := time.Now().AddDate(0, 0, -1)
+	if pk := plog.PeakInDay(plog.Resolve(time.Now(), nil), dayStart, time.Now().Add(time.Hour)); pk.Value == nil || *pk.Value != 2 {
+		t.Errorf("peak processing should equal the limit of 2: %+v", pk)
+	}
 	waited := 0
 	for _, r := range runs {
 		if strings.Contains(r.err.String(), "wait=") && !strings.Contains(r.err.String(), "wait=0.0") {
@@ -221,6 +231,14 @@ func testCancelledQueuedRun(t *testing.T, bin string, delayed bool) {
 		t.Fatal("a cancelled queued run started a backend")
 	} else if !os.IsNotExist(err) {
 		t.Fatal(err)
+	}
+	// Cancelled while queued: it never occupied a worker, so the processing log has no span for it.
+	rec := decodeRun(t, queued.out.String())
+	if rec.RunID == "" {
+		t.Fatal("cancelled run has no run_id")
+	}
+	if plog, err := history.ReadProcessing(history.ProcessingPath(), time.Time{}); err != nil || plog.Seen[rec.RunID] || plog.Open[rec.RunID] != (time.Time{}) {
+		t.Fatalf("cancelled queued run %s recorded processing: %+v %v", rec.RunID, plog, err)
 	}
 }
 

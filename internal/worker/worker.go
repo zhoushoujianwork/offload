@@ -753,14 +753,34 @@ const publishEvery = 2 * time.Second
 
 // publisher keeps this process's live state current. It is advisory; failures are ignored.
 type publisher struct {
-	mu sync.Mutex
-	st live.State
+	mu         sync.Mutex
+	st         live.State
+	runID      string
+	processing bool // a processing span is open in the processing log
+}
+
+// track keeps the durable processing log in step with the phase being published, so the daily
+// peak can be rebuilt after live files are gone. Only running and salvaging occupy a worker;
+// queue wait, cleanup and the finished states close the span. Failures are ignored: the log is
+// advisory, and a missing end event is read back as an incomplete span. Callers hold p.mu.
+func (p *publisher) track(phase string) {
+	on := phase == live.Running || phase == live.Salvaging
+	if on == p.processing || p.runID == "" {
+		return
+	}
+	event := history.ProcessingEnd
+	if on {
+		event = history.ProcessingStart
+	}
+	if history.AppendProcessing(history.ProcessingPath(), p.runID, os.Getpid(), event, time.Now()) == nil {
+		p.processing = on
+	}
 }
 
 func newPublisher(o Opts, started time.Time) *publisher {
 	// Queued first: the run holds no slot and has started no backend. A resumed run is already in
 	// its session, so activeSessionRun can refuse an overlapping follow-up from the start.
-	p := &publisher{st: live.State{PID: os.Getpid(), Phase: live.Queued, Dir: o.Dir, Session: o.Resume,
+	p := &publisher{runID: o.RunID, st: live.State{PID: os.Getpid(), RunID: o.RunID, Phase: live.Queued, Dir: o.Dir, Session: o.Resume,
 		Task: text.Truncate(text.OneLine(o.Task), 200), Profile: o.ProfileName, Model: o.Model,
 		StartedAt: started, LastEventAt: started, Limits: limitsSummary(o)}}
 	live.Publish(p.st)
@@ -786,6 +806,7 @@ func (p *publisher) waiting(w slots.Wait) {
 func (p *publisher) admitted(slot int, waited time.Duration) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	p.track(live.Running)
 	p.st.Phase, p.st.WaitReason, p.st.WaitMs, p.st.LastEventAt = live.Running, "", waited.Milliseconds(), time.Now()
 	if slot >= 0 {
 		p.st.Slot = &slot
@@ -824,6 +845,10 @@ func (p *publisher) keepAlive(_ streamSummary, _ time.Time) {
 func (p *publisher) phase(phase string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if phase == live.Running && p.st.Phase == live.Cleaning {
+		return // the worker is already gone; finishing the record is not processing
+	}
+	p.track(phase)
 	p.st.Phase = phase
 	live.Publish(p.st)
 }
@@ -833,6 +858,7 @@ func (p *publisher) phase(phase string) {
 func (p *publisher) finish(rec history.Record, leftover *proc.Group) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	p.track(live.Done)
 	p.st.Phase, p.st.Status, p.st.ToolCalls, p.st.Denials = live.Done, rec.Status, rec.Turns, rec.Denials
 	p.st.WaitReason = ""
 	if leftover != nil {

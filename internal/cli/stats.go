@@ -36,6 +36,12 @@ type statsOutput struct {
 	Active        []statsActive        `json:"active"`
 	Recent        []history.RecentRun  `json:"recent"`
 	Warnings      []string             `json:"warnings"`
+	// Additive fields. Workload counts the invocations now processing; Active below also lists
+	// queued and cleaning ones, so len(active) is not a processing count. Daily comes from the
+	// run log and the processing log and does not depend on Period.
+	Workload statsWorkload `json:"workload"`
+	Goals    statsGoals    `json:"goals"`
+	Daily    statsDaily    `json:"daily"`
 }
 
 const statsUsage = "usage: offload stats [--json] [--period today|week|month|all]"
@@ -67,31 +73,49 @@ func runStats(args []string, now time.Time, stdout, stderr io.Writer) int {
 	if err != nil {
 		return fail(stderr, err)
 	}
-	active, lerr := activeWorkers(now)
+	states, unreadable, lerr := live.ListChecked()
+	active := activeWorkers(states, now)
 	if lerr != nil {
 		st.Warnings = append(st.Warnings, "active workers unavailable: "+text.OneLine(lerr.Error()))
 	}
+	workload := classifyWorkload(states, unreadable, lerr, now)
+	workload.applyAdmission()
+	if unreadable > 0 && lerr == nil {
+		st.Warnings = append(st.Warnings, fmt.Sprintf("%d live state file(s) could not be read; worker counts are lower bounds", unreadable))
+	}
+	alive := map[string]bool{}
+	for _, s := range states {
+		if s.RunID != "" && s.Active() && s.Phase != live.Lost {
+			alive[s.RunID] = true
+		}
+	}
+	days := history.CountDailyCalls(nil, now, averageDays)
+	plog, perr := history.ReadProcessing(history.ProcessingPath(), days.Days[0].Start)
+	dailyStats := buildDaily(rs, plog, perr, alive, now)
+	if perr != nil {
+		st.Warnings = append(st.Warnings, "processing log unreadable; peak concurrency unavailable: "+text.OneLine(perr.Error()))
+	}
+	goals := statsGoals{Processing: goalProcessing, DailyCalls: goalDailyCalls,
+		Note: "observability targets for one person on one computer; not execution limits, a load-test result, or proof of sustained throughput"}
 	if *asJSON {
 		out := statsOutput{SchemaVersion: statsSchemaVersion, GeneratedAt: now.Format(time.RFC3339), Period: st.Period,
-			Totals: st.Totals, Trend: st.Trend, Projects: st.Projects, Models: st.Models, Active: active, Recent: st.Recent, Warnings: st.Warnings}
+			Totals: st.Totals, Trend: st.Trend, Projects: st.Projects, Models: st.Models, Active: active, Recent: st.Recent, Warnings: st.Warnings,
+			Workload: workload, Goals: goals, Daily: dailyStats}
 		if err := json.NewEncoder(stdout).Encode(out); err != nil {
 			fmt.Fprintln(stderr, "offload: write JSON stats:", err)
 			return 2
 		}
 		return 0
 	}
-	printStats(stdout, st, active, now)
+	printStats(stdout, st, active, workload, dailyStats, now)
 	return 0
 }
 
-// activeWorkers lists running, salvaging and lost workers regardless of the period. They are
-// never added to the completed-run totals.
-func activeWorkers(now time.Time) ([]statsActive, error) {
+// activeWorkers lists every active state (queued, running, salvaging, cleaning) and lost ones
+// regardless of the period. They are never added to the completed-run totals. The list is not a
+// processing count: queued and cleaning entries are in it; see classifyWorkload.
+func activeWorkers(states []live.State, now time.Time) []statsActive {
 	out := []statsActive{}
-	states, err := live.List()
-	if err != nil {
-		return out, err
-	}
 	for _, s := range states {
 		if !s.Active() && s.Phase != live.Lost {
 			continue
@@ -99,10 +123,10 @@ func activeWorkers(now time.Time) ([]statsActive, error) {
 		out = append(out, statsActive{State: s, Stalled: s.Active() && now.Sub(s.LastEventAt) >= statsStallAfter})
 	}
 	sort.SliceStable(out, func(i, j int) bool { return out[i].StartedAt.Before(out[j].StartedAt) })
-	return out, nil
+	return out
 }
 
-func printStats(w io.Writer, st history.Stats, active []statsActive, now time.Time) {
+func printStats(w io.Writer, st history.Stats, active []statsActive, wl statsWorkload, daily statsDaily, now time.Time) {
 	t := st.Totals
 	fmt.Fprintf(w, "offload stats: %s (%s)\n", st.Period, now.Format("2006-01-02 15:04 MST"))
 	fmt.Fprintf(w, "runs: %d (ok %d, error %d, timeout %d, salvaged %d) | sessions: %d\n", t.Runs, t.OK, t.Error, t.Timeout, t.Salvaged, t.Sessions)
@@ -121,7 +145,8 @@ func printStats(w io.Writer, st history.Stats, active []statsActive, now time.Ti
 	} else {
 		fmt.Fprintf(w, "estimated cost: N/A (cost for 0 of %d runs)\n", t.Runs)
 	}
-	fmt.Fprintf(w, "active: %d\n", len(active))
+	printWorkload(w, wl, daily)
+	fmt.Fprintf(w, "active: %d (entries that are queued, processing or cleaning; not the processing count)\n", len(active))
 	for _, a := range active {
 		stalled := ""
 		if a.Stalled {
