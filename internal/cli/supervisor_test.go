@@ -340,6 +340,10 @@ func TestSupervisorSIGTERM(t *testing.T) {
 			if rec.Status != "error" || rec.ErrorKind != "canceled" || rec.StopReason != "signal" || rec.Salvaged || rec.Session != "s-killed" || rec.ExitCode == nil || *rec.ExitCode != 1 {
 				t.Fatal(rec)
 			}
+			if tm := rec.Termination; tm == nil || tm.Class != "interrupted" || tm.Signal != "SIGTERM" || !tm.SupervisorRequested ||
+				tm.ResumeCommand != `offload -r s-killed "stop exploring and report what you already found"` {
+				t.Fatalf("termination = %+v", tm)
+			}
 			if _, err := os.Stat(record + ".salvage-args"); !os.IsNotExist(err) {
 				t.Fatal("salvage launched")
 			}

@@ -42,6 +42,9 @@ func cmdList(args []string, stdout, stderr io.Writer) int {
 		if r.ExitCode == nil || *r.ExitCode != 0 {
 			status += " (exit=" + exitText(r) + ")"
 		}
+		if class := r.TerminationClass(); class != "" {
+			status += " [" + class + "]"
+		}
 		cost := listCost(r)
 		if r.Usage != nil {
 			cost += " | " + compactUsage(r)

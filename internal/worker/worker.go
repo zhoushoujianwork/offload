@@ -226,8 +226,11 @@ func claudeBin() (string, error) {
 	return exec.LookPath("claude")
 }
 
-// StopGrace is how long a stopped worker's process group gets to exit after SIGTERM before it is
-// killed; KillWait bounds the wait for the kernel after SIGKILL. Variables only so tests can shorten them.
+// StopGrace is the bounded grace period of a stop. When the run is cancelled, times out or offload
+// receives a shutdown signal, the worker's process group gets SIGTERM and this long to write a
+// partial report and flush its output before SIGKILL; everything the worker writes in that time is
+// still read, so offload's own record and event log include it. KillWait bounds the wait for the
+// kernel after SIGKILL. Variables only so tests can shorten them.
 var (
 	StopGrace = 5 * time.Second
 	KillWait  = 3 * time.Second
@@ -351,6 +354,7 @@ func Run(ctx context.Context, o Opts) (rec history.Record, err error) {
 		if ctx.Err() != nil {
 			rec.StopReason = stopReason(context.Cause(ctx))
 			rec.ErrorKind = "canceled"
+			rec.Termination = classifyTermination(attempt{cause: context.Cause(ctx)}, "")
 			return rec, errors.New("cancelled while waiting for a worker slot; no worker was started")
 		}
 		rec.ErrorKind = ErrorKind(err)
@@ -395,6 +399,9 @@ func Run(ctx context.Context, o Opts) (rec history.Record, err error) {
 	}
 	rec.Session, rec.Turns, rec.Denials = s.Session, s.ToolCalls, s.Denials
 	stopped := errors.Is(a.cause, errIdle) || errors.Is(a.cause, context.DeadlineExceeded)
+	if !(s.Result != nil && !s.Result.IsError && a.runErr == nil && a.cause == nil) {
+		rec.Termination = classifyTermination(a, s.Session)
+	}
 	if stopped {
 		rec.Status = "timeout"
 		rec.ErrorKind = "timeout"
@@ -416,14 +423,17 @@ func Run(ctx context.Context, o Opts) (rec history.Record, err error) {
 			if a.runErr != nil {
 				rec.Error += ": " + a.runErr.Error()
 			}
+			if rec.Termination != nil {
+				rec.Error += "; " + describeTermination(rec.Termination)
+			}
 			return rec, nil
 		}
 		rec.Error = "worker ended without a result"
-		if errors.Is(a.cause, context.Canceled) {
-			rec.Error = "interrupted before the worker finished"
-		}
 		if a.runErr != nil {
 			rec.Error += ": " + a.runErr.Error()
+		}
+		if rec.Termination != nil {
+			rec.Error += "; " + describeTermination(rec.Termination)
 		}
 	}
 	if stopped || s.Result == nil {
@@ -479,6 +489,10 @@ func Run(ctx context.Context, o Opts) (rec history.Record, err error) {
 		if res.Subtype != "" && res.Subtype != "success" {
 			rec.Error = res.Subtype + ": " + firstNonEmpty(rec.Error, "worker reported an error")
 		}
+		if rec.Termination != nil {
+			// The worker wrote a final report while it was being stopped; that report stays the result.
+			rec.Error = strings.TrimPrefix(rec.Error+"; "+describeTermination(rec.Termination), "; ") + s.resumeHint()
+		}
 		if rec.Error == "" {
 			if a.runErr != nil {
 				rec.Error = a.runErr.Error()
@@ -505,6 +519,8 @@ type attempt struct {
 	stdout, stderr string
 	// leftover is the worker's process group when processes in it could not be stopped.
 	leftover *proc.Group
+	// forceKilled is true when a requested stop outlasted the grace period and needed SIGKILL.
+	forceKilled bool
 }
 
 // hooks lets the caller record the worker's process group while it is the slot's responsibility.
@@ -610,6 +626,7 @@ func runAttempt(ctx context.Context, bin string, o Opts, promptPath, token strin
 	}
 
 	var runErr error
+	forceKilled := false
 	select {
 	case runErr = <-waited:
 	case <-ctx.Done():
@@ -618,6 +635,7 @@ func runAttempt(ctx context.Context, bin string, o Opts, promptPath, token strin
 		select {
 		case runErr = <-waited:
 		case <-time.After(StopGrace):
+			forceKilled = true
 			group.Kill()
 			select {
 			case runErr = <-waited:
@@ -631,7 +649,7 @@ func runAttempt(ctx context.Context, bin string, o Opts, promptPath, token strin
 	}
 	out.finish()
 	a := attempt{s: out.summary(), cause: cause, runErr: runErr, baseline: baseline, baselineError: baselineError, claudeBase: claudeBase,
-		stdout: out.String(), stderr: workerErr.String()}
+		stdout: out.String(), stderr: workerErr.String(), forceKilled: forceKilled}
 	if !stopGroup(group) {
 		g := group
 		a.leftover = &g

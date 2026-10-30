@@ -25,6 +25,12 @@ func Prepare(*exec.Cmd)           {}
 func Started(cmd *exec.Cmd) Group { return Group{PID: cmd.Process.Pid, p: cmd.Process} }
 func StartToken(int) string       { return "" }
 
+// SignalName names a signal; no conventional names are known on this platform.
+func SignalName(s os.Signal) string { return s.String() }
+
+// ExitSignal reports false: how a process ended by signal is not observable here.
+func ExitSignal(error) (string, bool) { return "", false }
+
 // Exists and Alive report false: descendants cannot be observed here.
 func (g Group) Exists() bool { return false }
 func (g Group) Alive() bool  { return false }

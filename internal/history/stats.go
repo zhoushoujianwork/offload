@@ -30,22 +30,24 @@ const (
 // no covered run recorded them, so missing is distinct from a measured zero. UsageRuns, CostRuns
 // and ElapsedRuns say how many of Runs the sums actually cover.
 type StatsTotals struct {
-	Runs     int `json:"runs"`
-	Sessions int `json:"sessions"`
-	OK       int `json:"ok"`
-	Error    int `json:"error"`
-	Timeout  int `json:"timeout"`
-	Salvaged int `json:"salvaged"`
-	// ToolRestrictionNotEnforced counts runs that asked for a tool restriction on a backend
-	// without support and ran without it. They are also counted in the other totals.
-	ToolRestrictionNotEnforced int         `json:"tool_restriction_not_enforced"`
-	ElapsedMs                  int64       `json:"elapsed_ms"`
-	ElapsedRuns                int         `json:"elapsed_runs"`
-	Usage                      *TokenUsage `json:"usage"`
-	UsageRuns                  int         `json:"usage_runs"`
-	CostUSD                    *float64    `json:"cost_usd"`
-	CostRuns                   int         `json:"cost_runs"`
-	ExcludedSalvageCostRuns    int         `json:"excluded_salvage_cost_runs"`
+	Runs                    int         `json:"runs"`
+	Sessions                int         `json:"sessions"`
+	OK                      int         `json:"ok"`
+	Error                   int         `json:"error"`
+	Timeout                 int         `json:"timeout"`
+	Salvaged                int         `json:"salvaged"`
+	Canceled                int         `json:"canceled"`
+	Interrupted             int         `json:"interrupted"`
+	Killed                  int         `json:"killed"`
+	ElapsedMs               int64       `json:"elapsed_ms"`
+	ElapsedRuns             int         `json:"elapsed_runs"`
+	Usage                   *TokenUsage `json:"usage"`
+	UsageRuns               int         `json:"usage_runs"`
+	CostUSD                 *float64    `json:"cost_usd"`
+	CostRuns                int         `json:"cost_runs"`
+	ExcludedSalvageCostRuns int         `json:"excluded_salvage_cost_runs"`
+	// ToolRestrictionNotEnforced counts runs that explicitly ignored unsupported restrictions.
+	ToolRestrictionNotEnforced int `json:"tool_restriction_not_enforced"`
 }
 
 // StatsGroup is the totals of one project or model.
@@ -69,6 +71,8 @@ type RecentRun struct {
 	Usage    *TokenUsage `json:"usage"`
 	Result   string      `json:"result"`
 	Salvaged bool        `json:"salvaged"`
+	// TerminationClass is canceled, interrupted or killed when the worker ended without a result.
+	TerminationClass string `json:"termination_class,omitempty"`
 	// ToolRestriction is "not_enforced" for a run that ignored its requested tool restriction.
 	ToolRestriction string `json:"tool_restriction,omitempty"`
 }
@@ -173,6 +177,14 @@ func (a *statsAcc) add(r Record, elapsedOK bool) {
 		t.Error++
 	case "timeout":
 		t.Timeout++
+	}
+	switch r.TerminationClass() {
+	case ClassCanceled:
+		t.Canceled++
+	case ClassInterrupted:
+		t.Interrupted++
+	case ClassKilled:
+		t.Killed++
 	}
 	if elapsedOK {
 		t.ElapsedMs += *r.ElapsedMs
@@ -392,7 +404,7 @@ func Aggregate(rs []Record, period string, now time.Time) (Stats, error) {
 		r := in[i].r
 		st.Recent = append(st.Recent, RecentRun{TS: r.TS, Status: r.Status, Dir: r.Dir, Task: r.Task,
 			Session: r.Session, Model: r.Model, CostUSD: runCost(r), Usage: runUsage(r),
-			Result: boundResult(r.Result), Salvaged: r.Salvaged, ToolRestriction: r.ToolRestriction})
+			Result: boundResult(r.Result), Salvaged: r.Salvaged, TerminationClass: r.TerminationClass(), ToolRestriction: r.ToolRestriction})
 	}
 
 	t := st.Totals

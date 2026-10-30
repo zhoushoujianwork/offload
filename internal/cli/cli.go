@@ -324,8 +324,9 @@ func cmdRun(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		o.OnLine = events.progress
 	}
 
-	// SIGTERM is what a supervisor's own cancellation or a timeout wrapper sends; handle it like Ctrl-C
-	// so the worker's process group is stopped instead of orphaned.
+	// SIGTERM is what a host shutdown, service stop or a supervisor's timeout wrapper sends; handle it
+	// like Ctrl-C so the worker's process group is stopped instead of orphaned. The signal is kept in
+	// the cancellation cause: SIGINT is recorded as a requested cancel, SIGTERM as an interruption.
 	ctx, cancel := context.WithCancelCause(context.Background())
 	defer cancel(nil)
 	signals := make(chan os.Signal, 1)
@@ -333,8 +334,8 @@ func cmdRun(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	defer signal.Stop(signals)
 	go func() {
 		select {
-		case <-signals:
-			cancel(worker.ErrSignal)
+		case sig := <-signals:
+			cancel(&worker.SignalError{Signal: sig})
 		case <-ctx.Done():
 		}
 	}()
