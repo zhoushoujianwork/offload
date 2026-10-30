@@ -229,6 +229,35 @@ offload -w -json -d /abs/docs "..."
 - **Profile safety.** A resume uses the session's recorded profile. If it was renamed or deleted, offload stops with recovery steps instead of falling back to the default provider. Restore the profile, or start a new session with `-p` and restate the context.
 - **Interrupted runs.** Inspect with `offload show <session>` and `git diff` first. Partial edits stay in the tree; the follow-up says what to keep or finish.
 
+**Continue a failed task without rebuilding its invocation.** For runs recorded by this version,
+call `offload resume --id <run_id-or-session_id> --json`. This starts one new invocation in the
+same provider session; there is no background recovery loop or in-process retry. With a session
+ID, the latest recorded run supplies the settings. A run ID selects that exact run's settings.
+The continuation asks the worker to verify existing edits, commits, checks and external effects
+before completing the remaining original task.
+
+The saved settings retain write intent, model, profile, working/additional directories, tool
+restrictions, execution policy, sandbox choice, instructions-file path, timeout, idle limit and
+salvage choice. Credentials are resolved from the current profile, never copied to the saved
+settings. An instructions file must still exist and pass the normal checks. Missing profiles,
+changed backends and busy sessions are rejected; directory and account checks remain in force.
+Profile credentials and instruction-file contents are not frozen snapshots.
+
+```bash
+offload resume --id <failed-run-id> --json --caller clawflow \
+  --caller-run-id <new-attempt-id> --events-file /absolute/private/new-attempt.ndjson
+```
+
+Each invocation gets a new `run_id`; `resumed_from` identifies its source run. Supply a new
+caller/correlation and event destination as needed: they are never inherited. Final JSON and
+metadata events use the existing run contract. `history list/show --json` adds
+`resume_available` (supported saved settings and no known active session), and history runs
+include the native `run_id` and `resumed_from`. This indicator does not guarantee provider,
+profile or filesystem availability; admission checks run when resume is requested. Old records
+without saved settings and runs without a provider session cannot use this command; inspect
+them and use `offload -r <session> <explicit flags> "follow-up"` where appropriate. A deliberate
+resume of a completed session is allowed, so supervisors must select failures by their own policy.
+
 **Wait less often.** `offload watch -t 10m` prints events (started, progress, `STALLED`, `LOST`, finished) and returns when all workers end (exit 0) or when the bound passes with workers still active (exit 124, which is not a worker failure). Prefer the host's completion notification for background commands; otherwise use a few long bounded waits within the host's responsiveness limit instead of a status check every few seconds. Waiting is headless and never touches the desktop.
 
 **Don't repeat the worker's work.** The parent keeps requirements, design, tradeoffs, and acceptance; it delegates a coherent slice, inspects targeted evidence or the diff, and runs scoped checks. Workers return a compact report (outcome, changed files or key references, checks, unresolved issues); `offload show` has the full history.
