@@ -44,6 +44,8 @@ type ConversationSummary struct {
 	UsageRuns int         `json:"usage_runs"`
 	CostUSD   *float64    `json:"cost_usd"`
 	CostRuns  int         `json:"cost_runs"`
+
+	ResumeAvailable bool `json:"resume_available"`
 }
 
 // ConversationRun is one stored run with its full task and report. Usage and CostUSD are the run's
@@ -67,6 +69,10 @@ type ConversationRun struct {
 	Salvaged bool        `json:"salvaged"`
 	Elapsed  *int64      `json:"elapsed_ms"`
 	Turns    int         `json:"turns"`
+
+	RunID           string `json:"run_id,omitempty"`
+	ResumedFrom     string `json:"resumed_from,omitempty"`
+	ResumeAvailable bool   `json:"resume_available"`
 }
 
 // Conversation is a summary plus its runs in chronological order.
@@ -215,6 +221,7 @@ func summarize(id string, runs []convRun, activeSessions map[string]bool) Conver
 		r := e.r
 		acc.add(r, r.ElapsedMs != nil && *r.ElapsedMs >= 0)
 		dtos[i] = ConversationRun{ID: runIDPrefix + recordHash(r, e.idx), TS: r.TS, Status: r.Status, ExitCode: r.ExitCode,
+			RunID: r.RunID, ResumedFrom: r.ResumedFrom, ResumeAvailable: r.HasResumeSettings() && !activeSessions[r.Session],
 			Task: r.Task, Result: r.Result, Error: r.Error, Dir: r.Dir, AddDirs: slices.Clone(r.AddDirs), Profile: r.Profile, Backend: r.Backend,
 			Model: r.Model, Session: r.Session, Usage: runUsage(r), CostUSD: runCost(r), Salvaged: r.Salvaged,
 			Elapsed: r.ElapsedMs, Turns: r.Turns}
@@ -223,12 +230,13 @@ func summarize(id string, runs []convRun, activeSessions map[string]bool) Conver
 	first, last := runs[0].r, runs[len(runs)-1].r
 	session := last.Session
 	s := ConversationSummary{ID: id, Session: session, Title: title(first.Task),
-		Dir:       latest(runs, func(r Record) string { return r.Dir }),
-		AddDirs:   slices.Clone(last.AddDirs),
-		Profile:   latest(runs, func(r Record) string { return r.Profile }),
-		Backend:   latest(runs, func(r Record) string { return r.Backend }),
-		Model:     latest(runs, func(r Record) string { return r.Model }),
-		StartedAt: first.TS, UpdatedAt: last.TS, RunCount: len(runs), Status: last.Status,
+		ResumeAvailable: last.HasResumeSettings() && !activeSessions[session],
+		Dir:             latest(runs, func(r Record) string { return r.Dir }),
+		AddDirs:         slices.Clone(last.AddDirs),
+		Profile:         latest(runs, func(r Record) string { return r.Profile }),
+		Backend:         latest(runs, func(r Record) string { return r.Backend }),
+		Model:           latest(runs, func(r Record) string { return r.Model }),
+		StartedAt:       first.TS, UpdatedAt: last.TS, RunCount: len(runs), Status: last.Status,
 		Active: session != "" && activeSessions[session],
 		Usage:  t.Usage, UsageRuns: t.UsageRuns, CostUSD: t.CostUSD, CostRuns: t.CostRuns}
 	return Conversation{Summary: s, Runs: dtos}

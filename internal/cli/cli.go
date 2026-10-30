@@ -38,6 +38,8 @@ usage:
   offload config               open interactive settings (also: offload in a terminal)
   offload ls [n]                list the last n runs (default 10)
   offload show <session>        print every report of a session
+  offload resume --id <id> [--json]
+                                continue a saved run/session in a new invocation
   offload history list|show --json
                                 structured full conversation history for native clients
   offload status                what each worker is doing right now
@@ -68,6 +70,8 @@ func Run(version string, args []string, stdin io.Reader, stdout, stderr io.Write
 	}
 	if len(args) > 0 {
 		switch args[0] {
+		case "resume":
+			return cmdResume(args[1:], stdout, stderr)
 		case "config":
 			return cmdSettings(args[1:], stdin, stdout, stderr)
 		case "ls":
@@ -154,6 +158,10 @@ func (c *callerFlag) Set(v string) error {
 }
 
 func cmdRun(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
+	return cmdRunSaved(args, stdin, stdout, stderr, nil)
+}
+
+func cmdRunSaved(args []string, stdin io.Reader, stdout, stderr io.Writer, parent *history.Record) int {
 	started := time.Now()
 	fs := flag.NewFlagSet("offload", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -309,6 +317,9 @@ func cmdRun(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		}
 		if hit := history.BySession(rs, *resume); len(hit) > 0 {
 			previous := hit[len(hit)-1]
+			if parent != nil {
+				previous = *parent
+			}
 			if previous.Backend == "codex" {
 				prof.CodexAccount = previous.CodexAccount
 				pinnedCodexHome = previous.CodexHome
@@ -395,6 +406,19 @@ func cmdRun(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	profileAlias := rec.ProfileAlias
 	rec, _ = worker.Run(ctx, o)
 	rec.ProfileAlias = profileAlias
+	// Capture effective defaults too, so a later config/version change does not
+	// silently select another model or idle window for the continuation.
+	if rec.Model != "" {
+		o.Model = rec.Model
+	}
+	if effectiveIdle, err := time.ParseDuration(rec.IdleTimeout); err == nil {
+		o.IdleTimeout = &effectiveIdle
+	}
+	rec.ResumeSettings = savedResumeSettings(o)
+	if parent != nil {
+		rec.ResumedFrom = parent.RunID
+		rec.ResumeSettings.Task = parent.ResumeSettings.Task
+	}
 	return finish()
 }
 
