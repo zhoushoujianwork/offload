@@ -48,25 +48,28 @@ struct PopoverView: View {
 
     // MARK: Header
 
+    /// Hierarchy: brand mark, then the work status (primary) with its counts (secondary), then the quiet actions.
     private var header: some View {
         VStack(spacing: 6) {
-            HStack(spacing: 6) {
-                BrandMark(size: 15)
-                Text("Offload").font(.system(size: 13, weight: .semibold)).lineLimit(1).fixedSize()
-                StatusPill(model: model)
+            HStack(spacing: 8) {
+                BrandMark(size: 17)
+                StatusSummary(model: model)
                 Spacer(minLength: 2)
                 ProfileMenu(profiles: profiles)
                 Button { AppState.shared.newChat() } label: { Image(systemName: "plus.bubble") }
                     .buttonStyle(.borderless)
                     .help("New Chat")
+                    .accessibilityLabel("New Chat")
                 if model.isLoading { ProgressView().controlSize(.mini) }
                 Button { model.refreshNow() } label: { Image(systemName: "arrow.clockwise") }
                     .buttonStyle(.borderless)
                     .help("Refresh now")
+                    .accessibilityLabel("Refresh now")
                     .disabled(!model.hasCLI)
                 Button { AppState.shared.showSettings() } label: { Image(systemName: "gearshape") }
                     .buttonStyle(.borderless)
                     .help("Settings")
+                    .accessibilityLabel("Settings")
             }
             Picker("Period", selection: $model.period) {
                 ForEach(StatsPeriod.allCases) { Text($0.label).tag($0) }
@@ -116,39 +119,43 @@ struct PopoverView: View {
 
 // MARK: - Pieces
 
-struct StatusPill: View {
+/// The primary header element: a state symbol and title, with the counts below. The symbol shape differs
+/// per state, so the state does not depend on color. The whole element reads as one accessibility value.
+struct StatusSummary: View {
     @ObservedObject var model: MonitorModel
+    /// Width of the text column. The header row has about this much room next to the actions.
+    static let textWidth: CGFloat = 150
 
     var body: some View {
-        let (text, tint) = state
-        HStack(spacing: 4) {
-            Circle().fill(tint).frame(width: 6, height: 6)
-            Text(text).font(.system(size: 10, weight: .medium)).lineLimit(1).minimumScaleFactor(0.8)
+        // Re-evaluated on every poll result; the clock only matters once a refresh has failed.
+        TimelineView(.periodic(from: .now, by: 5)) { ctx in
+            let status = model.status(at: ctx.date)
+            VStack(alignment: .leading, spacing: 1) {
+                HStack(spacing: 4) {
+                    if let symbol = status.symbol {
+                        Image(systemName: symbol).font(.system(size: 11, weight: .semibold)).foregroundStyle(tint(status))
+                    }
+                    Text(status.title).font(.system(size: 13, weight: .semibold)).lineLimit(1)
+                }
+                Text(status.detail)
+                    .font(.system(size: 10)).foregroundStyle(.secondary)
+                    .lineLimit(1).minimumScaleFactor(0.8)
+            }
+            .frame(width: Self.textWidth, alignment: .leading)
+            .help(status.accessibilityValue)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("Offload status")
+            .accessibilityValue(status.accessibilityValue)
         }
-        .padding(.horizontal, 7).padding(.vertical, 2)
-        .background(tint.opacity(0.14), in: Capsule())
-        .frame(maxWidth: 84)
-        .help(fullText)
     }
 
-    private var fullText: String {
-        if model.hasProblem { return model.lastError ?? "Problem reading stats" }
-        guard let s = model.snapshot else { return "Loading" }
-        var t = s.processingCount.map { "\($0) processing" } ?? "processing unavailable"
-        if let q = s.workload?.queued, q > 0 { t += ", \(q) queued" }
-        if s.stalledCount > 0 { t += ", \(s.stalledCount) stalled" }
-        if s.lostCount > 0 { t += ", \(s.lostCount) lost" }
-        return t
-    }
-
-    private var state: (String, Color) {
-        if model.hasProblem { return (model.snapshot == nil ? "Offline" : "Stale", .orange) }
-        guard let s = model.snapshot else { return ("Loading", .secondary) }
-        guard let n = s.processingCount else { return ("Live n/a", .orange) }
-        if s.stalledCount > 0 || s.lostCount > 0 {
-            return ("\(n) running ⚠", .orange)
+    private func tint(_ s: OffloadStatus) -> Color {
+        switch s.kind {
+        case .attention, .unavailable, .stale: return .orange
+        case .working: return .omTeal
+        case .queued: return .omBlue
+        case .idle, .unknown: return .secondary
         }
-        return (n == 0 ? "Idle" : "\(n) running", n == 0 ? .secondary : .omTeal)
     }
 }
 
@@ -501,7 +508,7 @@ struct TrendCard: View {
                 }
                 if let message = TrendData.emptyMessage(trend, metric: metric) {
                     Text(message).font(.system(size: 10)).foregroundStyle(.secondary)
-                        .frame(maxWidth: .infinity, minHeight: 44, maxHeight: 44)
+                        .frame(maxWidth: .infinity, minHeight: 36, maxHeight: 36)
                 } else {
                     chart
                 }
@@ -554,7 +561,7 @@ struct TrendCard: View {
                     })
             }
         }
-        .frame(height: 44)
+        .frame(height: 36)
     }
 
     @ViewBuilder private var detail: some View {

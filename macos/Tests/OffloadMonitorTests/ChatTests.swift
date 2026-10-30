@@ -1030,7 +1030,7 @@ final class ChatLayoutTests: XCTestCase {
                               fit.updates(.failed(String(repeating: "problem ", count: 40))), profiles: profiles)
         XCTAssertLessThanOrEqual(h, Layout.height, "needs \(h)")
         let plain = fit.fitHeight(MonitorModel(testingSnapshot: try fit.snapshot(active: 0, recent: 0, groups: 0, warnings: 0)), fit.updates())
-        XCTAssertLessThanOrEqual(plain, Self.populatedBaseline + 6, "the header row did not grow")
+        XCTAssertLessThanOrEqual(plain, Self.populatedBaseline + 16, "the header row grew more than the two-line status allows")
     }
 
     func testLongWrappedMessagesCanAlwaysBeExpanded() {
