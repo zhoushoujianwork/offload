@@ -567,6 +567,7 @@ final class ChatModelTests: XCTestCase {
         XCTAssertEqual(m.notice, "tool crashed")
         XCTAssertEqual(m.conversationID, "sess-f", "a failed run with a session can be continued")
         XCTAssertTrue(m.entries.allSatisfy(\.local), "history could not be read, so the local record is kept")
+        XCTAssertFalse(m.hasUnpersistedResponse, "a failed refresh does not undo the CLI's confirmed log append")
     }
 
     func testNotPersistedKeepsResponseAndWarns() async throws {
@@ -577,6 +578,7 @@ final class ChatModelTests: XCTestCase {
         m.send()
         await idle(m)
         XCTAssertTrue(m.notPersisted)
+        XCTAssertTrue(m.hasUnpersistedResponse)
         XCTAssertTrue(m.notice!.contains("not saved to the history log"))
         XCTAssertTrue(m.entries.contains { $0.text == "only in memory" }, "the response is not lost")
     }

@@ -97,6 +97,9 @@ final class ChatModel: ObservableObject, Identifiable {
     private var profileChosen = false
     /// Responses the CLI could not write to the run log. They stay visible after every refresh.
     private var pinned: [ChatEntry] = []
+    /// CLI JSON is emitted after the log append. A missing result or explicit write warning is
+    /// unconfirmed; a failed canonical refresh alone does not make a successfully logged reply unsaved.
+    private(set) var hasUnpersistedResponse = false
     private struct StoppedTurn: Hashable {
         var ts: String
         var task: String
@@ -250,6 +253,7 @@ final class ChatModel: ObservableObject, Identifiable {
         entries = canonical + pinned
         // The latest response that the log does not have yet stays visible.
         if !pending.isEmpty && !localCoveredBy(d.runs.count) { entries += pending }
+        if !entries.contains(where: \.local) { hasUnpersistedResponse = false }
     }
 
     private var expectedRunsAfterSend = 0
@@ -346,6 +350,7 @@ final class ChatModel: ObservableObject, Identifiable {
         }
         // Stay busy until the canonical history has been re-read, so a new send cannot race this finalization.
         phase = .finalizing
+        if o.result == nil || o.notPersisted { hasUnpersistedResponse = true }
 
         let r = o.result
         if o.kind == .stopped, let ts = r?.ts { stoppedTurns.insert(StoppedTurn(ts: ts, task: task)) }

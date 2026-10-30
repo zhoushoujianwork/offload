@@ -119,8 +119,10 @@ struct UpdateService {
         let helper = staged.directory.appendingPathComponent("install-helper")
         let backup = installedApp.deletingLastPathComponent()
             .appendingPathComponent(".\(installedApp.lastPathComponent).backup", isDirectory: true)
+        var copied = false
         do {
             try fm.copyItem(at: exe, to: helper)
+            copied = true
             let p = Process()
             p.executableURL = helper
             p.arguments = [UpdateHelper.flag, String(ProcessInfo.processInfo.processIdentifier), installedApp.path,
@@ -130,6 +132,7 @@ struct UpdateService {
             p.standardError = FileHandle.nullDevice
             try p.run()
         } catch {
+            if copied { try? fm.removeItem(at: helper) }
             throw UpdateError.helperFailed(error.localizedDescription)
         }
     }

@@ -10,6 +10,8 @@ final class ProfilesModel: ObservableObject {
     @Published private(set) var loadError: String?
     @Published private(set) var actionError: String?
     @Published private(set) var busy = false
+    /// View-owned drafts report only their dirty bit, never credential contents.
+    @Published var hasUnsavedEdits = false
 
     private let cli: OffloadCLI?
     private var lastLoad: Date?

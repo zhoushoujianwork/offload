@@ -25,6 +25,22 @@ final class AppState {
         history = HistoryModel(cli: cli)
         motion = MotionController(monitor: model)
         chats = ChatStore(env: ChatEnv(cli: cli, profiles: profiles, monitor: model, history: history))
+        updates.configureLifecycle(blocker: { [weak self] in
+            guard let self else { return "Waiting for the app lifecycle." }
+            return self.restartBlockReason
+        }, refreshCLI: { [weak self] in
+            guard let self else { return }
+            self.model.refreshNow(); self.profiles.refresh(); self.skills.refresh()
+            Task { await self.history.reload() }
+        }, requestTermination: { NSApp.terminate(nil) })
+    }
+
+    var restartBlockReason: String? {
+        RestartSafety.reason(running: chats.hasRunningOwn,
+                             drafts: chats.all.contains { !$0.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty },
+                             unsavedReplies: chats.all.contains { $0.hasUnpersistedResponse },
+                             profileEdits: profiles.hasUnsavedEdits,
+                             settingsBusy: profiles.busy || skills.busy || settingsWindow?.isVisible == true || NSApp.modalWindow != nil)
     }
 
     /// Shows the dashboard window, creating it on first use. Closing it leaves the menu bar app running.
@@ -126,6 +142,9 @@ extension AppState {
 final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Quitting while this app has runs of its own in flight asks first. Runs started elsewhere are never touched.
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        if let approved = MainActor.assumeIsolated({ AppState.shared.updates.approvePendingRestart() }) {
+            return approved ? .terminateNow : .terminateCancel
+        }
         let chats = MainActor.assumeIsolated { AppState.shared.chats }
         guard MainActor.assumeIsolated({ chats.hasRunningOwn }) else { return .terminateNow }
         let alert = NSAlert()
@@ -143,6 +162,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         MainActor.assumeIsolated {
+            AppState.shared.updates.startLocalObservation()
             if LaunchPolicy.shouldShowDashboard(arguments: CommandLine.arguments, prefs: Preferences()) {
                 AppState.shared.showDashboard()
             }
