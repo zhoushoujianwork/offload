@@ -53,6 +53,8 @@ struct MenuBarLabel: View {
                 .frame(width: Metrics.countSlot, alignment: .leading)
         }
         .frame(width: Metrics.totalWidth)
+        // The new-task pulse floats above the row, so it never changes the fixed width.
+        .overlay(alignment: .topTrailing) { NewTaskPulseBadge(pulse: model.pulse, fontSize: 9).offset(y: -2) }
         .help(MenuBarLabel.helpText(status, updateAvailable: updateAvailable))
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Offload")
