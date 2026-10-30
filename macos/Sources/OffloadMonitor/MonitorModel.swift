@@ -51,12 +51,12 @@ final class MonitorModel: ObservableObject {
     }
 
     /// Headless layout tests: shows the given state and never starts polling.
-    init(testingSnapshot: StatsSnapshot?, error: String? = nil, loading: Bool = false) {
+    init(testingSnapshot: StatsSnapshot?, error: String? = nil, loading: Bool = false, lastSuccess: Date? = nil) {
         self.prefs = Preferences(defaults: UserDefaults(suiteName: "om-test-\(UUID().uuidString)")!)
         self.client = nil
         self.period = .today
         self.snapshot = testingSnapshot
-        self.lastSuccess = testingSnapshot == nil ? nil : Date()
+        self.lastSuccess = testingSnapshot == nil ? nil : (lastSuccess ?? Date())
         self.lastError = error
         self.isLoading = loading
     }
