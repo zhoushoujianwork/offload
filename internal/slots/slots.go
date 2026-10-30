@@ -214,6 +214,28 @@ func LockSession(dir, session string) (*SessionLock, int, error) {
 	return &SessionLock{lock: l}, 0, nil
 }
 
+// LockFile claims an exclusive lock on path for the life of the calling process (or until Release),
+// for single-instance services such as the scheduler. busy is true when another process holds it.
+// The holder's pid is written into the file. Without cross-process locking support the claim
+// always succeeds and excludes nobody.
+func LockFile(path string) (lock *SessionLock, busy bool, err error) {
+	if !Supported {
+		return &SessionLock{}, false, nil
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return nil, false, err
+	}
+	l, ok, err := openLock(path)
+	if err != nil {
+		return nil, false, err
+	}
+	if !ok {
+		return nil, true, nil
+	}
+	_ = l.writeAll([]byte(strconv.Itoa(os.Getpid())))
+	return &SessionLock{lock: l}, false, nil
+}
+
 // HolderPID reads the pid recorded by the session's lock holder, or 0 if unknown.
 func HolderPID(dir, session string) int {
 	sum := sha256.Sum256([]byte(session))
