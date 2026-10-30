@@ -404,10 +404,17 @@ func cmdRunSaved(args []string, stdin io.Reader, stdout, stderr io.Writer, paren
 		}
 	}()
 	profileAlias := rec.ProfileAlias
-	settings := savedResumeSettings(o)
 	rec, _ = worker.Run(ctx, o)
 	rec.ProfileAlias = profileAlias
-	rec.ResumeSettings = settings
+	// Capture effective defaults too, so a later config/version change does not
+	// silently select another model or idle window for the continuation.
+	if rec.Model != "" {
+		o.Model = rec.Model
+	}
+	if effectiveIdle, err := time.ParseDuration(rec.IdleTimeout); err == nil {
+		o.IdleTimeout = &effectiveIdle
+	}
+	rec.ResumeSettings = savedResumeSettings(o)
 	if parent != nil {
 		rec.ResumedFrom = parent.RunID
 		rec.ResumeSettings.Task = parent.ResumeSettings.Task
