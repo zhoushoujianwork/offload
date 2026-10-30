@@ -13,6 +13,9 @@ final class ProfilesModel: ObservableObject {
     /// View-owned drafts report only their dirty bit, never credential contents.
     @Published var hasUnsavedEdits = false
 
+    @Published private(set) var accountLoginOutput = ""
+    @Published private(set) var accountLoginRunning = false
+    private var accountLoginProcess: Process?
     private let cli: OffloadCLI?
     private var lastLoad: Date?
     private var poller: Task<Void, Never>?
@@ -109,6 +112,62 @@ final class ProfilesModel: ObservableObject {
             loadError = nil
             lastLoad = Date()
             return true
+        } catch {
+            actionError = message(error)
+            return false
+        }
+    }
+
+    func cancelAccountLogin() { accountLoginProcess?.terminate() }
+
+    func addAccount(name: String) {
+        guard let cli, !busy, !accountLoginRunning else { return }
+        let process = Process()
+        let pipe = Pipe()
+        process.executableURL = cli.executable
+        process.arguments = ["accounts", "add", name]
+        process.environment = ChatCommand.environment()
+        process.standardInput = FileHandle.nullDevice
+        process.standardOutput = pipe
+        process.standardError = pipe
+        accountLoginOutput = "Starting Codex device sign-in…"
+        accountLoginRunning = true
+        accountLoginProcess = process
+        pipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
+            let data = handle.availableData
+            guard !data.isEmpty else { handle.readabilityHandler = nil; return }
+            let text = String(decoding: data, as: UTF8.self)
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.accountLoginOutput = String((self.accountLoginOutput + "\n" + text).suffix(8000))
+            }
+        }
+        process.terminationHandler = { [weak self] finished in
+            pipe.fileHandleForReading.readabilityHandler = nil
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.accountLoginRunning = false
+                self.accountLoginProcess = nil
+                if finished.terminationStatus != 0 { self.actionError = "Account sign-in did not complete. Try again or import an existing sign-in." }
+                _ = await self.reload()
+            }
+        }
+        do { try process.run() } catch {
+            pipe.fileHandleForReading.readabilityHandler = nil
+            accountLoginRunning = false
+            accountLoginProcess = nil
+            actionError = "Could not start account sign-in."
+        }
+    }
+
+    func importAccount(name: String, data: Data) async -> Bool {
+        guard let cli, !busy else { return false }
+        busy = true
+        defer { busy = false }
+        actionError = nil
+        do {
+            _ = try await cli.run(["accounts", "import", name], stdin: data)
+            return await fetch(cli)
         } catch {
             actionError = message(error)
             return false

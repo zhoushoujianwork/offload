@@ -54,6 +54,9 @@ func (p Profile) ValidateCodexSettings() error {
 	if p.BackendName() != "codex" {
 		return nil
 	}
+	if p.CodexAccount != "" && !accountName.MatchString(p.CodexAccount) {
+		return fmt.Errorf("invalid managed account name")
+	}
 	switch p.ReasoningEffort {
 	case "", "low", "medium", "high", "xhigh", "max", "ultra":
 	default:
@@ -102,6 +105,11 @@ func SaveProfile(path, name string, p Profile, add bool) error {
 	if err := p.ValidateCodexSettings(); err != nil {
 		return err
 	}
+	if p.CodexAccount != "" {
+		if _, err := ManagedAccountHome(p.CodexAccount); err != nil {
+			return err
+		}
+	}
 	if !ValidEndpoint(p.Endpoint) {
 		return fmt.Errorf("unknown endpoint %q (want cc or llm)", p.Endpoint)
 	}
@@ -137,7 +145,7 @@ func SaveProfile(path, name string, p Profile, add bool) error {
 	if err := json.Unmarshal(encoded, &known); err != nil {
 		return err
 	}
-	for _, key := range []string{"aliases", "backend", "base_url", "model", "token", "token_cmd", "reasoning_effort", "service_tier", "idle_timeout", "endpoint"} {
+	for _, key := range []string{"codex_account", "aliases", "backend", "base_url", "model", "token", "token_cmd", "reasoning_effort", "service_tier", "idle_timeout", "endpoint"} {
 		delete(profile, key)
 	}
 	for key, value := range known {

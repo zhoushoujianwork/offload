@@ -699,3 +699,35 @@ AGH and ClawFlow integrations must explicitly append `--caller agh` / `--caller 
 While an Offload window or panel is active: **⌘N** starts a new chat, **⌘R** refreshes data, **⌘,** opens settings, **⌘W** closes the current window, **⇧⌘H** opens conversation history, **⇧⌘D** opens the dashboard, **⇧⌘U** checks/reviews updates, and **⌘Q** quits (running-chat protection still applies). These are app shortcuts, not global hotkeys.
 
 The handoff mark represents two hands passing a task. Header actions have consistent hit areas and hover labels. A red dot on the update button and menu-bar mark means a release is available or verified and ready. Click to review the target/current versions and choose **Update When Idle** or **Cancel**. Discovery never downloads or installs by itself, including when an older automatic-install preference was enabled. Confirmed updates retain digest/signature verification and wait for active chats, drafts and unsaved edits before restarting. Local on-disk App replacement keeps its separate idle-restart setting.
+## Managed Codex accounts
+
+In the macOS app, open **Settings → Profiles**, select a Codex profile, and enter
+an account name. Choose **Sign in…** and follow the device-login instructions, or
+choose **Import…** to select an existing Codex OAuth `auth.json`. Select the new
+account in **Account**, then save or create the profile.
+
+The CLI supports the same managed accounts:
+
+```sh
+offload accounts add work
+offload accounts --json
+offload accounts import personal < /path/to/auth.json
+offload profile save --json <<'JSON'
+{"name":"codex-work","create":true,"backend":"codex","codex_account":"work"}
+JSON
+offload -p codex-work "your task"
+```
+
+Names use 1–32 lowercase letters, digits or dashes and start with a letter or
+digit. Each account has a private home under offload's configuration directory,
+`codex-accounts/<name>`. Credentials stay in that home; profile listings and run
+records contain only the account name and, for runs, its home path. Codex CLI
+owns OAuth renewal. Imports create a separate credential copy; prefer a fresh
+sign-in when both the original installation and offload will remain active.
+
+Profiles with no account selection continue to use the system Codex account.
+Managed runs isolate authentication, session/model lookup and usage accounting.
+Resume keeps the recorded account and home even after profile edits. This
+version provides explicit account selection; automatic quota-based pooling is
+not included. Managed homes start with Codex defaults and do not copy the system
+home's skills, MCP configuration or other settings.

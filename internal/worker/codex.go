@@ -159,3 +159,24 @@ func (p *codexParser) feed(line []byte) {
 
 // parseCodexStream reads a complete Codex JSONL output.
 func parseCodexStream(out []byte) streamSummary { return parseAll(&codexParser{}, out) }
+
+// Scope authentication to the selected account without mutating the parent environment.
+func codexChildEnv(base []string, home string, preserveAuth ...bool) []string {
+	if home == "" {
+		return base
+	}
+	env := []string{}
+	for _, v := range base {
+		key, _, _ := strings.Cut(v, "=")
+		switch key {
+		case "CODEX_HOME":
+			continue
+		case "OPENAI_API_KEY", "CODEX_API_KEY", "CODEX_ACCESS_TOKEN":
+			if len(preserveAuth) == 0 || !preserveAuth[0] {
+				continue
+			}
+		}
+		env = append(env, v)
+	}
+	return append(env, "CODEX_HOME="+home)
+}

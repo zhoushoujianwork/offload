@@ -49,6 +49,7 @@ var errIdle = errors.New("worker idle")
 
 // Opts is one worker run.
 type Opts struct {
+	CodexHome        string
 	RunID            string
 	CallerRunID      string
 	Caller           string // normalized --caller; empty means unspecified
@@ -250,15 +251,28 @@ func Run(ctx context.Context, o Opts) (rec history.Record, err error) {
 	if started.IsZero() {
 		started = time.Now()
 	}
-	rec = history.Record{TS: started.Format("2006-01-02 15:04:05"), Profile: o.ProfileName, Model: o.Model,
+	rec = history.Record{TS: started.Format("2006-01-02 15:04:05"), CodexAccount: o.Profile.CodexAccount, CodexHome: o.CodexHome, Profile: o.ProfileName, Model: o.Model,
 		RunID: o.RunID, CallerRunID: o.CallerRunID, Caller: history.CallerOrUnspecified(o.Caller), ExecutionPolicy: policyName(o.ExecutionPolicy), Backend: o.Profile.BackendName(), Dir: o.Dir, AddDirs: slices.Clone(o.AddDirs), Task: o.Task, Status: "error", CostIsEstimate: true}
+	if o.Profile.CodexAccount != "" {
+		accountHome, accountErr := config.ManagedAccountHome(o.Profile.CodexAccount)
+		if accountErr != nil {
+			return rec, accountErr
+		}
+		if o.CodexHome != "" && o.CodexHome != accountHome {
+			return rec, fmt.Errorf("session managed account home changed")
+		}
+		o.CodexHome = accountHome
+	} else if o.Profile.BackendName() == "codex" && o.CodexHome == "" {
+		o.CodexHome = codexHome()
+	}
+	rec.CodexHome = o.CodexHome
 	var pub *publisher
 	var slot *slots.Slot
 	var admitted time.Time
 	var leftover *proc.Group // worker processes that survived cleanup
 	defer func() {
 		if rec.Backend == "codex" {
-			resolveCodexModel(&rec, o.Model)
+			resolveCodexModel(&rec, o.Model, o.CodexHome)
 		}
 		elapsed := time.Since(started).Milliseconds()
 		rec.ElapsedMs = &elapsed
@@ -556,10 +570,10 @@ func runAttempt(ctx context.Context, bin string, o Opts, promptPath, token strin
 	var claudeBase claudeBaseline
 	// Not CommandContext: that kills only the worker process and never its children.
 	if o.Profile.BackendName() == "codex" {
-		baseline, baselineError = codexBaseline(o.Resume)
+		baseline, baselineError = codexBaseline(o.Resume, o.CodexHome)
 		cmd = exec.Command(bin, buildCodexArgs(o)...)
 		cmd.Dir = o.Dir
-		cmd.Env = o.Limits.ApplyEnv(os.Environ())
+		cmd.Env = o.Limits.ApplyEnv(codexChildEnv(os.Environ(), o.CodexHome, o.Profile.CodexAccount == ""))
 		prompt, err := os.ReadFile(promptPath)
 		if err != nil {
 			return attempt{runErr: err}

@@ -3,6 +3,7 @@ import Foundation
 // MARK: - `offload profiles --json`
 
 struct ProfileEntry: Codable, Equatable, Identifiable {
+    var codexAccount: String? = nil
     var name: String
     var backend: String
     var baseUrl: String
@@ -17,6 +18,7 @@ struct ProfileEntry: Codable, Equatable, Identifiable {
 }
 
 struct ProfilesSnapshot: Codable, Equatable {
+    var managedAccounts: [String]? = nil
     var schemaVersion: Int
     var configExists: Bool
     var configuredDefault: String
@@ -58,6 +60,7 @@ struct ProfilesSnapshot: Codable, Equatable {
 struct ProfileSaveRequest: Encodable, Equatable, CustomStringConvertible, CustomDebugStringConvertible {
     var name: String
     var create: Bool
+    var codexAccount: String?
     var backend: String?
     var baseUrl: String?
     var model: String?
@@ -69,11 +72,12 @@ struct ProfileSaveRequest: Encodable, Equatable, CustomStringConvertible, Custom
 
     enum CodingKeys: String, CodingKey {
         case name, create, backend, model, endpoint, secret
+        case codexAccount = "codex_account"
         case baseUrl = "base_url", reasoningEffort = "reasoning_effort", serviceTier = "service_tier", authMode = "auth_mode"
     }
 
     var isEmptyPatch: Bool {
-        backend == nil && baseUrl == nil && model == nil && endpoint == nil && reasoningEffort == nil
+        codexAccount == nil && backend == nil && baseUrl == nil && model == nil && endpoint == nil && reasoningEffort == nil
             && serviceTier == nil && authMode == nil && secret == nil
     }
 
@@ -141,6 +145,7 @@ struct ProfileDraft: Equatable {
     var endpoint = ""
     var reasoning = ""
     var tier = ""
+    var codexAccount = ""
     /// A new Claude profile needs a credential, so it starts on API token.
     var credential: Credential = .token
     var secret = ""
@@ -160,6 +165,7 @@ struct ProfileDraft: Equatable {
         endpoint = e.endpoint
         reasoning = e.reasoningEffort
         tier = e.serviceTier
+        codexAccount = e.codexAccount ?? ""
         credential = e.authMode == "none" ? .token : .keep
     }
 
@@ -204,6 +210,7 @@ struct ProfileDraft: Equatable {
         if isNew || backend != (o?.backend.isEmpty == false ? o!.backend : "claude") { r.backend = backend }
 
         if isCodex {
+            if codexAccount != (o?.codexAccount ?? "") { r.codexAccount = codexAccount }
             if model != (o?.model ?? "") || (isNew && !model.isEmpty) { r.model = model }
             if reasoning != (o?.reasoningEffort ?? "") { r.reasoningEffort = reasoning }
             if tier != (o?.serviceTier ?? "") { r.serviceTier = tier }

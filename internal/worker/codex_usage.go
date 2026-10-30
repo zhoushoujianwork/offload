@@ -34,11 +34,11 @@ func decodeCodexUsage(raw json.RawMessage) *history.TokenUsage {
 
 var codexSessionID = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
 
-func codexRollout(session string) (string, error) {
+func codexRollout(session string, scoped ...string) (string, error) {
 	if !codexSessionID.MatchString(session) {
 		return "", errors.New("invalid session id")
 	}
-	home := codexHome()
+	home := codexHome(scoped...)
 	if home == "" {
 		return "", errors.New("codex home unavailable")
 	}
@@ -64,7 +64,7 @@ func codexRollout(session string) (string, error) {
 // Capture before the child starts: a resumed exec emits the session total.
 // Only filenames are searched; only the matching rollout is streamed. Never
 // surface paths, payload text, prompts, or results in accounting errors.
-func codexBaseline(session string) (*history.TokenUsage, string) {
+func codexBaseline(session string, scoped ...string) (*history.TokenUsage, string) {
 	if session == "" {
 		return &history.TokenUsage{}, ""
 	}
@@ -72,7 +72,7 @@ func codexBaseline(session string) (*history.TokenUsage, string) {
 	if !codexSessionID.MatchString(session) {
 		return nil, unavailable
 	}
-	match, err := codexRollout(session)
+	match, err := codexRollout(session, scoped...)
 	if err != nil {
 		return nil, unavailable
 	}
@@ -160,7 +160,7 @@ func applyCodexAccounting(rec *history.Record, s streamSummary, baseline *histor
 			}
 		}
 	}
-	if codexSubscription() {
+	if codexSubscription(o.CodexHome) {
 		rec.CostBasis = "subscription"
 		rec.CostUnavailable = "subscription: Codex does not report USD cost"
 		return
