@@ -18,8 +18,30 @@ type StatsLog struct {
 	Corrupt int
 }
 
-// ReadStats streams path once. now and its location fix which records Aggregate would accept for
-// the recent list (a readable timestamp that is not in the future). A missing log is empty.
+// skipBody accepts a JSON value without copying it, so decoding a record's "result" allocates
+// nothing for the report text.
+type skipBody struct{}
+
+func (*skipBody) UnmarshalJSON([]byte) error { return nil }
+
+// metaRecord decodes every Record field except the report body: the shallower Result shadows
+// Record.Result.
+type metaRecord struct {
+	Record
+	Result skipBody `json:"result"`
+}
+
+func newLineScanner(f *os.File) *bufio.Scanner {
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 1<<20), 64<<20)
+	return sc
+}
+
+// ReadStats streams path and keeps report bodies (Result) only for the newest RecentLimit
+// records that Aggregate can list. The first pass decodes metadata without materializing any
+// report text and remembers which lines are listed; a second pass decodes only those lines in
+// full. now and its location fix which records Aggregate would accept for the recent list (a
+// readable timestamp that is not in the future). A missing log is empty.
 func ReadStats(path string, now time.Time) (StatsLog, error) {
 	var out StatsLog
 	f, err := os.Open(path)
@@ -31,28 +53,28 @@ func ReadStats(path string, now time.Time) (StatsLog, error) {
 	}
 	defer f.Close()
 	type keptRun struct {
-		at  time.Time
-		idx int
+		at   time.Time
+		idx  int // index in out.Records
+		line int // 1-based line number in the file
 	}
-	var kept []keptRun // newest first, at most RecentLimit; the only records that retain Result
-	sc := bufio.NewScanner(f)
-	sc.Buffer(make([]byte, 1<<20), 64<<20)
-	for sc.Scan() {
-		line := sc.Bytes()
-		if len(bytes.TrimSpace(line)) == 0 {
+	var kept []keptRun // newest first, at most RecentLimit
+	sc := newLineScanner(f)
+	for line := 1; sc.Scan(); line++ {
+		raw := sc.Bytes()
+		if len(bytes.TrimSpace(raw)) == 0 {
 			continue
 		}
-		var r Record
-		if json.Unmarshal(line, &r) != nil {
+		var m metaRecord
+		if json.Unmarshal(raw, &m) != nil {
 			out.Corrupt++
 			continue
 		}
+		r := m.Record
 		normalizeCost(&r)
 		idx := len(out.Records)
+		out.Records = append(out.Records, r)
 		at, ok := ParseTS(r.TS, now.Location())
 		if !ok || at.After(now) {
-			r.Result = ""
-			out.Records = append(out.Records, r)
 			continue
 		}
 		// Same order as Aggregate: newest timestamp first, later line first on a tie.
@@ -64,17 +86,40 @@ func ReadStats(path string, now time.Time) (StatsLog, error) {
 			}
 		}
 		if pos >= RecentLimit {
-			r.Result = ""
-			out.Records = append(out.Records, r)
 			continue
 		}
-		out.Records = append(out.Records, r)
 		kept = append(kept, keptRun{})
 		copy(kept[pos+1:], kept[pos:])
-		kept[pos] = keptRun{at, idx}
+		kept[pos] = keptRun{at, idx, line}
 		if len(kept) > RecentLimit {
-			out.Records[kept[RecentLimit].idx].Result = ""
 			kept = kept[:RecentLimit]
+		}
+	}
+	if err := sc.Err(); err != nil {
+		return out, err
+	}
+	if len(kept) == 0 {
+		return out, nil
+	}
+	byLine := make(map[int]int, len(kept))
+	for _, k := range kept {
+		byLine[k.line] = k.idx
+	}
+	if _, err := f.Seek(0, 0); err != nil {
+		return out, err
+	}
+	sc = newLineScanner(f)
+	for line := 1; sc.Scan() && len(byLine) > 0; line++ {
+		idx, ok := byLine[line]
+		if !ok {
+			continue
+		}
+		delete(byLine, line)
+		var full Record
+		// Only attach the body if the line is still the same record (the log is append-only,
+		// but never trust a file that changed between the passes).
+		if json.Unmarshal(sc.Bytes(), &full) == nil && full.RunID == out.Records[idx].RunID && full.TS == out.Records[idx].TS {
+			out.Records[idx].Result = full.Result
 		}
 	}
 	return out, sc.Err()

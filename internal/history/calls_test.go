@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"testing"
 	"time"
 )
@@ -174,4 +176,48 @@ func mustRead(t *testing.T, p string) []byte {
 		t.Fatal(err)
 	}
 	return b
+}
+
+// Metadata refresh must not materialize historical report bodies: reading a log whose bodies are
+// far larger than the listed ones allocates a small fraction of the log size.
+func TestReadStatsDoesNotMaterializeHistoricalBodies(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "runs.jsonl")
+	now := time.Date(2026, 10, 29, 12, 0, 0, 0, time.UTC)
+	body := strings.Repeat("x", 100<<10)
+	const n = 300
+	for i := 0; i < n; i++ {
+		ts := time.Date(2026, 10, 28, 0, 0, 0, 0, time.UTC).Add(time.Duration(i) * time.Second).Format("2006-01-02 15:04:05")
+		if err := Append(path, Record{TS: ts, RunID: fmt.Sprint(i), Status: "ok", Result: body}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	fi, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	l, err := ReadStats(path, now)
+	runtime.ReadMemStats(&after)
+	if err != nil || len(l.Records) != n {
+		t.Fatalf("%d records, err=%v", len(l.Records), err)
+	}
+	withBody := 0
+	for _, r := range l.Records {
+		if r.Result != "" {
+			withBody++
+			if r.Result != body {
+				t.Fatalf("listed body altered")
+			}
+		}
+	}
+	if withBody != RecentLimit {
+		t.Fatalf("bodies kept for %d records, want %d", withBody, RecentLimit)
+	}
+	alloc := int64(after.TotalAlloc - before.TotalAlloc)
+	// The log is ~60 MB; the listed bodies need about RecentLimit*100 KB (a few MB) in total.
+	if alloc > fi.Size()/4 {
+		t.Errorf("ReadStats allocated %d bytes for a %d byte log; report bodies were materialized", alloc, fi.Size())
+	}
+	t.Logf("ReadStats: %d bytes allocated for a %d byte log", alloc, fi.Size())
 }
