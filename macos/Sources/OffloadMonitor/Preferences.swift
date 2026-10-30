@@ -10,6 +10,7 @@ struct Preferences {
         static let dashboardShown = "dashboardShownOnce"
         static let lastWorkspace = "chatLastWorkspace"
         static let decorativeMotion = "decorativeMotion"
+        static let restartOnAppChange = "restartOnInstalledAppChange"
     }
 
     var defaults: UserDefaults = .standard
@@ -45,6 +46,12 @@ struct Preferences {
     var autoInstall: Bool {
         get { defaults.object(forKey: Key.autoInstall) as? Bool ?? false }
         nonmutating set { defaults.set(newValue, forKey: Key.autoInstall) }
+    }
+
+    /// Applies an App already installed on disk; does not enable automatic release downloads.
+    var restartOnAppChange: Bool {
+        get { defaults.object(forKey: Key.restartOnAppChange) as? Bool ?? true }
+        nonmutating set { defaults.set(newValue, forKey: Key.restartOnAppChange) }
     }
 }
 

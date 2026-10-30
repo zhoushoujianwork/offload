@@ -73,6 +73,7 @@ struct ProfilesSettingsView: View {
         .padding(14)
         .onAppear { profiles.refreshIfStale(); syncSelection() }
         .onChange(of: profiles.snapshot) { _ in syncSelection() }
+        .onChange(of: draft) { _ in profiles.hasUnsavedEdits = draft.isDirty }
     }
 
     // MARK: pieces
@@ -401,8 +402,21 @@ struct AppSettingsView: View {
             Toggle("Check for updates automatically", isOn: $updates.autoCheck)
             Toggle("Install updates automatically", isOn: $updates.autoInstall)
                 .disabled(!updates.autoCheck)
-            Text("Automatic install restarts the app without asking once a verified update is ready.")
+            Toggle("Restart when the installed App changes", isOn: $updates.restartOnAppChange)
+            Text("Release updates replace the whole App and its bundled CLI. Restart waits for chats, drafts and profile edits.")
                 .font(.system(size: 10)).foregroundStyle(.secondary)
+            if let reason = updates.restartWaitReason {
+                Text(reason).font(.system(size: 10)).foregroundStyle(.orange).lineLimit(2)
+            } else if let problem = updates.localChanges.problem {
+                Text(problem).font(.system(size: 10)).foregroundStyle(.orange).lineLimit(2)
+            }
+            if let cli = updates.localChanges.cliURL {
+                Text("Selected CLI: " + cli.path).font(.system(size: 9, design: .monospaced)).foregroundStyle(.secondary)
+                    .lineLimit(1).truncationMode(.middle).help(cli.path)
+                Text(updates.localChanges.cliChangedAt.map { "CLI changed on disk · data refreshed \($0.formatted(date: .omitted, time: .shortened))" }
+                     ?? "CLI-only changes refresh data. A global CLI update does not replace this App's bundled CLI.")
+                    .font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(2)
+            }
             Divider()
             Text("Appearance").font(.system(size: 13, weight: .semibold))
             Toggle("Animate status symbol", isOn: $motion.decorativeEnabled)

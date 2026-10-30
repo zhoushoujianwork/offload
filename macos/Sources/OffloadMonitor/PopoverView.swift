@@ -254,6 +254,10 @@ struct UpdateBanner: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
+            if let n = updates.localNotice {
+                Banner(symbol: n.symbol, tint: n.tint, title: n.title, message: n.message)
+                Button("Restart App When Idle") { updates.restartInstalledApp() }.controlSize(.small)
+            }
             if let n = updates.resultNotice {
                 Banner(symbol: n.ok ? "checkmark.circle.fill" : "xmark.octagon.fill", tint: n.ok ? .green : .red,
                        title: n.ok ? "Update installed" : "Update failed", message: n.message)
@@ -267,7 +271,8 @@ struct UpdateBanner: View {
                 Button("Download Update") { updates.downloadAndPrepare() }.controlSize(.small)
             case .downloading(let c): Banner(symbol: "arrow.down.circle", tint: .omBlue, title: "Downloading \(c.version)…", message: "The download is verified before it is used.")
             case .ready(let c):
-                Banner(symbol: "checkmark.seal.fill", tint: .green, title: "Version \(c.version) is verified and ready", message: "The app will relaunch.")
+                Banner(symbol: "checkmark.seal.fill", tint: .green, title: "Version \(c.version) is verified and ready",
+                       message: updates.restartWaitReason ?? "Installs the whole App and bundled CLI when idle.")
                 Button("Update and Restart") { updates.installAndRestart() }.controlSize(.small)
             case .installing(let c): Banner(symbol: "arrow.triangle.2.circlepath", tint: .omBlue, title: "Installing \(c.version)…", message: "")
             case .failed(let m): Banner(symbol: "exclamationmark.triangle.fill", tint: .red, title: "Update problem", message: m + " The current version keeps running.")
@@ -282,7 +287,7 @@ struct NoticeItem: Equatable {
     var tint: Color
     var title: String
     var message: String
-    enum Action: Equatable { case none, download, restart }
+    enum Action: Equatable { case none, download, restart, reloadApp }
     var action: Action = .none
 }
 
@@ -321,9 +326,10 @@ struct NoticeRow: View {
 
     var body: some View {
         TimelineView(.periodic(from: .now, by: 5)) { ctx in
-            let items = Notices.items(error: model.lastError, hasSnapshot: model.snapshot != nil,
+            let base = Notices.items(error: model.lastError, hasSnapshot: model.snapshot != nil,
                                       isStale: model.isStale(at: ctx.date), phase: updates.phase,
                                       result: updates.resultNotice, currentVersion: updates.currentVersionText)
+            let items = updates.localNotice.map { [$0] + base } ?? base
             if let first = items.first {
                 HStack(spacing: 6) {
                     Image(systemName: first.symbol).foregroundStyle(first.tint).font(.system(size: 12))
@@ -337,6 +343,7 @@ struct NoticeRow: View {
                     switch first.action {
                     case .download: Button("Download") { updates.downloadAndPrepare() }
                     case .restart: Button("Update and Restart") { updates.installAndRestart() }
+                    case .reloadApp: Button("Restart App") { updates.restartInstalledApp() }
                     case .none: EmptyView()
                     }
                     Button(items.count > 1 ? "Details (\(items.count))" : "Details") { AppState.shared.showNotices() }

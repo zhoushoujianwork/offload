@@ -426,6 +426,14 @@ The app's menu bar item has an active-profile menu: choosing a profile saves it 
 
 The app shows the output of `offload stats --json`. Its compact panel has no scrolling: task, history, project and model lists use pages. Trend bars can be selected for exact values and coverage. Token details, accounting notes and full run reports open in separate windows; long text there scrolls with indicators hidden. The script creates `dist/Offload Monitor.app`; you can copy it to `~/Applications` for daily use. Nothing is published. On its first launch it opens a native dashboard window. Later launches show only the menu bar item, and the menu's **Open Dashboard** action opens the dashboard again. Closing the dashboard leaves the menu bar item running. Launching with `--dashboard` opens the dashboard on any launch, for example `open "dist/Offload Monitor.app" --args --dashboard`. Its update check queries the stable GitHub release every 6 hours. Automatic installation is optional and off by default, and an update is installed only when the release provides a digest to verify. A local build publishes no release.
 
+#### Applying App and CLI updates
+
+Release updates replace the **whole App**, including its bundled CLI. The updater verifies the archive and bundle before installation, then waits for app-owned chats, unsent messages, unsaved responses and profile edits before quitting and relaunching. A queued automatic install is cancelled if automatic installation is switched off; a manual request still waits for a safe idle state.
+
+The running App also checks its installed executable and version metadata every 15 seconds. When a local installer replaces the App, including a different build with the same version number, two stable observations and a valid bundle signature enable an idle restart. **Settings > App > Restart when the installed App changes** controls this behavior (on by default). A restart notice offers a manual retry, and failed helpers do not retry in a loop.
+
+The App uses `Contents/Resources/offload` first. Updating `~/go/bin/offload` alone does not update this bundled copy or the native interface. When the selected CLI's bytes change, the App refreshes statistics, profiles, skills and history without restarting. Settings shows the selected CLI path and the last detected change. Updating the native interface still requires installing a new App bundle. The first installation of this detection feature needs one ordinary App reopen; subsequent replacements are detected by the running build.
+
 #### Release downloads
 
 Pushing a `v*` tag runs `.github/workflows/macos-release.yml`. On a `macos-15` (Apple silicon) and a `macos-15-intel` runner it runs `go test ./...` and `swift test --package-path macos`, builds `Offload Monitor.app` with `scripts/package-macos-release.sh`, and uploads one archive per architecture to that tag's GitHub release (creating the release if needed):
