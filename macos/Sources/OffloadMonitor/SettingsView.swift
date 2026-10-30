@@ -400,8 +400,8 @@ struct AppSettingsView: View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Updates").font(.system(size: 13, weight: .semibold))
             Toggle("Check for updates automatically", isOn: $updates.autoCheck)
-            Toggle("Install updates automatically", isOn: $updates.autoInstall)
-                .disabled(!updates.autoCheck)
+            Text("New releases show a red dot. Review the version and confirm before downloading and installing.")
+                .font(.system(size: 10)).foregroundStyle(.secondary)
             Toggle("Restart when the installed App changes", isOn: $updates.restartOnAppChange)
             Text("Release updates replace the whole App and its bundled CLI. Restart waits for chats, drafts and profile edits.")
                 .font(.system(size: 10)).foregroundStyle(.secondary)

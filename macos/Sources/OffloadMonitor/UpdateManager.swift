@@ -31,7 +31,7 @@ final class UpdateManager: ObservableObject {
         didSet {
             prefs.autoInstall = autoInstall
             if !autoInstall && !manualReleaseRestart { pendingReleaseRestart = false }
-            if autoInstall, case .available(let c) = phase { beginDownload(c, thenInstall: true) }
+            // Release installation always needs an explicit confirmation.
         }
     }
 
@@ -68,7 +68,7 @@ final class UpdateManager: ObservableObject {
         self.service = service
         self.arch = arch
         self.autoCheck = prefs.autoCheck
-        self.autoInstall = prefs.autoInstall
+        self.autoInstall = false // Legacy preference must not bypass confirmation.
         self.restartOnAppChange = prefs.restartOnAppChange
         self.localChanges = localChanges ?? LocalInstallMonitor()
         let v = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
@@ -194,13 +194,36 @@ final class UpdateManager: ObservableObject {
                 let release = try await self.service.fetchLatestRelease()
                 if let c = try ReleasePolicy.candidate(from: release, current: self.currentVersion, arch: self.arch) {
                     self.phase = .available(c)
-                    if self.autoInstall { self.beginDownload(c, thenInstall: true) }
+                    // Discovery only: the update badge leads to a confirmation.
                 } else {
                     self.phase = .upToDate(checkedAt: Date())
                 }
             } catch {
                 self.phase = manual ? .failed(Self.message(error)) : .idle // background failures stay quiet
             }
+        }
+    }
+
+    var hasReleaseUpdate: Bool {
+        switch phase {
+        case .available, .ready: return true
+        default: return false
+        }
+    }
+
+    var releaseCandidate: UpdateCandidate? {
+        switch phase {
+        case .available(let c), .ready(let c): return c
+        default: return nil
+        }
+    }
+
+    /// Called only after the user confirms the displayed release version.
+    func confirmReleaseUpdate() {
+        switch phase {
+        case .available(let c): beginDownload(c, thenInstall: true)
+        case .ready: installAndRestart()
+        default: break
         }
     }
 
@@ -224,7 +247,7 @@ final class UpdateManager: ObservableObject {
                 try? FileManager.default.removeItem(at: zip!)
                 self.staged = s
                 self.phase = .ready(c)
-                if thenInstall && self.autoInstall { self.installAndRestart(manual: false) }
+                if thenInstall { self.installAndRestart(manual: true) }
             } catch {
                 if let zip { try? FileManager.default.removeItem(at: zip) }
                 self.phase = .failed(Self.message(error))
