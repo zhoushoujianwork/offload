@@ -12,13 +12,16 @@ import (
 
 // Record is one line of the run log.
 type Record struct {
-	ProfileAlias     string           `json:"profile_alias,omitempty"`
-	StopReason       string           `json:"stop_reason,omitempty"`
-	IdleTimeout      string           `json:"idle_timeout"`
-	RunID            string           `json:"run_id,omitempty"`
-	CallerRunID      string           `json:"caller_run_id,omitempty"`
-	ExecutionPolicy  string           `json:"execution_policy,omitempty"`
-	ErrorKind        string           `json:"error_kind,omitempty"`
+	ProfileAlias    string `json:"profile_alias,omitempty"`
+	StopReason      string `json:"stop_reason,omitempty"`
+	IdleTimeout     string `json:"idle_timeout"`
+	RunID           string `json:"run_id,omitempty"`
+	CallerRunID     string `json:"caller_run_id,omitempty"`
+	ExecutionPolicy string `json:"execution_policy,omitempty"`
+	ErrorKind       string `json:"error_kind,omitempty"`
+	// ToolRestriction is "not_enforced" when the caller asked for a tool restriction on a backend
+	// that cannot enforce it and chose to run without it. It is empty when nothing was ignored.
+	ToolRestriction  string           `json:"tool_restriction,omitempty"`
 	TS               string           `json:"ts"`
 	Status           string           `json:"status"` // ok | error | timeout
 	ExitCode         *int             `json:"exit_code"`
@@ -61,6 +64,9 @@ type Record struct {
 	Error    string `json:"error,omitempty"`
 	Salvaged bool   `json:"salvaged,omitempty"` // Result is a report written after the worker was stopped
 }
+
+// ToolRestrictionNotEnforced marks a run whose requested tool restriction was ignored.
+const ToolRestrictionNotEnforced = "not_enforced"
 
 // Path is the run log location.
 func Path() string {

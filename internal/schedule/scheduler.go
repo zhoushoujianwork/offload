@@ -210,6 +210,7 @@ func BuildArgs(t *Task, runID string) []string {
 	add("--codex-sandbox", t.Sandbox)
 	add("--allowed-tools", t.AllowedTools)
 	add("--disallowed-tools", t.DisallowedTools)
+	add("--on-unsupported-tools", t.OnUnsupportedTools)
 	if t.Write {
 		args = append(args, "-w")
 	}

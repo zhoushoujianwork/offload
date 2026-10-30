@@ -31,6 +31,9 @@ type profileEntry struct {
 	ReasoningEffort string `json:"reasoning_effort"`
 	ServiceTier     string `json:"service_tier"`
 	AuthMode        string `json:"auth_mode"`
+	// ToolRestrictions reports whether -allowed-tools, -disallowed-tools and -tools-disabled are
+	// enforced by this profile's backend.
+	ToolRestrictions bool `json:"tool_restrictions"`
 }
 
 // profileSnapshot is the `offload profiles --json` document (schema_version 1).
@@ -102,7 +105,8 @@ func buildProfileSnapshot(path string) (profileSnapshot, error) {
 		base, redacted := safeBaseURL(p.BaseURL)
 		snap.Profiles = append(snap.Profiles, profileEntry{Name: n, Backend: p.BackendName(), BaseURL: base,
 			BaseURLRedacted: redacted, Model: p.Model, Endpoint: p.Endpoint,
-			ReasoningEffort: p.ReasoningEffort, ServiceTier: p.ServiceTier, AuthMode: authMode(p)})
+			ReasoningEffort: p.ReasoningEffort, ServiceTier: p.ServiceTier, AuthMode: authMode(p),
+			ToolRestrictions: p.SupportsToolRestrictions()})
 	}
 	envName := os.Getenv("OFFLOAD_PROFILE")
 	switch {
