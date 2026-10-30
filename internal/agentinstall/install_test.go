@@ -366,13 +366,20 @@ func TestInstallAgentDoesNotWarnForEmptyCodexOverride(t *testing.T) {
 	}
 }
 
-// Policy, bundled skill, and README must describe the same workflow.
-func TestSessionReuseWorkflowAgreesAcrossPolicySkillAndReadme(t *testing.T) {
+// Policy, bundled skill, and the linked user guide describe the same workflow.
+func TestSessionReuseWorkflowAgreesAcrossPolicySkillAndGuide(t *testing.T) {
 	readme, err := os.ReadFile(filepath.Join("..", "..", "README.md"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	docs := map[string]string{"skill": string(skills.Offload), "readme": string(readme)}
+	if !strings.Contains(string(readme), "docs/guide.md") {
+		t.Fatal("README must link to the detailed user guide")
+	}
+	guide, err := os.ReadFile(filepath.Join("..", "..", "docs", "guide.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	docs := map[string]string{"skill": string(skills.Offload), "guide": string(guide)}
 	for _, mode := range []string{config.ModeBasic, config.ModeProactive} {
 		docs["policy-"+mode] = policyForMode(mode)
 	}
