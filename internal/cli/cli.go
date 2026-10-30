@@ -24,6 +24,7 @@ import (
 	"github.com/zhoushoujianwork/offload/internal/live"
 	"github.com/zhoushoujianwork/offload/internal/slots"
 	"github.com/zhoushoujianwork/offload/internal/text"
+	"github.com/zhoushoujianwork/offload/internal/threads"
 	"github.com/zhoushoujianwork/offload/internal/transcript"
 	"github.com/zhoushoujianwork/offload/internal/worker"
 )
@@ -32,6 +33,7 @@ const usage = `offload — hand a task to Claude Code or Codex; print only its f
 
 usage:
   offload [flags] "task"        run a task (task may also come on stdin)
+  offload --thread <key> "task" continue a named conversation without tracking session IDs
   offload accounts [--json]    list managed Codex accounts
   offload accounts add <name>  add a managed account using device sign-in
   offload accounts import <name>
@@ -175,6 +177,8 @@ func cmdRunSaved(args []string, stdin io.Reader, stdout, stderr io.Writer, paren
 	model := fs.String("m", "", "override the profile's model")
 	write := fs.Bool("w", false, "task intent: the task may modify files (default: told to stay read-only). Instruction only; offload adds no tool or sandbox limits either way")
 	resume := fs.String("r", "", "resume a session id; reuses its original dir unless -d is given")
+	threadKey := fs.String("thread", "", "continue a named conversation: the first call with a key starts a session, later calls with the same key (and working directory) resume it. Send only the new instruction")
+	threadReset := fs.Bool("thread-reset", false, "with --thread: ignore the saved session and start a new one for the key")
 	dir := fs.String("d", "", "working directory (default: cwd)")
 	var addDirs dirList
 	fs.Var(&addDirs, "add-dir", "additional directory the worker may use (repeatable; relative paths resolve against the current directory; absolute recommended). A resume inherits the session's saved set unless this replaces it")
@@ -205,6 +209,7 @@ func cmdRunSaved(args []string, stdin io.Reader, stdout, stderr io.Writer, paren
 	logPath := history.Path()
 	rec := history.Record{RunID: worker.NewRunID(), CallerRunID: *callerRunID, Caller: callerID, ExecutionPolicy: *executionPolicy, Session: *resume, TS: started.Format("2006-01-02 15:04:05"), Status: "error", Profile: *profile,
 		Model: *model, Dir: *dir, Task: task, CostIsEstimate: true}
+	rec.Thread = *threadKey
 	var events *eventWriter
 	var eventFile *os.File
 	var capture *transcript.Recorder
@@ -244,6 +249,7 @@ func cmdRunSaved(args []string, stdin io.Reader, stdout, stderr io.Writer, paren
 		// Setup never launched a session run. Do not make a failed setup the latest
 		// resume baseline for saved directories, profile or usage accounting.
 		rec.Session = ""
+		rec.ThreadStart = "" // nothing started, so the run counts as neither fresh nor resumed
 		code := 2
 		rec.ErrorKind = worker.ErrorKind(err)
 		rec.ExitCode, rec.Error, rec.Result = &code, err.Error(), err.Error()
@@ -278,6 +284,23 @@ func cmdRunSaved(args []string, stdin io.Reader, stdout, stderr io.Writer, paren
 		return failRun(err)
 	}
 	rec.AddDirs = slices.Clone(explicitDirs)
+	var thread *threads.Handle
+	var threadEntry *threads.Entry
+	threadStart := ""
+	if *threadKey != "" || *threadReset {
+		var err error
+		thread, threadEntry, err = openThread(*threadKey, *threadReset, *resume, dir, logPath)
+		if err != nil {
+			return failRun(err)
+		}
+		defer thread.Release()
+		if threadEntry != nil {
+			*resume, threadStart = threadEntry.Session, history.ThreadResumed
+		} else {
+			threadStart = history.ThreadFresh
+		}
+		rec.ThreadStart = threadStart
+	}
 	if *resume != "" {
 		// The lock closes the race the live-state check below only narrows: of two simultaneous
 		// resumes, one fails to take it. It is held until this process exits.
@@ -306,6 +329,11 @@ func cmdRunSaved(args []string, stdin io.Reader, stdout, stderr io.Writer, paren
 	selected := *profile
 	resumedProfile := ""
 	// Resumes retain their original profile even after the default changes.
+	if selected == "" && threadEntry != nil {
+		// A thread stays on the profile it started with, like a resume.
+		selected = threadEntry.Profile
+		resumedProfile = selected
+	}
 	if selected == "" && *resume != "" {
 		rs, readErr := history.Read(logPath)
 		if readErr != nil {
@@ -339,6 +367,10 @@ func cmdRunSaved(args []string, stdin io.Reader, stdout, stderr io.Writer, paren
 				pinnedCodexHome = previous.CodexHome
 			}
 		}
+	}
+	if err == nil && threadEntry != nil && (threadEntry.Backend != prof.BackendName() || threadEntry.Profile != name) {
+		return failRun(fmt.Errorf("thread %q is bound to profile %q (backend %s), not %q (backend %s). Use -p %s to continue it, "+
+			"or pass --thread-reset to start a new session for this key", *threadKey, threadEntry.Profile, threadEntry.Backend, name, prof.BackendName(), threadEntry.Profile))
 	}
 	if err == nil && selected != name {
 		rec.ProfileAlias = selected
@@ -439,7 +471,24 @@ func cmdRunSaved(args []string, stdin io.Reader, stdout, stderr io.Writer, paren
 	}()
 	profileAlias, transcriptState := rec.ProfileAlias, rec.Transcript
 	rec, _ = worker.Run(ctx, o)
+	threadNote := ""
+	if threadStart == history.ThreadResumed && sessionRejected(rec) {
+		// The backend no longer has the session. Start fresh once and say so; the old mapping is
+		// replaced below when the new session is known.
+		threadNote = fmt.Sprintf("saved session %s was rejected by the backend (%s); started a fresh session for this thread", threadEntry.Session, text.Truncate(text.OneLine(rec.Error), 160))
+		threadStart = history.ThreadFallback
+		o.Resume = ""
+		rec, _ = worker.Run(ctx, o)
+	}
 	rec.ProfileAlias, rec.Transcript = profileAlias, transcriptState
+	if thread != nil {
+		rec.Thread, rec.ThreadStart, rec.ThreadNote = *threadKey, threadStart, threadNote
+		if rec.Session != "" {
+			if err := thread.Save(threadEntry, rec.Backend, rec.Profile, rec.Session, time.Now()); err != nil {
+				rec.ThreadNote = strings.TrimSpace(rec.ThreadNote + " warning: thread mapping not saved: " + err.Error())
+			}
+		}
+	}
 	// Capture effective defaults too, so a later config/version change does not
 	// silently select another model or idle window for the continuation.
 	if rec.Model != "" {
@@ -454,6 +503,53 @@ func cmdRunSaved(args []string, stdin io.Reader, stdout, stderr io.Writer, paren
 		rec.ResumeSettings.Task = parent.ResumeSettings.Task
 	}
 	return finish()
+}
+
+// openThread resolves --thread before anything runs. It claims the thread, so a second invocation on
+// the same key fails instead of sending an overlapping follow-up into one session, and returns the
+// saved mapping unless reset is set. It also moves *dir to the directory the thread is scoped to.
+func openThread(key string, reset bool, resume string, dir *string, logPath string) (*threads.Handle, *threads.Entry, error) {
+	switch {
+	case key == "":
+		return nil, nil, errors.New("--thread-reset requires --thread <key>")
+	case resume != "":
+		return nil, nil, errors.New("--thread cannot be combined with -r; use one of them")
+	}
+	if err := threads.ValidateKey(key); err != nil {
+		return nil, nil, err
+	}
+	wd, err := resolveDir(*dir, "", logPath)
+	if err != nil {
+		return nil, nil, err
+	}
+	*dir = wd
+	h, err := threads.Acquire(threads.Dir(), key, wd)
+	if err != nil {
+		if errors.Is(err, threads.ErrBusy) {
+			return nil, nil, fmt.Errorf("thread %q %w. Do not send overlapping follow-ups into one session; wait for it (offload watch -t 10m), then run again", key, err)
+		}
+		return nil, nil, err
+	}
+	if reset {
+		return h, nil, nil
+	}
+	e, err := h.Load()
+	if err != nil {
+		h.Release()
+		return nil, nil, fmt.Errorf("thread %q: %w (%s). Other threads are not affected; pass --thread-reset to replace this mapping with a new session", key, err, h.Path())
+	}
+	return h, e, nil
+}
+
+// sessionRejected reports whether a failed run died because the backend has no such session to
+// resume: Claude "No conversation found with session ID" and Codex "no rollout found for thread
+// id". Only a run that did no work counts, so a report that quotes these words is not mistaken.
+func sessionRejected(rec history.Record) bool {
+	if rec.Status == "ok" || rec.Turns != 0 {
+		return false
+	}
+	msg := strings.ToLower(rec.Error + "\n" + rec.Result)
+	return strings.Contains(msg, "no conversation found with session id") || strings.Contains(msg, "no rollout found for thread id")
 }
 
 // activeSessionRun finds another offload process still working in the session. The live state is
@@ -500,9 +596,15 @@ func printRun(rec history.Record, logPath string, jsonOutput bool, stdout, stder
 	if rec.Cleanup != "" {
 		errText += " cleanup=" + text.OneLine(rec.Cleanup)
 	}
+	if rec.Thread != "" {
+		errText = " thread=" + rec.Thread + " thread_start=" + firstNonEmpty(rec.ThreadStart, "-") + errText
+	}
 	fmt.Fprintf(stderr, "[offload] %s exit_code=%s %s/%s turns=%d estimated_cost=%s elapsed=%s%s session=%s%s%s\n",
 		rec.Status, exitText(rec), rec.Profile, rec.Model, rec.Turns, costText(rec), elapsedText(rec), waitText(rec),
 		firstNonEmpty(rec.Session, "-"), errText, warning)
+	if rec.ThreadNote != "" {
+		fmt.Fprintf(stderr, "[offload] thread %s: %s\n", rec.Thread, text.OneLine(rec.ThreadNote))
+	}
 	if rec.ExitCode != nil {
 		return *rec.ExitCode
 	}
@@ -665,6 +767,9 @@ func cmdShow(args []string, stdout, stderr io.Writer) int {
 	for _, r := range hit {
 		fmt.Fprintf(stdout, "## %s %s %s/%s %s\nexit_code=%s turns=%d estimated_cost=%s elapsed=%s session=%s caller=%s\n",
 			r.TS, r.Status, r.Profile, r.Model, r.Dir, exitText(r), r.Turns, costText(r), elapsedText(r), r.Session, history.CallerOrUnspecified(r.Caller))
+		if r.Thread != "" {
+			fmt.Fprintf(stdout, "thread=%s thread_start=%s\n", listLine(r.Thread), firstNonEmpty(r.ThreadStart, "-"))
+		}
 		if len(r.AddDirs) > 0 {
 			fmt.Fprintf(stdout, "add_dirs=%q\n", r.AddDirs)
 		}

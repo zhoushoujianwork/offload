@@ -229,6 +229,26 @@ offload -w -json -d /abs/docs "..."
 - **Profile safety.** A resume uses the session's recorded profile. If it was renamed or deleted, offload stops with recovery steps instead of falling back to the default provider. Restore the profile, or start a new session with `-p` and restate the context.
 - **Interrupted runs.** Inspect with `offload show <session>` and `git diff` first. Partial edits stay in the tree; the follow-up says what to keep or finish.
 
+### Named threads
+
+`offload --thread <key> "task"` continues related work under a stable name, so the caller does not store session IDs. The first call with a key starts a fresh session and records it. Later calls with the same key resume it and send only the new instruction. Offload never prepends or summarizes earlier turns; the task text is sent unchanged.
+
+```bash
+offload -w -json -d /abs/app --thread issue-39 "Investigate the retry limits; file:line | purpose."
+offload -w -json -d /abs/app --thread issue-39 "Design decided: expose maxAttempts (default 3). Edit only client.go and client_test.go."
+```
+
+- **Scope.** A key maps to the latest session for that key, backend, profile and working directory. The same key in another worktree is a different thread. Mappings are small files in `threads/` next to the run log; they survive restarts, and a damaged file affects only its own thread (the run fails, the file is left untouched, and `--thread-reset` replaces it).
+- **Resume inheritance.** A resumed thread keeps the session's profile, directory and `--add-dir` set, as `-r` does. Without `-p`, the thread uses its recorded profile. With `-p` naming a different profile or backend, offload refuses. `--thread-reset` starts a new session for the key instead.
+- **One run per thread.** A second call on a key that has an active run is refused (exit 2); the first run is unaffected. Wait with `offload watch -t`, then call again.
+- **Missing sessions.** If the backend rejects the saved session (Claude "No conversation found", Codex "no rollout found"), offload starts one fresh session, replaces the mapping, and prints a `[offload] thread ...` note. The record has `thread_start=fallback`. Because that run does the whole task again, send enough context in that task; check the note.
+- **Not combinable with `-r`/`resume --id`.** Passing both is an error.
+- **Reporting.** The summary line, `offload ls`, `offload show` and `offload history ... --json` show the thread key and whether each run was `fresh`, `resumed` or `fallback`. `offload stats` reports resumed, fresh and fallback thread-run counts.
+
+**Resume rule.** A resume task contains only the new instruction, corrections and acceptance criteria. It does not repeat the original task or earlier conclusions; the resumed session already holds the earlier turns. Backend compaction means retained history is not unlimited or verbatim, so restate anything the follow-up depends on that is critical.
+
+**Cache behavior differs by backend and proxy.** Codex resumes have shown high cached-input shares. Claude through a proxy that does not report cache usage shows none, including on resumed runs. A thread saves cold starts and hand-assembled history; it does not change per-turn input cost.
+
 **Continue a failed task without rebuilding its invocation.** For runs recorded by this version,
 call `offload resume --id <run_id-or-session_id> --json`. This starts one new invocation in the
 same provider session; there is no background recovery loop or in-process retry. With a session
@@ -278,6 +298,7 @@ When measuring this, report parent polling/tool turns, parent and worker token u
 
 ```text
 offload [flags] "task"        run a task (task may also come on stdin)
+offload --thread <key> "task" continue a named conversation (see "Named threads")
 offload config               open interactive settings (terminal only)
 offload ls [n]                list the last n runs (default 10)
 offload show <session>        print every report of a session

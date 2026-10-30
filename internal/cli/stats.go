@@ -176,6 +176,9 @@ func printStats(w io.Writer, st history.Stats, active []statsActive, wl statsWor
 	if t.ToolRestrictionNotEnforced > 0 {
 		fmt.Fprintf(w, "tool restriction not enforced: %d of %d runs (the backend cannot enforce it; the runs were unrestricted)\n", t.ToolRestrictionNotEnforced, t.Runs)
 	}
+	if n := t.ThreadFreshRuns + t.ThreadResumedRuns + t.ThreadFallbackRuns; n > 0 {
+		fmt.Fprintf(w, "thread runs: %d (resumed %d, fresh %d, fresh after rejected session %d)\n", n, t.ThreadResumedRuns, t.ThreadFreshRuns, t.ThreadFallbackRuns)
+	}
 	if t.ElapsedRuns > 0 {
 		fmt.Fprintf(w, "elapsed: %s (%d of %d runs)\n", listElapsed(&t.ElapsedMs), t.ElapsedRuns, t.Runs)
 	} else {

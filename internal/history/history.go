@@ -72,6 +72,12 @@ type Record struct {
 
 	ResumeSettings *ResumeSettings `json:"resume_settings,omitempty"`
 	ResumedFrom    string          `json:"resumed_from,omitempty"`
+
+	// Thread is the --thread key. ThreadStart says how the run began: fresh (new session),
+	// resumed (the saved session) or fallback (the saved session was rejected and replaced).
+	Thread      string `json:"thread,omitempty"`
+	ThreadStart string `json:"thread_start,omitempty"`
+	ThreadNote  string `json:"thread_note,omitempty"`
 }
 
 // ResumeSettings stores non-secret execution flags, never credentials or event destinations.
@@ -87,6 +93,13 @@ type ResumeSettings struct {
 func (r Record) HasResumeSettings() bool {
 	return r.Session != "" && r.ResumeSettings != nil && r.ResumeSettings.Version == 1
 }
+
+// Values of Record.ThreadStart.
+const (
+	ThreadFresh    = "fresh"    // no saved session: a new one was started
+	ThreadResumed  = "resumed"  // the saved session was resumed
+	ThreadFallback = "fallback" // the saved session was rejected by the backend and replaced
+)
 
 // Termination classes. They describe why a worker ended before producing a result, so automation
 // can decide whether to resume or give up.

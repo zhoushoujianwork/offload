@@ -48,6 +48,11 @@ type StatsTotals struct {
 	ExcludedSalvageCostRuns int         `json:"excluded_salvage_cost_runs"`
 	// ToolRestrictionNotEnforced counts runs that explicitly ignored unsupported restrictions.
 	ToolRestrictionNotEnforced int `json:"tool_restriction_not_enforced"`
+	// Thread* count runs started with --thread by how they began. A fallback run replaced a saved
+	// session the backend rejected; it is a fresh session, counted apart so reuse is not overstated.
+	ThreadFreshRuns    int `json:"thread_fresh_runs"`
+	ThreadResumedRuns  int `json:"thread_resumed_runs"`
+	ThreadFallbackRuns int `json:"thread_fallback_runs"`
 }
 
 // StatsGroup is the totals of one project or model.
@@ -179,6 +184,14 @@ func (a *statsAcc) add(r Record, elapsedOK bool) {
 		t.Error++
 	case "timeout":
 		t.Timeout++
+	}
+	switch r.ThreadStart {
+	case ThreadFresh:
+		t.ThreadFreshRuns++
+	case ThreadResumed:
+		t.ThreadResumedRuns++
+	case ThreadFallback:
+		t.ThreadFallbackRuns++
 	}
 	switch r.TerminationClass() {
 	case ClassCanceled:

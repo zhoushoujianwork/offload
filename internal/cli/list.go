@@ -63,6 +63,9 @@ func cmdList(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stdout, "%s | %s | %s | %d turns | %s\n  %s | %s\n  %s\n  Session: %s\n",
 			listLine(r.TS), listLine(status), listElapsed(r.ElapsedMs), r.Turns, cost,
 			listLine(project), listLine(profile), settingsLine(r.Task, 100), firstNonEmpty(r.Session, "unavailable"))
+		if r.Thread != "" {
+			fmt.Fprintf(stdout, "  Thread: %s (%s)\n", listLine(r.Thread), firstNonEmpty(r.ThreadStart, "unknown"))
+		}
 	}
 	fmt.Fprintln(stdout, "\nN/A: see offload show <session> for details. API baseline estimates assume short context/30m cache writes; exclude long-context, regional/tool surcharges and subscription accounting; actual delivery may differ.")
 	return 0

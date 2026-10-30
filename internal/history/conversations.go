@@ -46,6 +46,8 @@ type ConversationSummary struct {
 	CostRuns  int         `json:"cost_runs"`
 
 	ResumeAvailable bool `json:"resume_available"`
+	// Thread is the --thread key of the latest run that had one.
+	Thread string `json:"thread,omitempty"`
 }
 
 // ConversationRun is one stored run with its full task and report. Usage and CostUSD are the run's
@@ -73,6 +75,9 @@ type ConversationRun struct {
 	RunID           string `json:"run_id,omitempty"`
 	ResumedFrom     string `json:"resumed_from,omitempty"`
 	ResumeAvailable bool   `json:"resume_available"`
+	// Thread and ThreadStart (fresh, resumed or fallback) are set for runs started with --thread.
+	Thread      string `json:"thread,omitempty"`
+	ThreadStart string `json:"thread_start,omitempty"`
 }
 
 // Conversation is a summary plus its runs in chronological order.
@@ -224,7 +229,7 @@ func summarize(id string, runs []convRun, activeSessions map[string]bool) Conver
 			RunID: r.RunID, ResumedFrom: r.ResumedFrom, ResumeAvailable: r.HasResumeSettings() && !activeSessions[r.Session],
 			Task: r.Task, Result: r.Result, Error: r.Error, Dir: r.Dir, AddDirs: slices.Clone(r.AddDirs), Profile: r.Profile, Backend: r.Backend,
 			Model: r.Model, Session: r.Session, Usage: runUsage(r), CostUSD: runCost(r), Salvaged: r.Salvaged,
-			Elapsed: r.ElapsedMs, Turns: r.Turns}
+			Elapsed: r.ElapsedMs, Turns: r.Turns, Thread: r.Thread, ThreadStart: r.ThreadStart}
 	}
 	t := acc.totals()
 	first, last := runs[0].r, runs[len(runs)-1].r
@@ -238,6 +243,7 @@ func summarize(id string, runs []convRun, activeSessions map[string]bool) Conver
 		Model:           latest(runs, func(r Record) string { return r.Model }),
 		StartedAt:       first.TS, UpdatedAt: last.TS, RunCount: len(runs), Status: last.Status,
 		Active: session != "" && activeSessions[session],
+		Thread: latest(runs, func(r Record) string { return r.Thread }),
 		Usage:  t.Usage, UsageRuns: t.UsageRuns, CostUSD: t.CostUSD, CostRuns: t.CostRuns}
 	return Conversation{Summary: s, Runs: dtos}
 }
