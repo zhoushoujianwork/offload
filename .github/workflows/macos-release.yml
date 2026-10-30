@@ -19,6 +19,8 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+      - name: Test the CLI
+        run: go test ./...
       - name: Test the app
         run: swift test --package-path macos
       - name: Package
@@ -36,3 +38,8 @@ jobs:
             gh release create "$TAG" --title "$TAG" --generate-notes --verify-tag || gh release view "$TAG" >/dev/null
           fi
           gh release upload "$TAG" "$asset" --clobber
+      - name: Verify the published asset
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: scripts/verify-macos-release.sh "$TAG" "${{ matrix.arch }}"

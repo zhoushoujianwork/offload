@@ -56,6 +56,7 @@ struct PopoverView: View {
             HStack(spacing: 8) {
                 BrandMark(size: 17)
                 StatusSummary(model: model, motion: motion.header)
+                NewTaskPulseBadge(pulse: model.pulse)
                 Spacer(minLength: 2)
                 ProfileMenu(profiles: profiles)
                 Button { AppState.shared.newChat() } label: { Image(systemName: "plus.bubble") }
@@ -367,6 +368,7 @@ struct MetricCard: View {
     var subtitle: String
     var tint: Color
     var symbol: String
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         Card(tint: tint) {
@@ -375,7 +377,11 @@ struct MetricCard: View {
                     Image(systemName: symbol).font(.system(size: 9)).foregroundStyle(tint)
                     Text(title).font(.system(size: 10)).foregroundStyle(.secondary)
                 }
+                // Digits roll when the value changes. This is presentation only: a changed total is
+                // never reported as a new task. Reduce Motion switches the animation off.
                 Text(value).font(.system(size: 19, weight: .semibold).monospacedDigit()).lineLimit(1).minimumScaleFactor(0.7)
+                    .contentTransition(.numericText())
+                    .animation(reduceMotion ? nil : .easeOut(duration: 0.3), value: value)
                 Text(subtitle).font(.system(size: 9)).foregroundStyle(.secondary).lineLimit(1).minimumScaleFactor(0.85)
             }
         }
@@ -396,7 +402,8 @@ struct SnapshotView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            MetricGrid(totals: snapshot.totals)
+            WorkloadPanel(snapshot: snapshot)
+            SummaryStrip(totals: snapshot.totals)
             TrendCard(trend: snapshot.trend)
             Picker("Detail", selection: $tab) {
                 ForEach(DetailTab.allCases) { t in
@@ -513,7 +520,7 @@ struct TrendCard: View {
                 }
                 if let message = TrendData.emptyMessage(trend, metric: metric) {
                     Text(message).font(.system(size: 10)).foregroundStyle(.secondary)
-                        .frame(maxWidth: .infinity, minHeight: 90, maxHeight: 90)
+                        .frame(maxWidth: .infinity, minHeight: 36, maxHeight: 36)
                 } else {
                     chart
                 }
@@ -566,7 +573,7 @@ struct TrendCard: View {
                     })
             }
         }
-        .frame(height: 90)
+        .frame(height: 36)
     }
 
     @ViewBuilder private var detail: some View {

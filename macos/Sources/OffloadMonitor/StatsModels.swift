@@ -137,15 +137,22 @@ struct StatsSnapshot: Codable, Equatable {
     var recent: [RecentRun]
     var warnings: [String]
     var trend: Trend
+    /// Optional in the JSON: older CLIs omit these, and the dashboard then says the metric is not reported.
+    var workload: Workload?
+    var goals: WorkloadGoals
+    var daily: Daily?
 
     var runningCount: Int { active.filter(\.isRunning).count }
+    /// Tasks processing now as the CLI counts them. nil when the live state could not be read: unavailable is
+    /// not zero. Older CLIs send no workload, so their running/salvaging entries are counted instead.
+    var processingCount: Int? { workload.map { $0.processing } ?? runningCount }
     var stalledCount: Int { active.filter { $0.isRunning && $0.stalled }.count }
     var lostCount: Int { active.filter(\.isLost).count }
 }
 
 extension StatsSnapshot {
     private enum CodingKeys: String, CodingKey {
-        case schemaVersion, generatedAt, period, totals, projects, models, active, recent, warnings, trend
+        case schemaVersion, generatedAt, period, totals, projects, models, active, recent, warnings, trend, workload, goals, daily
     }
 
     init(from decoder: Decoder) throws {
@@ -160,6 +167,14 @@ extension StatsSnapshot {
         recent = try c.decode([RecentRun].self, forKey: .recent)
         warnings = try c.decode([String].self, forKey: .warnings)
         trend = try c.decodeIfPresent(Trend.self, forKey: .trend) ?? .empty
+        // A malformed new section degrades to "not reported" instead of failing the whole snapshot.
+        workload = (try? c.decodeIfPresent(Workload.self, forKey: .workload)) ?? nil
+        goals = ((try? c.decodeIfPresent(WorkloadGoals.self, forKey: .goals)) ?? nil) ?? .default
+        daily = (try? c.decodeIfPresent(Daily.self, forKey: .daily)) ?? nil
+        // A malformed new section degrades to "not reported" instead of failing the whole snapshot.
+        workload = (try? c.decodeIfPresent(Workload.self, forKey: .workload)) ?? nil
+        goals = ((try? c.decodeIfPresent(WorkloadGoals.self, forKey: .goals)) ?? nil) ?? .default
+        daily = (try? c.decodeIfPresent(Daily.self, forKey: .daily)) ?? nil
     }
 }
 
