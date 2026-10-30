@@ -97,11 +97,4 @@ final class MonitorModel: ObservableObject {
         guard lastError != nil, let t = lastSuccess else { return false }
         return now.timeIntervalSince(t) > Self.staleAfter
     }
-
-    var hasProblem: Bool { lastError != nil }
-    var needsAttention: Bool {
-        guard let s = snapshot else { return false }
-        return s.stalledCount > 0 || s.lostCount > 0
-    }
-    var runningCount: Int? { snapshot?.runningCount }
 }
