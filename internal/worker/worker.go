@@ -23,6 +23,7 @@ import (
 	"github.com/zhoushoujianwork/offload/internal/proc"
 	"github.com/zhoushoujianwork/offload/internal/slots"
 	"github.com/zhoushoujianwork/offload/internal/text"
+	"github.com/zhoushoujianwork/offload/internal/transcript"
 )
 
 // Prompt is appended to the worker's system prompt.
@@ -66,6 +67,9 @@ type Opts struct {
 	toolsNotEnforced   bool
 	GitRoots           []string
 	OnLine             func([]byte) error
+	// Transcript, when set, receives the presentable content of every backend attempt. It never
+	// affects the run: capture failures are recorded in the transcript itself.
+	Transcript *transcript.Recorder
 
 	ProfileName string
 	Profile     config.Profile
@@ -266,6 +270,9 @@ func Run(ctx context.Context, o Opts) (rec history.Record, err error) {
 		o.CodexHome = codexHome()
 	}
 	rec.CodexHome = o.CodexHome
+	if o.Profile.BackendName() == "codex" {
+		o.Transcript.AddSecrets(codexAuthSecrets(o.CodexHome)...)
+	}
 	var pub *publisher
 	var slot *slots.Slot
 	var admitted time.Time
@@ -353,6 +360,7 @@ func Run(ctx context.Context, o Opts) (rec history.Record, err error) {
 		if err != nil {
 			return rec, err
 		}
+		o.Transcript.AddSecrets(token, o.Profile.Token)
 		rec.ErrorKind = "launch"
 		bin, err = claudeBin()
 		if err != nil {
@@ -594,6 +602,9 @@ func runAttempt(ctx context.Context, bin string, o Opts, promptPath, token strin
 	}
 	proc.Prepare(cmd)
 	out := newActivityWriter(parser)
+	if o.Transcript != nil {
+		out.tap = o.Transcript
+	}
 	if o.OnLine != nil {
 		out.onLine = func(line []byte) error {
 			if err := o.OnLine(line); err != nil {
@@ -612,6 +623,11 @@ func runAttempt(ctx context.Context, bin string, o Opts, promptPath, token strin
 	if err := config.CheckEnabled(); err != nil {
 		return attempt{runErr: err, gateErr: err}
 	}
+	kind := transcript.AttemptKindRun
+	if o.Salvage {
+		kind = transcript.AttemptKindReport
+	}
+	o.Transcript.BeginAttempt(kind, o.Task)
 	if err := cmd.Start(); err != nil {
 		return attempt{runErr: err}
 	}

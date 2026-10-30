@@ -2,6 +2,7 @@ package worker
 
 import (
 	"bytes"
+	"encoding/json"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -17,6 +18,13 @@ const (
 	// maxCallbackLine bounds the lines handed to onLine; longer ones still feed the parser.
 	maxCallbackLine = 256 << 10
 )
+
+// lineTap receives the worker's output for transcript capture. It runs under the writer's buffer
+// lock, so it must be quick and must not call back into the writer.
+type lineTap interface {
+	Line([]byte)
+	Skipped(reason string, n int)
+}
 
 // eventParser folds a worker's newline-delimited events into a streamSummary one line at a time,
 // so the full output never has to be kept or re-parsed.
@@ -43,9 +51,11 @@ type activityWriter struct {
 	lineMu    sync.Mutex // keeps onLine calls in stream order without holding mu during the callback
 	parser    eventParser
 	onLine    func([]byte) error // optional; sees each complete line of at most maxCallbackLine bytes
+	tap       lineTap            // optional; sees every complete line kept, and notes of what was not kept
 	lines     [][]byte           // lines completed by the current Write, delivered after mu is released
 	pending   []byte             // bytes of the current, unfinished line
 	skipping  bool               // inside a line longer than maxLineKept; discard up to its newline
+	skippedN  int                // bytes of that line seen so far
 	raw       []byte
 	rawCapped bool
 	last      atomic.Int64 // 相对 activityEpoch 的单调时钟纳秒数
@@ -98,9 +108,11 @@ func (w *activityWriter) write(p []byte) {
 
 func (w *activityWriter) addPending(b []byte) {
 	if w.skipping {
+		w.skippedN += len(b)
 		return
 	}
 	if len(w.pending)+len(b) > maxLineKept {
+		w.skippedN = len(w.pending) + len(b)
 		w.pending, w.skipping = nil, true
 		return
 	}
@@ -108,17 +120,27 @@ func (w *activityWriter) addPending(b []byte) {
 }
 
 func (w *activityWriter) endLine(emit bool) {
+	if w.skipping && w.tap != nil {
+		w.tap.Skipped("line_too_large", w.skippedN)
+	}
 	if !w.skipping {
 		if line := bytes.TrimSpace(w.pending); len(line) > 0 {
 			if w.parser != nil {
 				w.parser.feed(line)
+			}
+			if w.tap != nil {
+				if emit || json.Valid(line) {
+					w.tap.Line(line)
+				} else {
+					w.tap.Skipped("unterminated_final_line", len(line))
+				}
 			}
 			if emit && w.onLine != nil && len(line) <= maxCallbackLine {
 				w.lines = append(w.lines, bytes.Clone(line))
 			}
 		}
 	}
-	w.skipping = false
+	w.skipping, w.skippedN = false, 0
 	if cap(w.pending) > 1<<20 {
 		w.pending = nil
 	} else {

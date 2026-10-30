@@ -608,6 +608,15 @@ in `error` and `result`, never the raw provider message. Successful reports and
 existing lifecycle error kinds are unchanged. Exit codes remain 0 for success, 1 for
 worker failure/cancellation, 2 for setup or event-file errors, and 124 for timeout.
 
+### Execution transcript
+
+`-capture-transcript` (off by default) records the messages, tool calls and tool results of one run to a
+private file, separate from `-events-file`. Read it with `offload transcript read --json
+--caller-run-id <id> [--cursor C]` while the run is active or after it ends; reading never starts a model
+or takes a worker slot. `offload transcript capabilities --json` lists backend support, limits and
+redaction scope. Redaction is best effort; transcripts can contain source code and command output.
+See [execution-transcript.md](execution-transcript.md).
+
 ### Caller attribution
 
 `-caller ID` (also `--caller ID`) optionally names the tool that invoked this run. It is

@@ -1,6 +1,8 @@
 package worker
 
 import (
+	"bytes"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -63,5 +65,41 @@ func TestIncrementalParsingMatchesOneShot(t *testing.T) {
 	if got.Events != want.Events || got.ToolCalls != want.ToolCalls || got.Denials != want.Denials || got.Session != want.Session ||
 		got.Result == nil || got.Result.Result != "R" || got.LastText != "hi" {
 		t.Fatalf("got %+v want %+v", got, want)
+	}
+}
+
+type recordingTap struct {
+	lines   []string
+	skipped []string
+}
+
+func (r *recordingTap) Line(b []byte) { r.lines = append(r.lines, string(b)) }
+func (r *recordingTap) Skipped(reason string, n int) {
+	r.skipped = append(r.skipped, reason+":"+strconv.Itoa(n))
+}
+
+func TestActivityWriterTapSeesLinesAndReportsDroppedOnes(t *testing.T) {
+	tap := &recordingTap{}
+	w := newActivityWriter(nil)
+	w.tap = tap
+	w.Write([]byte("{\"a\":1}\nsplit-"))
+	w.Write([]byte("line\n"))
+	w.Write(bytes.Repeat([]byte("x"), maxLineKept+10))
+	w.Write([]byte("\n{\"b\":2}\n{\"tail\":true}"))
+	w.finish()
+	if strings.Join(tap.lines, "|") != "{\"a\":1}|split-line|{\"b\":2}|{\"tail\":true}" {
+		t.Fatalf("%q", tap.lines)
+	}
+	if len(tap.skipped) != 1 || !strings.HasPrefix(tap.skipped[0], "line_too_large:") {
+		t.Fatalf("%q", tap.skipped)
+	}
+	// An unterminated final line that is not valid JSON is reported, not silently lost.
+	tap2 := &recordingTap{}
+	w2 := newActivityWriter(nil)
+	w2.tap = tap2
+	w2.Write([]byte("{\"cut\":"))
+	w2.finish()
+	if len(tap2.lines) != 0 || len(tap2.skipped) != 1 || tap2.skipped[0] != "unterminated_final_line:7" {
+		t.Fatalf("%q %q", tap2.lines, tap2.skipped)
 	}
 }
