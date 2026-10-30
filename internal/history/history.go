@@ -23,7 +23,10 @@ type Record struct {
 	ExecutionPolicy string       `json:"execution_policy,omitempty"`
 	ErrorKind       string       `json:"error_kind,omitempty"`
 	// ToolRestriction marks requested restrictions that the backend did not enforce.
-	ToolRestriction  string           `json:"tool_restriction,omitempty"`
+	ToolRestriction string `json:"tool_restriction,omitempty"`
+	// Transcript is set only when -capture-transcript was given: captured, not_created (the run
+	// failed before capture started) or failed (the transcript could not be created).
+	Transcript       string           `json:"transcript,omitempty"`
 	Caller           string           `json:"caller"`
 	TS               string           `json:"ts"`
 	Status           string           `json:"status"` // ok | error | timeout

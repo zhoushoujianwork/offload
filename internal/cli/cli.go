@@ -24,6 +24,7 @@ import (
 	"github.com/zhoushoujianwork/offload/internal/live"
 	"github.com/zhoushoujianwork/offload/internal/slots"
 	"github.com/zhoushoujianwork/offload/internal/text"
+	"github.com/zhoushoujianwork/offload/internal/transcript"
 	"github.com/zhoushoujianwork/offload/internal/worker"
 )
 
@@ -42,6 +43,8 @@ usage:
                                 continue a saved run/session in a new invocation
   offload history list|show --json
                                 structured full conversation history for native clients
+  offload transcript read|list|capabilities --json
+                                read-only access to transcripts recorded with -capture-transcript
   offload status                what each worker is doing right now
   offload stats [--json] [--period today|week|month|all]
                                 run, token and cost totals for a period (default today)
@@ -80,6 +83,8 @@ func Run(version string, args []string, stdin io.Reader, stdout, stderr io.Write
 			return cmdShow(args[1:], stdout, stderr)
 		case "history":
 			return cmdHistory(args[1:], stdin, stdout, stderr)
+		case "transcript":
+			return cmdTranscript(args[1:], stdout, stderr)
 		case "status":
 			return cmdStatus(stdout, stderr)
 		case "watch":
@@ -185,6 +190,7 @@ func cmdRunSaved(args []string, stdin io.Reader, stdout, stderr io.Writer, paren
 	var caller callerFlag
 	fs.Var(&caller, "caller", "optional caller ID for attribution: lowercase [a-z0-9][a-z0-9._-]{0,63}, e.g. agh, clawflow (per invocation; default unspecified)")
 	eventsFile := fs.String("events-file", "", "absolute exclusive-create sanitized NDJSON events file")
+	captureTranscript := fs.Bool("capture-transcript", false, "opt in: record this run's messages and tool calls to a private transcript readable with `offload transcript read` (separate from -events-file)")
 	toolsDisabled := fs.Bool("tools-disabled", false, "disable all worker tools (Claude only)")
 	allowedTools := fs.String("allowed-tools", "", "explicit comma-separated Claude tool allowlist")
 	disallowedTools := fs.String("disallowed-tools", "", "explicit comma-separated Claude tool denylist")
@@ -201,6 +207,10 @@ func cmdRunSaved(args []string, stdin io.Reader, stdout, stderr io.Writer, paren
 		Model: *model, Dir: *dir, Task: task, CostIsEstimate: true}
 	var events *eventWriter
 	var eventFile *os.File
+	var capture *transcript.Recorder
+	if *captureTranscript {
+		rec.Transcript = "not_created"
+	}
 	eventsStarted := false
 	finish := func() int {
 		if events != nil {
@@ -223,6 +233,10 @@ func cmdRunSaved(args []string, stdin io.Reader, stdout, stderr io.Writer, paren
 				rec.Error = err.Error()
 				rec.Result = err.Error()
 			}
+		}
+		if capture != nil {
+			capture.End(transcript.EndInfo{Status: rec.Status, ExitCode: rec.ExitCode, ErrorKind: rec.ErrorKind, StopReason: rec.StopReason,
+				TerminationClass: rec.TerminationClass(), Session: rec.Session})
 		}
 		return printRun(rec, logPath, *jsonOutput, stdout, stderr)
 	}
@@ -374,6 +388,26 @@ func cmdRunSaved(args []string, stdin io.Reader, stdout, stderr io.Writer, paren
 			o.IdleTimeout = idle
 		}
 	})
+	if *captureTranscript {
+		// Opened before the worker slot is requested, so a queued run is already readable. The
+		// task text is the one thing written now; backend output arrives through the worker.
+		var err error
+		capture, err = transcript.Open(transcript.Identity{RunID: rec.RunID, CallerRunID: safeMeta(rec.CallerRunID), Caller: safeCaller(rec.Caller),
+			Backend: rec.Backend, Model: rec.Model, Session: safeMeta(*resume)},
+			transcript.NewRedactor(transcript.EnvSecrets(os.Environ())...))
+		if err != nil {
+			rec.Transcript = "failed"
+			rec.ErrorKind = "configuration"
+			code := 2
+			rec.ExitCode = &code
+			rec.Error = "capture-transcript: " + err.Error()
+			rec.Result = rec.Error
+			capture = nil
+			return finish()
+		}
+		rec.Transcript = "captured"
+		o.Transcript = capture
+	}
 	if events != nil {
 		if err := events.emit("start", "", "", &rec); err != nil {
 			rec.ErrorKind = "events_io"
@@ -403,9 +437,9 @@ func cmdRunSaved(args []string, stdin io.Reader, stdout, stderr io.Writer, paren
 		case <-ctx.Done():
 		}
 	}()
-	profileAlias := rec.ProfileAlias
+	profileAlias, transcriptState := rec.ProfileAlias, rec.Transcript
 	rec, _ = worker.Run(ctx, o)
-	rec.ProfileAlias = profileAlias
+	rec.ProfileAlias, rec.Transcript = profileAlias, transcriptState
 	// Capture effective defaults too, so a later config/version change does not
 	// silently select another model or idle window for the continuation.
 	if rec.Model != "" {

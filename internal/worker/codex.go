@@ -2,8 +2,10 @@ package worker
 
 import (
 	"encoding/json"
+	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -179,4 +181,33 @@ func codexChildEnv(base []string, home string, preserveAuth ...bool) []string {
 		env = append(env, v)
 	}
 	return append(env, "CODEX_HOME="+home)
+}
+
+// codexAuthSecrets returns the credential values stored in the Codex home's auth.json, so the
+// transcript can remove them if a command prints that file. Unreadable or oversized files yield none.
+func codexAuthSecrets(home string) []string {
+	if home == "" {
+		return nil
+	}
+	f, err := os.Open(filepath.Join(home, "auth.json"))
+	if err != nil {
+		return nil
+	}
+	defer f.Close()
+	data, err := io.ReadAll(io.LimitReader(f, 1<<20+1))
+	if err != nil || len(data) > 1<<20 {
+		return nil
+	}
+	var auth struct {
+		APIKey string `json:"OPENAI_API_KEY"`
+		Tokens struct {
+			ID      string `json:"id_token"`
+			Access  string `json:"access_token"`
+			Refresh string `json:"refresh_token"`
+		} `json:"tokens"`
+	}
+	if json.Unmarshal(data, &auth) != nil {
+		return nil
+	}
+	return []string{auth.APIKey, auth.Tokens.ID, auth.Tokens.Access, auth.Tokens.Refresh}
 }
