@@ -14,6 +14,7 @@ import (
 	"syscall"
 
 	"github.com/zhoushoujianwork/offload/internal/config"
+	"github.com/zhoushoujianwork/offload/internal/history"
 )
 
 const managedPrompt = `You are a worker delegated a task by a supervising agent. Complete the assigned task autonomously within its authorized scope.
@@ -113,6 +114,13 @@ func Validate(o *Opts) error {
 	}
 	if o.CallerRunID != "" && !callerPattern.MatchString(o.CallerRunID) {
 		return errors.New("invalid caller-run-id")
+	}
+	if o.Caller != "" {
+		c, err := history.NormalizeCaller(o.Caller)
+		if err != nil {
+			return err
+		}
+		o.Caller = c
 	}
 	if o.CodexSandbox != "" && (!managed || !o.Write || (o.CodexSandbox != "workspace-write" && o.CodexSandbox != "danger-full-access")) {
 		return errors.New("codex-sandbox requires managed-development and -w; expected workspace-write or danger-full-access")

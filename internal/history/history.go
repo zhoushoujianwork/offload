@@ -22,6 +22,7 @@ type Record struct {
 	ErrorKind       string       `json:"error_kind,omitempty"`
 	// ToolRestriction marks requested restrictions that the backend did not enforce.
 	ToolRestriction  string           `json:"tool_restriction,omitempty"`
+	Caller           string           `json:"caller"`
 	TS               string           `json:"ts"`
 	Status           string           `json:"status"` // ok | error | timeout
 	ExitCode         *int             `json:"exit_code"`
@@ -125,6 +126,7 @@ func Append(path string, r Record) error {
 		return err
 	}
 	defer f.Close()
+	r.Caller = CallerOrUnspecified(r.Caller)
 	b, err := json.Marshal(r)
 	if err != nil {
 		return err
@@ -150,6 +152,7 @@ func Read(path string) ([]Record, error) {
 		var r Record
 		if json.Unmarshal(sc.Bytes(), &r) == nil {
 			normalizeCost(&r)
+			r.Caller = CallerOrUnspecified(r.Caller)
 			rs = append(rs, r)
 		}
 	}

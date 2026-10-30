@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/zhoushoujianwork/offload/internal/config"
+	"github.com/zhoushoujianwork/offload/internal/history"
 	"github.com/zhoushoujianwork/offload/internal/live"
 	"github.com/zhoushoujianwork/offload/internal/text"
 )
@@ -47,7 +48,7 @@ func describe(s live.State) string {
 	if s.Limits != "" {
 		line += " limits=" + s.Limits
 	}
-	return line
+	return line + " caller=" + history.CallerOrUnspecified(s.Caller)
 }
 
 // cmdStatus prints one line per known worker: what is running, and what finished recently.
@@ -70,9 +71,11 @@ func cmdStatus(stdout, stderr io.Writer) int {
 		if s.Phase == live.Done && !s.Unresolved {
 			line = fmt.Sprintf("pid=%d done status=%s exit_code=%d tool_calls=%d session=%s task=%q",
 				s.PID, s.Status, s.ExitCode, s.ToolCalls, firstNonEmpty(s.Session, "-"), text.Truncate(s.Task, 60))
+			line += " caller=" + history.CallerOrUnspecified(s.Caller)
 		}
 		if s.Phase == live.Unresolved {
 			line = fmt.Sprintf("pid=%d UNRESOLVED pgid=%d status=%s exit_code=%d: %s", s.PID, s.PGID, s.Status, s.ExitCode, s.WaitReason)
+			line += " caller=" + history.CallerOrUnspecified(s.Caller)
 		}
 		fmt.Fprintln(stdout, line)
 	}
@@ -101,8 +104,8 @@ func (w *watcher) emit(format string, a ...any) { fmt.Fprintf(w.out, format+"\n"
 func (w *watcher) recentlyFinished(states []live.State) {
 	for _, s := range states {
 		if s.Phase == live.Done {
-			w.emit("[offload] recently finished status=%s exit_code=%d tool_calls=%d session=%s task=%q",
-				s.Status, s.ExitCode, s.ToolCalls, firstNonEmpty(s.Session, "-"), text.Truncate(s.Task, 60))
+			w.emit("[offload] recently finished status=%s exit_code=%d tool_calls=%d session=%s task=%q caller=%s",
+				s.Status, s.ExitCode, s.ToolCalls, firstNonEmpty(s.Session, "-"), text.Truncate(s.Task, 60), history.CallerOrUnspecified(s.Caller))
 		}
 	}
 }
@@ -141,8 +144,8 @@ func (w *watcher) step(states []live.State) int {
 				w.emit("[offload] LOST (offload died or was killed, no updates; worker processes not found): %s", describe(s))
 			}
 		case s.Phase != prev.phase && s.Phase == live.Done:
-			w.emit("[offload] finished status=%s exit_code=%d tool_calls=%d permission_denials=%d session=%s task=%q",
-				s.Status, s.ExitCode, s.ToolCalls, s.Denials, firstNonEmpty(s.Session, "-"), text.Truncate(s.Task, 60))
+			w.emit("[offload] finished status=%s exit_code=%d tool_calls=%d permission_denials=%d session=%s task=%q caller=%s",
+				s.Status, s.ExitCode, s.ToolCalls, s.Denials, firstNonEmpty(s.Session, "-"), text.Truncate(s.Task, 60), history.CallerOrUnspecified(s.Caller))
 		case s.Phase == live.Running && idle >= stallAfter && !prev.stalled:
 			prev.stalled = true
 			w.emit("[offload] STALLED %s", describe(s))

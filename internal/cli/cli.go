@@ -120,6 +120,33 @@ func Run(version string, args []string, stdin io.Reader, stdout, stderr io.Write
 	return cmdRun(args, stdin, stdout, stderr)
 }
 
+// callerFlag parses --caller. It rejects invalid values and repeated occurrences, so a run never
+// has an ambiguous attribution. The zero value means the flag was not given.
+type callerFlag struct {
+	value string
+	set   bool
+}
+
+func (c *callerFlag) String() string {
+	if c == nil {
+		return ""
+	}
+	return c.value
+}
+
+func (c *callerFlag) Set(v string) error {
+	if c.set {
+		return errors.New("caller may be given only once")
+	}
+	c.set = true
+	n, err := history.NormalizeCaller(v)
+	if err != nil {
+		return err
+	}
+	c.value = n
+	return nil
+}
+
 func cmdRun(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	started := time.Now()
 	fs := flag.NewFlagSet("offload", flag.ContinueOnError)
@@ -141,6 +168,8 @@ func cmdRun(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	instructionsFile := fs.String("instructions-file", "", "absolute private operator instructions file (<=256KiB)")
 	codexSandbox := fs.String("codex-sandbox", "", "managed Codex sandbox: workspace-write or danger-full-access")
 	callerRunID := fs.String("caller-run-id", "", "supervisor correlation ID (1-128 safe characters)")
+	var caller callerFlag
+	fs.Var(&caller, "caller", "optional caller ID for attribution: lowercase [a-z0-9][a-z0-9._-]{0,63}, e.g. agh, clawflow (per invocation; default unspecified)")
 	eventsFile := fs.String("events-file", "", "absolute exclusive-create sanitized NDJSON events file")
 	toolsDisabled := fs.Bool("tools-disabled", false, "disable all worker tools (Claude only)")
 	allowedTools := fs.String("allowed-tools", "", "explicit comma-separated Claude tool allowlist")
@@ -148,9 +177,13 @@ func cmdRun(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	onUnsupportedTools := fs.String("on-unsupported-tools", worker.UnsupportedToolsFail, "when the profile's backend cannot enforce a tool restriction (Codex): fail (default) or ignore (run without it and record tool_restriction: not_enforced)")
 	parseErr := fs.Parse(args)
 	task := strings.Join(fs.Args(), " ")
+	callerID := history.CallerOrUnspecified(caller.value)
+	if parseErr != nil {
+		callerID = history.CallerUnspecified // a rejected invocation has no trustworthy attribution
+	}
 
 	logPath := history.Path()
-	rec := history.Record{RunID: worker.NewRunID(), CallerRunID: *callerRunID, ExecutionPolicy: *executionPolicy, Session: *resume, TS: started.Format("2006-01-02 15:04:05"), Status: "error", Profile: *profile,
+	rec := history.Record{RunID: worker.NewRunID(), CallerRunID: *callerRunID, Caller: callerID, ExecutionPolicy: *executionPolicy, Session: *resume, TS: started.Format("2006-01-02 15:04:05"), Status: "error", Profile: *profile,
 		Model: *model, Dir: *dir, Task: task, CostIsEstimate: true}
 	var events *eventWriter
 	var eventFile *os.File
@@ -302,7 +335,7 @@ func cmdRun(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	}
 	o := worker.Opts{ProfileName: name, Profile: prof, Model: firstNonEmpty(*model, prof.Model), Write: *write,
 		Resume: *resume, Dir: wd, AddDirs: effectiveDirs, Task: task, Timeout: *timeout, StartedAt: started, NoSalvage: *noSalvage,
-		RunID: rec.RunID, CallerRunID: *callerRunID, ExecutionPolicy: *executionPolicy, InstructionsFile: *instructionsFile, CodexSandbox: *codexSandbox,
+		RunID: rec.RunID, CallerRunID: *callerRunID, Caller: callerID, ExecutionPolicy: *executionPolicy, InstructionsFile: *instructionsFile, CodexSandbox: *codexSandbox,
 		ToolsDisabled: *toolsDisabled, AllowedTools: *allowedTools, DisallowedTools: *disallowedTools, OnUnsupportedTools: *onUnsupportedTools,
 		MaxWorkers: maxWorkers, Limits: cfg.Limits}
 	fs.Visit(func(f *flag.Flag) {
@@ -552,8 +585,8 @@ func cmdShow(args []string, stdout, stderr io.Writer) int {
 		return fail(stderr, fmt.Errorf("no run with session %s", args[0]))
 	}
 	for _, r := range hit {
-		fmt.Fprintf(stdout, "## %s %s %s/%s %s\nexit_code=%s turns=%d estimated_cost=%s elapsed=%s session=%s\n",
-			r.TS, r.Status, r.Profile, r.Model, r.Dir, exitText(r), r.Turns, costText(r), elapsedText(r), r.Session)
+		fmt.Fprintf(stdout, "## %s %s %s/%s %s\nexit_code=%s turns=%d estimated_cost=%s elapsed=%s session=%s caller=%s\n",
+			r.TS, r.Status, r.Profile, r.Model, r.Dir, exitText(r), r.Turns, costText(r), elapsedText(r), r.Session, history.CallerOrUnspecified(r.Caller))
 		if len(r.AddDirs) > 0 {
 			fmt.Fprintf(stdout, "add_dirs=%q\n", r.AddDirs)
 		}

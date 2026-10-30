@@ -8,7 +8,7 @@ import (
 
 func TestUsageAndPricingHistoryRoundtrip(t *testing.T) {
 	for _, cost := range []*float64{nil, ptr(0), ptr(.0032876)} {
-		r := Record{Backend: "codex", Session: "session", CostUSD: cost, CostIsEstimate: cost != nil,
+		r := Record{Caller: CallerUnspecified, Backend: "codex", Session: "session", CostUSD: cost, CostIsEstimate: cost != nil,
 			Usage: &TokenUsage{Input: 28614, Cached: 28416, Output: 5}, CumulativeUsage: &TokenUsage{Input: 57208, Cached: 41600, Output: 10},
 			UsageSource: "terminal", UsageScope: "run", CostBasis: "api_baseline",
 			Pricing: &PricingSnapshot{Model: "gpt-6.1-sol", Tier: "priority", Currency: "USD", PerTokens: 1000000, Input: 4, Cached: .2, CacheWrite: 5, Output: 20, Source: "reference", Date: "2026-10-26", Assumptions: "frozen assumptions"}}
