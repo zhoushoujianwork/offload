@@ -1016,6 +1016,10 @@ final class MarkdownTests: XCTestCase {
 
 @MainActor
 final class ChatLayoutTests: XCTestCase {
+    /// Natural height of the empty populated panel. It was 633 before the workload section was added to the body
+    /// (and the trend chart shortened to pay for it); the header-growth checks measure against this value.
+    static let populatedBaseline: CGFloat = 641
+
     func testMainPanelStaysWithin680WithNewChatButtonAndLongNames() throws {
         let fit = PanelFitTests()
         let long = String(repeating: "very-long-profile-name-", count: 6)
@@ -1026,7 +1030,7 @@ final class ChatLayoutTests: XCTestCase {
                               fit.updates(.failed(String(repeating: "problem ", count: 40))), profiles: profiles)
         XCTAssertLessThanOrEqual(h, Layout.height, "needs \(h)")
         let plain = fit.fitHeight(MonitorModel(testingSnapshot: try fit.snapshot(active: 0, recent: 0, groups: 0, warnings: 0)), fit.updates())
-        XCTAssertLessThanOrEqual(plain, 633 + 16, "the header row grew more than the two-line status allows")
+        XCTAssertLessThanOrEqual(plain, Self.populatedBaseline + 16, "the header row grew more than the two-line status allows")
     }
 
     func testLongWrappedMessagesCanAlwaysBeExpanded() {

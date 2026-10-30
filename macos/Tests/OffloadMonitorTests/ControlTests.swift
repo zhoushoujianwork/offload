@@ -605,7 +605,7 @@ final class ControlsLayoutTests: XCTestCase {
         let b = fit.fitHeight(MonitorModel(testingSnapshot: snap), fit.updates(), profiles: ProfilesModel(testingSnapshot: nil))
         XCTAssertEqual(a, b, accuracy: 1)
         // The two-line status summary (title + counts) makes the row taller than the old pill; the 680pt panel has room.
-        XCTAssertLessThanOrEqual(a, 633 + 16, "previous populated height was 633")
+        XCTAssertLessThanOrEqual(a, ChatLayoutTests.populatedBaseline + 16, "populated height baseline is \(ChatLayoutTests.populatedBaseline)")
     }
 
     func testSettingsWindowFitsItsFixedSize() throws {

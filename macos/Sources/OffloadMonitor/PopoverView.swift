@@ -396,7 +396,8 @@ struct SnapshotView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            MetricGrid(totals: snapshot.totals)
+            WorkloadPanel(snapshot: snapshot)
+            SummaryStrip(totals: snapshot.totals)
             TrendCard(trend: snapshot.trend)
             Picker("Detail", selection: $tab) {
                 ForEach(DetailTab.allCases) { t in
@@ -513,7 +514,7 @@ struct TrendCard: View {
                 }
                 if let message = TrendData.emptyMessage(trend, metric: metric) {
                     Text(message).font(.system(size: 10)).foregroundStyle(.secondary)
-                        .frame(maxWidth: .infinity, minHeight: 90, maxHeight: 90)
+                        .frame(maxWidth: .infinity, minHeight: 36, maxHeight: 36)
                 } else {
                     chart
                 }
@@ -566,7 +567,7 @@ struct TrendCard: View {
                     })
             }
         }
-        .frame(height: 90)
+        .frame(height: 36)
     }
 
     @ViewBuilder private var detail: some View {
