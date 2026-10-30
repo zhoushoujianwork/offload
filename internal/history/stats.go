@@ -61,6 +61,7 @@ type StatsGroup struct {
 // nil here: its recorded accounting is incomplete and may hold session totals, so it is not a
 // reliable full-run figure.
 type RecentRun struct {
+	Caller   string      `json:"caller"`
 	TS       string      `json:"ts"`
 	Status   string      `json:"status"`
 	Dir      string      `json:"dir"`
@@ -106,6 +107,7 @@ type Trend struct {
 
 // Stats is the aggregate of the completed runs in one period.
 type Stats struct {
+	Callers  []StatsGroup
 	Period   string
 	Totals   StatsTotals
 	Trend    Trend
@@ -356,12 +358,19 @@ func Aggregate(rs []Record, period string, now time.Time) (Stats, error) {
 	legacy := 0
 	interval, trendLabel, starts := trendStarts(period, now)
 	buckets := make([]statsAcc, len(starts))
-	projects, models := map[string]*statsAcc{}, map[string]*statsAcc{}
+	projects, models, callers := map[string]*statsAcc{}, map[string]*statsAcc{}, map[string]*statsAcc{}
+	callerNames := map[string]string{}
 	projectName, modelName := map[string]string{}, map[string]string{}
 	for _, e := range in {
 		r := e.r
 		elapsedOK := r.ElapsedMs != nil && *r.ElapsedMs >= 0
 		total.add(r, elapsedOK)
+		caller := CallerOrUnspecified(r.Caller)
+		if callers[caller] == nil {
+			callers[caller] = &statsAcc{}
+			callerNames[caller] = caller
+		}
+		callers[caller].add(r, elapsedOK)
 		if i := trendIndex(starts, e.at); i >= 0 {
 			buckets[i].add(r, elapsedOK)
 		}
@@ -391,7 +400,7 @@ func Aggregate(rs []Record, period string, now time.Time) (Stats, error) {
 		points[i] = TrendPoint{Start: t.Format(time.RFC3339), Label: labels[i], Totals: buckets[i].totals()}
 	}
 
-	st := Stats{Period: period, Totals: total.totals(), Trend: Trend{Interval: interval, Label: trendLabel, Points: points}, Projects: groups(projects, projectName),
+	st := Stats{Callers: groups(callers, callerNames), Period: period, Totals: total.totals(), Trend: Trend{Interval: interval, Label: trendLabel, Points: points}, Projects: groups(projects, projectName),
 		Models: groups(models, modelName), Recent: []RecentRun{}, Warnings: []string{}, LegacyCostRuns: legacy}
 
 	sort.SliceStable(in, func(i, j int) bool {
@@ -402,7 +411,7 @@ func Aggregate(rs []Record, period string, now time.Time) (Stats, error) {
 	})
 	for i := 0; i < len(in) && i < RecentLimit; i++ {
 		r := in[i].r
-		st.Recent = append(st.Recent, RecentRun{TS: r.TS, Status: r.Status, Dir: r.Dir, Task: r.Task,
+		st.Recent = append(st.Recent, RecentRun{Caller: CallerOrUnspecified(r.Caller), TS: r.TS, Status: r.Status, Dir: r.Dir, Task: r.Task,
 			Session: r.Session, Model: r.Model, CostUSD: runCost(r), Usage: runUsage(r),
 			Result: boundResult(r.Result), Salvaged: r.Salvaged, TerminationClass: r.TerminationClass(), ToolRestriction: r.ToolRestriction})
 	}

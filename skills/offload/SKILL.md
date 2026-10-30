@@ -256,3 +256,9 @@ in addition to start/final. Final adds `status`, `exit_code`, and `error_kind`
 (empty on success). Event I/O failure cancels the worker and returns `events_io`
 in final stdout JSON; a failed event destination cannot guarantee a final event.
 The supervisor must parse the final record even when the process exits nonzero.
+
+## Caller attribution and statistics
+
+When integrating with AGH or ClawFlow, explicitly pass `--caller agh` or `--caller clawflow` on every invocation, including `-r` resumes. Use `--caller-run-id` separately for request correlation. Custom caller IDs use lowercase `[a-z0-9][a-z0-9._-]{0,63}`; omitted labels mean `unspecified`, never inferred human activity. Confirm `offload -h` advertises `-caller` before using an older binary; surface unsupported-flag errors.
+
+Inspect caller totals with `offload stats --json --period today --caller clawflow`. The `callers` groups cover all callers for that period; totals, trend, and lists follow the filter. Workload, daily calls and peaks remain whole-computer metrics. Missing usage/cost is unknown, not zero, and session counts shared across caller groups are not additive.

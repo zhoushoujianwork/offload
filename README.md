@@ -685,3 +685,11 @@ The supervisor must parse the final record even when the process exits nonzero.
 `offload install-agent -scope project` 刷新受管理区块。
 若技能所有权或文件权限导致指令更新失败，开关仍已保存，CLI 会明确报错；
 修复冲突后重试 `offload install-agent`。
+
+### Caller statistics
+
+`offload stats --json --period today --caller agh` filters recorded totals, trend, projects, models, recent history and the active task list. Omit `--caller` for all callers; use `--caller unspecified` for legacy or untagged invocations. `unspecified` does not imply a human. The additive `callers` array always lists all caller groups for the selected period, even with a filter. Sessions shared by callers may appear in multiple groups, so distinct session counts are not additive; runs and covered usage/cost reconcile. Missing accounting remains unavailable.
+
+The monitor has a caller filter above the totals and a Callers tab. Older CLIs without caller groups keep working with All callers. The workload card, daily calls, daily average and concurrency peaks remain whole-computer metrics, explicitly labeled: old processing logs do not carry reliable caller attribution. Caller filtering never relabels historical runs or changes execution permissions.
+
+AGH and ClawFlow integrations must explicitly append `--caller agh` / `--caller clawflow` to each invocation, including resumes, and keep request correlation in `--caller-run-id`. Probe `offload --help` for `-caller` before enabling attribution against older binaries; unsupported flags must surface as errors rather than silently tagging a run. This repository does not change those external integrations.

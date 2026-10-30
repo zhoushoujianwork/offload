@@ -141,6 +141,8 @@ struct StatsSnapshot: Codable, Equatable {
     var workload: Workload?
     var goals: WorkloadGoals
     var daily: Daily?
+    var callers: [StatsGroup] = []
+    var callerFilter: String? = nil
 
     var runningCount: Int { active.filter(\.isRunning).count }
     /// Tasks processing now as the CLI counts them. nil when the live state could not be read: unavailable is
@@ -152,7 +154,7 @@ struct StatsSnapshot: Codable, Equatable {
 
 extension StatsSnapshot {
     private enum CodingKeys: String, CodingKey {
-        case schemaVersion, generatedAt, period, totals, projects, models, active, recent, warnings, trend, workload, goals, daily
+        case schemaVersion, generatedAt, period, totals, projects, models, active, recent, warnings, trend, workload, goals, daily, callers, callerFilter
     }
 
     init(from decoder: Decoder) throws {
@@ -167,6 +169,8 @@ extension StatsSnapshot {
         recent = try c.decode([RecentRun].self, forKey: .recent)
         warnings = try c.decode([String].self, forKey: .warnings)
         trend = try c.decodeIfPresent(Trend.self, forKey: .trend) ?? .empty
+        callers = try c.decodeIfPresent([StatsGroup].self, forKey: .callers) ?? []
+        callerFilter = try c.decodeIfPresent(String.self, forKey: .callerFilter)
         // A malformed new section degrades to "not reported" instead of failing the whole snapshot.
         workload = (try? c.decodeIfPresent(Workload.self, forKey: .workload)) ?? nil
         goals = ((try? c.decodeIfPresent(WorkloadGoals.self, forKey: .goals)) ?? nil) ?? .default
