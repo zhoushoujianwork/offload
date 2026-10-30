@@ -173,6 +173,10 @@ const (
 // Old versions serialized a missing cost as 0 without cost_is_estimate, so an
 // unmarked zero is ambiguous and is treated as unavailable rather than as $0.
 func normalizeCost(r *Record) {
+	if r.Backend == "codex" && r.CostUSD == nil && r.UsageScope == "run" && r.CostBasis == "subscription" {
+		EstimateCodexCost(r)
+	}
+
 	r.CostNote = ""
 	switch {
 	case r.CostUSD != nil && !ValidCost(*r.CostUSD):

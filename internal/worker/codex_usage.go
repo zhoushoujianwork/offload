@@ -132,6 +132,7 @@ const codexPricingAssumptions = "API-equivalent short-context/30m cache-write ba
 
 func applyCodexAccounting(rec *history.Record, s streamSummary, baseline *history.TokenUsage, baselineError string, o Opts, completed bool) {
 	rec.CostUSD, rec.CostIsEstimate = nil, false
+	rec.UsageUnavailable = ""
 	rec.UsageSource, rec.UsageScope = codexUsageSource, "run"
 	if o.Resume != "" {
 		rec.UsageSource += " minus pre-launch native rollout token_count info.total_token_usage"
@@ -160,33 +161,10 @@ func applyCodexAccounting(rec *history.Record, s streamSummary, baseline *histor
 			}
 		}
 	}
-	if codexSubscription(o.CodexHome) {
-		rec.CostBasis = "subscription"
-		rec.CostUnavailable = "subscription: Codex does not report USD cost"
-		return
-	}
 	if rec.Usage == nil {
 		rec.CostUnavailable = rec.UsageUnavailable
 		return
 	}
-	if o.Model != "gpt-6.1-sol" || (o.Profile.ServiceTier != "default" && o.Profile.ServiceTier != "priority") {
-		rec.CostUnavailable = "reference rates require explicit gpt-6.1-sol model and default/priority tier"
-		return
-	}
-	p := &history.PricingSnapshot{Model: o.Model, Tier: o.Profile.ServiceTier, Currency: "USD", PerTokens: 1000000,
-		Input: 2, Cached: .10, CacheWrite: 2.50, Output: 10,
-		Source: "https://developers.openai.com/api/docs/models/gpt-6.1-sol", Date: "2026-10-26", Assumptions: codexPricingAssumptions}
-	if p.Tier == "priority" {
-		p.Input *= 2
-		p.Cached *= 2
-		p.CacheWrite *= 2
-		p.Output *= 2
-	}
-	u := rec.Usage
-	cost := (float64(u.Input-u.Cached-u.CacheWrite)*p.Input + float64(u.Cached)*p.Cached + float64(u.CacheWrite)*p.CacheWrite + float64(u.Output)*p.Output) / float64(p.PerTokens)
-	if !history.ValidCost(cost) {
-		rec.CostUnavailable = "invalid computed estimate"
-		return
-	}
-	rec.Pricing, rec.CostUSD, rec.CostIsEstimate = p, &cost, true
+	rec.Model = o.Model
+	history.EstimateCodexCost(rec)
 }

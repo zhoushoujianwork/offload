@@ -738,7 +738,7 @@ struct GroupRow: View {
             Text(group.name).font(.system(size: 10.5)).lineLimit(1)
             Spacer()
             Text("\(group.totals.runs) run\(group.totals.runs == 1 ? "" : "s")").font(.system(size: 10).monospacedDigit()).foregroundStyle(.secondary)
-            Text(group.totals.costUsd.map(Format.cost) ?? "no cost data").font(.system(size: 10).monospacedDigit()).foregroundStyle(.secondary)
+            Text(group.totals.costUsd.map { "≈" + Format.cost($0) } ?? "no cost data").font(.system(size: 10).monospacedDigit()).foregroundStyle(.secondary)
                 .frame(minWidth: 64, alignment: .trailing)
         }
         .padding(.horizontal, 8)
