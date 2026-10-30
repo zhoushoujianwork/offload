@@ -162,6 +162,8 @@ Each new run pays to rediscover the code. Keep related work in one worker sessio
 
 Backend compaction means a session's history is not unlimited or verbatim. Every follow-up states the current corrections and acceptance criteria itself instead of assuming the worker remembers them, and the worker re-reads files it needs.
 
+To avoid tracking session ids, name the conversation: `offload -thread <key> "task"`. The first call with a key starts a session and later calls resume it, scoped to the key, backend, profile and directory. Pick a stable key such as `issue-39`. Send only the new instruction, corrections and acceptance criteria; the resumed session already holds the earlier turns, so do not repeat the original task or earlier conclusions. If the saved session is gone, offload says so and starts a new one. A different backend or profile is refused; `-thread-reset` starts a new session for the key. `-thread` cannot be combined with `-r`, and a key with an active run refuses a second call.
+
 ```bash
 # 1. Investigate (read-only). Note the session id from the summary line.
 offload -json -d /abs/app "Find where retry limits are applied; return file:line | purpose, max 10 rows."

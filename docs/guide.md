@@ -225,6 +225,19 @@ offload -r <session> -w -json "Review fix: keep backoff unchanged when maxAttemp
 offload -w -json -d /abs/docs "..."
 ```
 
+- **Name the conversation instead of storing its id.** `offload -thread <key> "task"` starts a session the first time and resumes it every time after. The key is 1-128 characters from `A-Z a-z 0-9 . _ -`, and the saved session is scoped to the key, the backend, the profile and the directory (`-d`, or the current directory), so another worktree gets its own session. Use a stable name such as `issue-39`. `-thread` cannot be combined with `-r`.
+
+  ```bash
+  offload -thread issue-39 -json -d /abs/app "Find where retry limits are applied."
+  offload -thread issue-39 -w -json -d /abs/app "Design decided: expose maxAttempts (default 3). Only edit internal/http/client.go."
+  ```
+
+  - **The task is sent unchanged.** A resumed session already holds its earlier turns, so a follow-up carries only the new instruction, corrections and acceptance criteria. Do not paste the original task or earlier conclusions again; that is billed as new input on every turn. Compaction still means history is not verbatim, so name anything the worker must not assume.
+  - **A missing session falls back to a new one.** If the backend reports that the saved session no longer exists, offload says so on stderr, starts a new session without the earlier conversation, and rebinds the key. Any other failure keeps the binding, so the next call resumes the same session.
+  - **A different backend or profile is refused** (exit 2) instead of silently switching provider. `-thread-reset` starts a new session for the key and replaces the binding.
+  - **One run per key.** A second call on a key that has an active run exits 2 with `already has an active run`.
+  - **Where it shows.** `offload ls` and `offload show` print the key and whether the run was `fresh`, `resumed`, `reset` or `fallback`. `offload history show --json` carries `thread` and `thread_start`. `offload stats` adds `thread runs: N (resumed, fresh, fell back to fresh)` once any run has used `-thread`.
+  - **Cache.** Resuming reuses the conversation, not the provider's prompt cache. Cache hits depend on the backend and gateway: resumed Codex runs have shown high cached input, while a Claude gateway that does not report cache usage shows none, so a long resumed Claude session still pays for its whole history on every turn.
 - **One run per session; no overlapping follow-ups.** `offload -r` refuses a session that still has an active run (exit 2). Wait with `offload watch -t`, then resume.
 - **Profile safety.** A resume uses the session's recorded profile. If it was renamed or deleted, offload stops with recovery steps instead of falling back to the default provider. Restore the profile, or start a new session with `-p` and restate the context.
 - **Interrupted runs.** Inspect with `offload show <session>` and `git diff` first. Partial edits stay in the tree; the follow-up says what to keep or finish.
@@ -302,6 +315,8 @@ offload version
   -m model     override the profile's model
   -w           task intent: the task may modify files (default: told to stay read-only); instruction only, no tool or sandbox limit either way
   -r session   resume a session; reuses its original dir unless -d is given
+  -thread key  continue a named conversation: first run starts a session, later runs with the key (and dir) resume it; not combinable with -r
+  -thread-reset  with -thread: start a new session for the key instead of resuming
   -d dir       working directory (default: cwd)
   --add-dir d  additional directory for the worker; repeatable; a resume inherits the saved set unless this replaces it
   --clear-add-dirs  resume without the saved additional directories (not combinable with --add-dir)

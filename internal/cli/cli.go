@@ -24,6 +24,7 @@ import (
 	"github.com/zhoushoujianwork/offload/internal/live"
 	"github.com/zhoushoujianwork/offload/internal/slots"
 	"github.com/zhoushoujianwork/offload/internal/text"
+	"github.com/zhoushoujianwork/offload/internal/thread"
 	"github.com/zhoushoujianwork/offload/internal/transcript"
 	"github.com/zhoushoujianwork/offload/internal/worker"
 )
@@ -175,6 +176,8 @@ func cmdRunSaved(args []string, stdin io.Reader, stdout, stderr io.Writer, paren
 	model := fs.String("m", "", "override the profile's model")
 	write := fs.Bool("w", false, "task intent: the task may modify files (default: told to stay read-only). Instruction only; offload adds no tool or sandbox limits either way")
 	resume := fs.String("r", "", "resume a session id; reuses its original dir unless -d is given")
+	threadKey := fs.String("thread", "", "continue a named conversation: the first run with a key starts a session, later runs with the same key (and directory) resume it; cannot be combined with -r")
+	threadReset := fs.Bool("thread-reset", false, "with -thread: start a new session for the key instead of resuming its saved one")
 	dir := fs.String("d", "", "working directory (default: cwd)")
 	var addDirs dirList
 	fs.Var(&addDirs, "add-dir", "additional directory the worker may use (repeatable; relative paths resolve against the current directory; absolute recommended). A resume inherits the session's saved set unless this replaces it")
@@ -243,7 +246,7 @@ func cmdRunSaved(args []string, stdin io.Reader, stdout, stderr io.Writer, paren
 	failRun := func(err error) int {
 		// Setup never launched a session run. Do not make a failed setup the latest
 		// resume baseline for saved directories, profile or usage accounting.
-		rec.Session = ""
+		rec.Session, rec.ThreadStart = "", ""
 		code := 2
 		rec.ErrorKind = worker.ErrorKind(err)
 		rec.ExitCode, rec.Error, rec.Result = &code, err.Error(), err.Error()
@@ -265,6 +268,22 @@ func cmdRunSaved(args []string, stdin io.Reader, stdout, stderr io.Writer, paren
 	if task == "" {
 		fs.Usage()
 		return failRun(errors.New("task required"))
+	}
+	if *threadReset && *threadKey == "" {
+		return failRun(errors.New("-thread-reset needs -thread <key>"))
+	}
+	var th *threadRun
+	if *threadKey != "" {
+		if *resume != "" {
+			return failRun(errors.New("-thread cannot be combined with -r; use one or the other"))
+		}
+		var terr error
+		if th, terr = beginThread(*threadKey, *dir, *threadReset); terr != nil {
+			return failRun(terr)
+		}
+		defer th.lock.Release()
+		rec.Thread, rec.ThreadStart = *threadKey, th.start
+		*resume, rec.Session = th.session, th.session
 	}
 	if *eventsFile != "" {
 		var err error
@@ -345,6 +364,11 @@ func cmdRunSaved(args []string, stdin io.Reader, stdout, stderr io.Writer, paren
 	}
 	rec.Profile, rec.Model = name, firstNonEmpty(*model, prof.Model)
 	rec.Backend = prof.BackendName()
+	if err == nil && th != nil && th.entry != nil {
+		if cerr := th.entry.Check(prof.BackendName(), name); cerr != nil {
+			return failRun(cerr)
+		}
+	}
 	if err != nil {
 		if resumedProfile != "" {
 			// Never fall back to the default profile: that would silently change the provider.
@@ -439,7 +463,20 @@ func cmdRunSaved(args []string, stdin io.Reader, stdout, stderr io.Writer, paren
 	}()
 	profileAlias, transcriptState := rec.ProfileAlias, rec.Transcript
 	rec, _ = worker.Run(ctx, o)
+	if th != nil && th.start == "resumed" && rec.Status != "ok" && thread.SessionMissing(rec.Backend, rec.Error+"\n"+rec.Result) {
+		fmt.Fprintf(stderr, "[offload] thread %s: saved session %s no longer exists; starting a new session without the earlier conversation\n", th.key, th.session)
+		th.start, o.Resume = "fallback", ""
+		rec, _ = worker.Run(ctx, o)
+	}
 	rec.ProfileAlias, rec.Transcript = profileAlias, transcriptState
+	if th != nil {
+		rec.Thread, rec.ThreadStart = th.key, th.start
+		if rec.Session != "" {
+			if err := thread.Save(th.key, th.dir, rec.Backend, rec.Profile, rec.Session); err != nil {
+				fmt.Fprintf(stderr, "[offload] thread %s: binding not saved, the next run will start a new session: %v\n", th.key, err)
+			}
+		}
+	}
 	// Capture effective defaults too, so a later config/version change does not
 	// silently select another model or idle window for the continuation.
 	if rec.Model != "" {
@@ -667,6 +704,9 @@ func cmdShow(args []string, stdout, stderr io.Writer) int {
 			r.TS, r.Status, r.Profile, r.Model, r.Dir, exitText(r), r.Turns, costText(r), elapsedText(r), r.Session, history.CallerOrUnspecified(r.Caller))
 		if len(r.AddDirs) > 0 {
 			fmt.Fprintf(stdout, "add_dirs=%q\n", r.AddDirs)
+		}
+		if r.Thread != "" {
+			fmt.Fprintf(stdout, "thread=%s thread_start=%s\n", r.Thread, r.ThreadStart)
 		}
 		showCostDetails(stdout, r)
 		fmt.Fprintf(stdout, "> %s\n\n%s\n\n", r.Task, r.Result)

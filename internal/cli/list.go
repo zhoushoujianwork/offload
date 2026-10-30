@@ -60,6 +60,9 @@ func cmdList(args []string, stdout, stderr io.Writer) int {
 		if r.Dir != "" {
 			project = filepath.Base(r.Dir)
 		}
+		if r.Thread != "" {
+			project += " | thread " + r.Thread + " (" + firstNonEmpty(r.ThreadStart, "unknown") + ")"
+		}
 		fmt.Fprintf(stdout, "%s | %s | %s | %d turns | %s\n  %s | %s\n  %s\n  Session: %s\n",
 			listLine(r.TS), listLine(status), listElapsed(r.ElapsedMs), r.Turns, cost,
 			listLine(project), listLine(profile), settingsLine(r.Task, 100), firstNonEmpty(r.Session, "unavailable"))
