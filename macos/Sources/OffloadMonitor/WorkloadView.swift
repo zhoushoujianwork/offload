@@ -35,7 +35,7 @@ struct WorkloadPanel: View {
                         Text(a).font(.system(size: 9)).foregroundStyle(.secondary).lineLimit(1)
                     }
                 }
-                Text("Local state only · goals are targets, not limits or measured capacity")
+                Text("Whole computer · goals are targets, not measured capacity")
                     .font(.system(size: 8.5)).foregroundStyle(.secondary).lineLimit(1).minimumScaleFactor(0.8)
                     .help(w?.scope ?? "Counts cover this computer's Offload state directory.")
             }

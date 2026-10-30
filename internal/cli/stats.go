@@ -26,6 +26,8 @@ type statsActive struct {
 }
 
 type statsOutput struct {
+	Callers       []history.StatsGroup `json:"callers"`
+	CallerFilter  string               `json:"caller_filter,omitempty"`
 	SchemaVersion int                  `json:"schema_version"`
 	GeneratedAt   string               `json:"generated_at"`
 	Period        string               `json:"period"`
@@ -44,7 +46,7 @@ type statsOutput struct {
 	Daily    statsDaily    `json:"daily"`
 }
 
-const statsUsage = "usage: offload stats [--json] [--period today|week|month|all]"
+const statsUsage = "usage: offload stats [--json] [--period today|week|month|all] [--caller ID]"
 
 func cmdStats(args []string, stdout, stderr io.Writer) int {
 	return runStats(args, time.Now(), stdout, stderr)
@@ -54,6 +56,8 @@ func runStats(args []string, now time.Time, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("offload stats", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = func() { fmt.Fprintln(stderr, statsUsage) }
+	var caller callerFlag
+	fs.Var(&caller, "caller", "filter completed-run metrics by caller ID; workload and daily goals remain computer-wide")
 	asJSON := fs.Bool("json", false, "print one JSON document")
 	period := fs.String("period", history.PeriodToday, "today, week (from Monday), month or all")
 	if err := fs.Parse(args); err != nil {
@@ -67,17 +71,43 @@ func runStats(args []string, now time.Time, stdout, stderr io.Writer) int {
 	}
 	// Report bodies are kept only for the newest runs that `recent` can list, so refreshing the
 	// metadata metrics does not hold every historical report in memory.
-	rlog, err := history.ReadStats(history.Path(), now)
+	rlog, err := history.ReadStats(history.Path(), now, caller.value)
 	if err != nil {
 		return fail(stderr, err)
 	}
 	rs := rlog.Records
-	st, err := history.Aggregate(rs, *period, now)
+	allStats, err := history.Aggregate(rs, *period, now)
 	if err != nil {
 		return fail(stderr, err)
 	}
+	selected := rs
+	if caller.set {
+		selected = nil
+		for _, r := range rs {
+			if history.CallerOrUnspecified(r.Caller) == caller.value {
+				selected = append(selected, r)
+			}
+		}
+	}
+	st := allStats
+	if caller.set {
+		st, err = history.Aggregate(selected, *period, now)
+		if err != nil {
+			return fail(stderr, err)
+		}
+	}
 	states, unreadable, lerr := live.ListChecked()
 	active := activeWorkers(states, now)
+	if caller.set {
+		filtered := []statsActive{}
+		for _, a := range active {
+			if history.CallerOrUnspecified(a.Caller) == caller.value {
+				filtered = append(filtered, a)
+			}
+		}
+		active = filtered
+		st.Warnings = append(st.Warnings, "Caller filter applies to completed metrics and task lists; workload, daily calls and peak concurrency remain computer-wide.")
+	}
 	if lerr != nil {
 		st.Warnings = append(st.Warnings, "active workers unavailable: "+text.OneLine(lerr.Error()))
 	}
@@ -104,7 +134,7 @@ func runStats(args []string, now time.Time, stdout, stderr io.Writer) int {
 	goals := statsGoals{Processing: goalProcessing, DailyCalls: goalDailyCalls,
 		Note: "observability targets for one person on one computer; not execution limits, a load-test result, or proof of sustained throughput"}
 	if *asJSON {
-		out := statsOutput{SchemaVersion: statsSchemaVersion, GeneratedAt: now.Format(time.RFC3339), Period: st.Period,
+		out := statsOutput{Callers: allStats.Callers, CallerFilter: caller.value, SchemaVersion: statsSchemaVersion, GeneratedAt: now.Format(time.RFC3339), Period: st.Period,
 			Totals: st.Totals, Trend: st.Trend, Projects: st.Projects, Models: st.Models, Active: active, Recent: st.Recent, Warnings: st.Warnings,
 			Workload: workload, Goals: goals, Daily: dailyStats}
 		if err := json.NewEncoder(stdout).Encode(out); err != nil {
@@ -112,6 +142,12 @@ func runStats(args []string, now time.Time, stdout, stderr io.Writer) int {
 			return 2
 		}
 		return 0
+	}
+	if caller.set {
+		fmt.Fprintf(stdout, "caller: %s (workload and daily metrics remain computer-wide)\n", caller.value)
+	}
+	for _, c := range allStats.Callers {
+		fmt.Fprintf(stdout, "caller %s: %d runs\n", c.Key, c.Totals.Runs)
 	}
 	printStats(stdout, st, active, workload, dailyStats, now)
 	return 0

@@ -46,11 +46,13 @@ struct StatsClient {
         return nil
     }
 
-    func fetch(period: StatsPeriod) async throws -> StatsSnapshot {
+    func fetch(period: StatsPeriod, caller: String? = nil) async throws -> StatsSnapshot {
+        var arguments = ["stats", "--json", "--period", period.rawValue]
+        if let caller { arguments += ["--caller", caller] }
         let out: ProcessOutput
         do {
             out = try await ProcessRunner.run(executable: executable,
-                                              arguments: ["stats", "--json", "--period", period.rawValue],
+                                              arguments: arguments,
                                               timeout: timeout)
         } catch {
             throw StatsError.launchFailed(error.localizedDescription)
@@ -64,6 +66,9 @@ struct StatsClient {
         let snapshot = try StatsDecoder.decode(out.stdout)
         guard snapshot.period == period.rawValue else {
             throw StatsError.periodMismatch(expected: period.rawValue, got: snapshot.period)
+        }
+        guard snapshot.callerFilter == caller else {
+            throw StatsError.invalidOutput("caller filter mismatch")
         }
         return snapshot
     }

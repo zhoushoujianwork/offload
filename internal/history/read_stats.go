@@ -42,7 +42,7 @@ func newLineScanner(f *os.File) *bufio.Scanner {
 // report text and remembers which lines are listed; a second pass decodes only those lines in
 // full. now and its location fix which records Aggregate would accept for the recent list (a
 // readable timestamp that is not in the future). A missing log is empty.
-func ReadStats(path string, now time.Time) (StatsLog, error) {
+func ReadStats(path string, now time.Time, caller ...string) (StatsLog, error) {
 	var out StatsLog
 	f, err := os.Open(path)
 	if errors.Is(err, os.ErrNotExist) {
@@ -73,6 +73,9 @@ func ReadStats(path string, now time.Time) (StatsLog, error) {
 		normalizeCost(&r)
 		idx := len(out.Records)
 		out.Records = append(out.Records, r)
+		if len(caller) > 0 && caller[0] != "" && CallerOrUnspecified(r.Caller) != caller[0] {
+			continue
+		}
 		at, ok := ParseTS(r.TS, now.Location())
 		if !ok || at.After(now) {
 			continue

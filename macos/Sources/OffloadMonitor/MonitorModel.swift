@@ -25,6 +25,16 @@ final class MonitorModel: ObservableObject {
         }
     }
 
+    @Published var callerFilter: String? {
+        didSet {
+            guard callerFilter != oldValue else { return }
+            tracker = ObservedTaskTracker(); pulse = nil; pulseExpiry?.cancel()
+            snapshot = nil; lastSuccess = nil; lastError = nil
+            refreshNow()
+        }
+    }
+    @Published private(set) var callerGroups: [StatsGroup] = []
+
     private let prefs: Preferences
     private let client: StatsClient?
     private var loop: Task<Void, Never>?
@@ -55,6 +65,7 @@ final class MonitorModel: ObservableObject {
         self.prefs = Preferences(defaults: UserDefaults(suiteName: "om-test-\(UUID().uuidString)")!)
         self.client = nil
         self.period = .today
+        self.callerGroups = testingSnapshot?.callers ?? []
         self.snapshot = testingSnapshot
         self.lastSuccess = testingSnapshot == nil ? nil : (lastSuccess ?? Date())
         self.lastError = error
@@ -89,6 +100,7 @@ final class MonitorModel: ObservableObject {
     /// runs, tokens and cost never do.
     func ingest(_ result: StatsSnapshot, at now: Date) {
         snapshot = result
+        callerGroups = result.callers
         lastSuccess = now
         lastError = nil
         if let p = pulse, p.isExpired(at: now) { pulse = nil }   // e.g. after sleep
@@ -116,13 +128,14 @@ final class MonitorModel: ObservableObject {
         inFlight = true
         defer { inFlight = false }
         let asked = period
+        let askedCaller = callerFilter
         if snapshot == nil { isLoading = true }
         do {
-            let result = try await client.fetch(period: asked)
-            guard asked == period else { wakeRequested = true; return } // period changed meanwhile
+            let result = try await client.fetch(period: asked, caller: askedCaller)
+            guard asked == period && askedCaller == callerFilter else { wakeRequested = true; return } // period changed meanwhile
             ingest(result, at: Date())
         } catch {
-            guard asked == period else { wakeRequested = true; return }
+            guard asked == period && askedCaller == callerFilter else { wakeRequested = true; return }
             lastError = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
         }
         isLoading = false

@@ -32,7 +32,7 @@ enum Layout {
     static let width: CGFloat = 400
     static let height: CGFloat = 680
     static let notice: CGFloat = 36
-    static let chart: CGFloat = 60
+    static let chart: CGFloat = 48
     static let list: CGFloat = 112
     static let pager: CGFloat = 16
     static let taskPageSize = 2

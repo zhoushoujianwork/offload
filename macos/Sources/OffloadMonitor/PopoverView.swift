@@ -87,14 +87,17 @@ struct PopoverView: View {
 
     @ViewBuilder private var content: some View {
         if let s = model.snapshot {
-            SnapshotView(snapshot: s)
+            SnapshotView(snapshot: s, callerFilter: $model.callerFilter, callerGroups: model.callerGroups)
         } else if model.lastError == nil {
             HStack { ProgressView().controlSize(.small); Text("Loading…").font(.caption).foregroundStyle(.secondary) }
                 .frame(maxWidth: .infinity, minHeight: 120)
         } else {
-            Text("No data to show yet. Details are in the notice above.")
-                .font(.caption).foregroundStyle(.secondary)
-                .frame(maxWidth: .infinity, minHeight: 120)
+            VStack(spacing: 8) {
+                if model.callerFilter != nil { Button("Show all callers") { model.callerFilter = nil } }
+                Text("No data to show yet. Details are in the notice above.")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, minHeight: 120)
+            }
         }
     }
 
@@ -435,18 +438,31 @@ struct MetricCard: View {
 // MARK: - Snapshot
 
 enum DetailTab: String, CaseIterable, Identifiable {
-    case tasks = "Tasks", history = "History", projects = "Projects", models = "Models"
+    case tasks = "Tasks", history = "History", projects = "Projects", models = "Models", callers = "Callers"
     var id: String { rawValue }
 }
 
 struct SnapshotView: View {
     let snapshot: StatsSnapshot
+    @Binding var callerFilter: String?
+    var callerGroups: [StatsGroup]
     @State private var tab: DetailTab = .tasks
     @State private var page = 0
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 6) {
             WorkloadPanel(snapshot: snapshot)
+            HStack {
+                Text(callerFilter == nil ? "All callers" : "Caller: \(callerFilter!)").font(.system(size: 10, weight: .medium)).lineLimit(1)
+                Spacer(minLength: 4)
+                Menu {
+                    Button("All callers") { callerFilter = nil }
+                    ForEach(callerGroups) { group in
+                        Button("\(group.name) · \(group.totals.runs) runs") { callerFilter = group.key }
+                    }
+                } label: { Image(systemName: "line.3.horizontal.decrease.circle") }
+                .menuStyle(.borderlessButton).fixedSize().help("Filter metrics and lists by explicit caller. Unspecified does not mean human.")
+            }
             SummaryStrip(totals: snapshot.totals)
             TrendCard(trend: snapshot.trend)
             PanelSegments("Detail", values: DetailTab.allCases, selection: $tab) { t in
@@ -477,6 +493,8 @@ struct SnapshotView: View {
                 pagedList(snapshot.recent, size: Layout.rowPageSize, empty: "No finished runs in this period.") { RecentRow(run: $0) }
             case .projects:
                 pagedList(snapshot.projects, size: Layout.rowPageSize, empty: "No projects in this period.") { GroupRow(group: $0) }
+            case .callers:
+                pagedList(callerGroups, size: Layout.rowPageSize, empty: "Caller grouping is not reported by this CLI.") { GroupRow(group: $0) }
             case .models:
                 pagedList(snapshot.models, size: Layout.rowPageSize, empty: "No models in this period.") { GroupRow(group: $0) }
             }
