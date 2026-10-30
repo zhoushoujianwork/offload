@@ -4,6 +4,11 @@ Hand token-heavy grunt work from a supervising agent, such as Codex or Claude Co
 
 `offload` runs Claude Code against an Anthropic-compatible gateway (MiniMax, DeepSeek, Kimi, GLM, a LiteLLM proxy, …), or runs `codex exec` using your Codex login and configuration. Use it throughout investigation, code localization, implementation, testing, validation, and documentation. The supervisor owns design decisions, delegates work with clear scope and acceptance criteria, and verifies the result.
 
+Codex accounts can each have a named profile. Add or import a managed sign-in,
+bind it to a profile, and select that profile in the dashboard or with `-p`.
+See [Managed Codex accounts](#managed-codex-accounts) and
+[local development updates](#fast-local-development-updates).
+
 ```text
 $ offload -d /absolute/path/app "Find retry logic; return file:line references, max 10 rows. Do not edit files."
 internal/http/client.go:42  doWithRetry — exponential backoff, 3 attempts
@@ -701,6 +706,16 @@ While an Offload window or panel is active: **⌘N** starts a new chat, **⌘R**
 The handoff mark represents two hands passing a task. Header actions have consistent hit areas and hover labels. A red dot on the update button and menu-bar mark means a release is available or verified and ready. Click to review the target/current versions and choose **Update When Idle** or **Cancel**. Discovery never downloads or installs by itself, including when an older automatic-install preference was enabled. Confirmed updates retain digest/signature verification and wait for active chats, drafts and unsaved edits before restarting. Local on-disk App replacement keeps its separate idle-restart setting.
 ## Managed Codex accounts
 
+Give each account its own profile, such as `codex-work` or `codex-personal`.
+The dashboard's profile menu selects the default for new tasks; a checkmark
+identifies the active profile. Existing runs keep their original account.
+The task list shows concurrent work from the selected profiles.
+
+<img src="docs/images/codex-account-profiles.png" alt="Offload Monitor showing named Codex account profiles in the profile menu and four account-routing tasks in progress" width="560">
+
+*A development build with four imported account profiles. The screenshot shows
+tasks in progress, rather than final validation results.*
+
 In the macOS app, open **Settings → Profiles**, select a Codex profile, and enter
 an account name. Choose **Sign in…** and follow the device-login instructions, or
 choose **Import…** to select an existing Codex OAuth `auth.json`. Select the new
@@ -717,6 +732,28 @@ offload profile save --json <<'JSON'
 JSON
 offload -p codex-work "your task"
 ```
+
+Creating a profile also selects it as the saved default. Use
+`offload default <profile>` to switch back, or pass `-p` for a single invocation.
+`OFFLOAD_PROFILE`, when set, overrides the saved default.
+
+To reuse a CodexBar account, import `auth.json` from that account's managed home,
+then bind the new offload account name with `codex_account`. Each account needs
+its own import and profile. This is an explicit import workflow, not automatic
+CodexBar discovery or synchronization; CodexBar's saved registry and system
+Codex sign-in are not changed.
+
+Verify routing with a small task, for example:
+
+```sh
+offload -p codex-work -json -t 90s -no-salvage \
+  "Do not use tools or modify files. Reply exactly: PROFILE_OK"
+```
+
+Check `status`, `profile`, `codex_account`, `codex_home`, `session` and `result`
+in the returned record. Run this once per profile to validate each account.
+An account can be routed correctly but fail because its service quota is
+exhausted; the failure remains on that profile rather than switching accounts.
 
 Names use 1–32 lowercase letters, digits or dashes and start with a letter or
 digit. Each account has a private home under offload's configuration directory,
