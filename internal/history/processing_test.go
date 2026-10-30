@@ -195,3 +195,28 @@ func TestAppendProcessingKeepsNanosecondPrecision(t *testing.T) {
 		t.Fatalf("%v %v", log.Open, err)
 	}
 }
+
+// A crash whose span began on an earlier day leaves the later day's peak unknown, not an exact 0.
+func TestPeakCrashAcrossMidnightIsLowerBoundOnLaterDays(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "p.jsonl")
+	writeEvents(t, path,
+		[3]string{"crashed", "start", "2026-10-20T23:59:00Z"},
+		[3]string{"later", "start", "2026-10-21T10:00:00Z"}, [3]string{"later", "end", "2026-10-21T10:00:05Z"})
+	now := time.Date(2026, 10, 22, 12, 0, 0, 0, time.UTC)
+	d1 := t0.Add(24 * time.Hour)
+	p := peakOf(t, path, now, d1, d1.Add(24*time.Hour), nil)
+	if val(p) != 1 || p.Coverage != CoveragePartial || p.IncompleteRuns != 1 {
+		t.Fatalf("day after the crash: %+v", p)
+	}
+	// With no other run the later day must still not be an exact zero.
+	d2 := d1.Add(24 * time.Hour)
+	p = peakOf(t, path, now, d2, d2.Add(24*time.Hour), nil)
+	if val(p) != 0 || p.Coverage != CoveragePartial {
+		t.Fatalf("second day after the crash: %+v", p)
+	}
+	// A run that is confirmed alive is open until now and is not incomplete.
+	p = peakOf(t, path, now, d1, d1.Add(24*time.Hour), map[string]bool{"crashed": true})
+	if val(p) != 2 || p.Coverage != CoverageFull || p.IncompleteRuns != 0 {
+		t.Fatalf("alive: %+v", p)
+	}
+}

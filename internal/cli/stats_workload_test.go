@@ -301,3 +301,37 @@ func TestSyntheticHundredProcessingAndStatsStayCompatible(t *testing.T) {
 		t.Errorf("schema_version must stay 1: %s", m["schema_version"])
 	}
 }
+
+// A damaged run-log line may have been a call on any day: the window is partial, never seven known zeros.
+func TestTruncatedRunLogIsPartialNotKnownZeroDays(t *testing.T) {
+	now := fresh(t)
+	appendListRecord(t, history.Record{TS: now.AddDate(0, 0, -8).Format("2006-01-02 15:04:05"), RunID: "old", Status: "ok"})
+	f, err := os.OpenFile(history.Path(), os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.WriteString("{\"ts\":\"" + now.AddDate(0, 0, -3).Format("2006-01-02 15:04:05") + "\",\"run_i\n")
+	f.Close()
+	d, out := statsDoc(t, now)
+	if d.Daily.Average.Coverage != "partial" || d.Daily.Average.GoalMet {
+		t.Fatalf("truncated log must be partial: %+v", d.Daily.Average)
+	}
+	if !strings.Contains(out, "damaged") {
+		t.Errorf("expected a damaged-line warning: %s", out)
+	}
+}
+
+// An unfinished span from yesterday is an unknown end, so today's peak is a lower bound, not an exact zero.
+func TestCrashAcrossMidnightIsNotExactZeroToday(t *testing.T) {
+	t.Setenv("TZ", "UTC")
+	now := fresh(t)
+	now = time.Date(now.Year(), now.Month(), now.Day(), 12, 0, 0, 0, now.Location())
+	prev := time.Date(now.Year(), now.Month(), now.Day()-1, 23, 59, 0, 0, now.Location())
+	if err := history.AppendProcessing(history.ProcessingPath(), "crashed", 4242, history.ProcessingStart, prev); err != nil {
+		t.Fatal(err)
+	}
+	d, _ := statsDoc(t, now)
+	if d.Daily.Today.PeakCoverage != "partial" || ival(d.Daily.Today.Peak) != 0 {
+		t.Fatalf("today after a crash that began yesterday: %+v", d.Daily.Today)
+	}
+}

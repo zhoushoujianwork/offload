@@ -65,10 +65,13 @@ func runStats(args []string, now time.Time, stdout, stderr io.Writer) int {
 	if !history.ValidPeriod(*period) {
 		return fail(stderr, fmt.Errorf("unknown period %q; %s", *period, statsUsage))
 	}
-	rs, err := history.Read(history.Path())
+	// Report bodies are kept only for the newest runs that `recent` can list, so refreshing the
+	// metadata metrics does not hold every historical report in memory.
+	rlog, err := history.ReadStats(history.Path(), now)
 	if err != nil {
 		return fail(stderr, err)
 	}
+	rs := rlog.Records
 	st, err := history.Aggregate(rs, *period, now)
 	if err != nil {
 		return fail(stderr, err)
@@ -91,7 +94,10 @@ func runStats(args []string, now time.Time, stdout, stderr io.Writer) int {
 	}
 	days := history.CountDailyCalls(nil, now, averageDays)
 	plog, perr := history.ReadProcessing(history.ProcessingPath(), days.Days[0].Start)
-	dailyStats := buildDaily(rs, plog, perr, alive, now)
+	dailyStats := buildDaily(rs, rlog.Corrupt, plog, perr, alive, now)
+	if rlog.Corrupt > 0 {
+		st.Warnings = append(st.Warnings, fmt.Sprintf("%d run-log line(s) are damaged and were skipped; daily call counts and the average are lower bounds and coverage is partial", rlog.Corrupt))
+	}
 	if perr != nil {
 		st.Warnings = append(st.Warnings, "processing log unreadable; peak concurrency unavailable: "+text.OneLine(perr.Error()))
 	}

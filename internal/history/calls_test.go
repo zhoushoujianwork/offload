@@ -1,7 +1,10 @@
 package history
 
 import (
+	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -126,4 +129,49 @@ func TestSyntheticWeekAggregationIsBounded(t *testing.T) {
 		t.Errorf("counting 70,000 records took %v", took)
 	}
 	t.Logf("CountDailyCalls over %d records: %v", len(rs), took)
+}
+
+func TestReadStatsKeepsOnlyRecentResultBodies(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "runs.jsonl")
+	now := time.Date(2026, 10, 29, 12, 0, 0, 0, time.UTC)
+	for i := 0; i < 50; i++ {
+		ts := time.Date(2026, 10, 28, 0, 0, i, 0, time.UTC).Format("2006-01-02 15:04:05")
+		if err := Append(path, Record{TS: ts, RunID: fmt.Sprint(i), Status: "ok", Result: fmt.Sprint("body-", i)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// A damaged line and a blank line: only the damaged one counts as corrupt.
+	if err := os.WriteFile(path, append(mustRead(t, path), []byte("{\"ts\":\"2026-10-28 01:\n\n")...), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	l, err := ReadStats(path, now)
+	if err != nil || len(l.Records) != 50 || l.Corrupt != 1 {
+		t.Fatalf("%d records corrupt=%d err=%v", len(l.Records), l.Corrupt, err)
+	}
+	withBody := 0
+	for _, r := range l.Records {
+		if r.Result != "" {
+			withBody++
+		}
+	}
+	if withBody != RecentLimit {
+		t.Fatalf("bodies kept for %d records, want %d", withBody, RecentLimit)
+	}
+	full, _ := Read(path)
+	a, _ := Aggregate(full, PeriodAll, now)
+	b, _ := Aggregate(l.Records, PeriodAll, now)
+	ja, _ := json.Marshal(a)
+	jb, _ := json.Marshal(b)
+	if string(ja) != string(jb) {
+		t.Fatalf("stats differ:\n%s\n%s", ja, jb)
+	}
+}
+
+func mustRead(t *testing.T, p string) []byte {
+	t.Helper()
+	b, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
 }

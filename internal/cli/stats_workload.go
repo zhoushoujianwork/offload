@@ -146,8 +146,11 @@ func (w *statsWorkload) applyAdmission() {
 
 // buildDaily combines recorded calls with the durable processing log. calls come from the run
 // log; peaks come only from processing events, never from live files or elapsed times.
-func buildDaily(rs []history.Record, log history.ProcessingLog, procErr error, alive map[string]bool, now time.Time) statsDaily {
+func buildDaily(rs []history.Record, damaged int, log history.ProcessingLog, procErr error, alive map[string]bool, now time.Time) statsDaily {
 	cw := history.CountDailyCalls(rs, now, averageDays)
+	// A damaged run-log line may have been a call on any day: like an unreadable timestamp, it
+	// belongs to no day, so the log cannot vouch that a day without calls had none.
+	cw.Skipped += damaged
 	zone, _ := now.Zone()
 	d := statsDaily{Timezone: now.Location().String() + " (" + zone + ")", Label: "recorded calls: one per run-log record, by invocation start time",
 		Peak: "processing.jsonl events from admission to end of processing; live files and polling are not used"}
@@ -201,7 +204,7 @@ func buildDaily(rs []history.Record, log history.ProcessingLog, procErr error, a
 			a.Coverage = "partial"
 			a.Note = "partial coverage: the average covers only days the run log can vouch for and is not a seven-day figure"
 			if cw.Skipped > 0 && a.CoveredDays == averageDays {
-				a.Note = "partial coverage: some records have an unreadable or future timestamp and are in no day"
+				a.Note = "partial coverage: some run-log records are damaged or have an unreadable or future timestamp and are in no day"
 			}
 		}
 	}

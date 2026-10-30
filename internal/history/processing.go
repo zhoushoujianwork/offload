@@ -53,7 +53,8 @@ func AppendProcessing(path, runID string, pid int, event string, at time.Time) e
 
 // Interval is a half-open processing span [Start, End). An Incomplete interval never recorded
 // its end (a crash, or a kill); it is kept as a one-nanosecond span at Start so it counts only
-// at the instant it is known to have been processing, which makes any peak a lower bound.
+// at the instant it is known to have been processing. Its real end is unknown, so every peak on
+// its start day and on later days is a lower bound (see PeakInDay).
 type Interval struct {
 	Start, End time.Time
 	Incomplete bool
@@ -176,6 +177,13 @@ func (l ProcessingLog) PeakInDay(spans []Interval, ds, de time.Time) DayPeak {
 	incomplete := 0
 	for _, s := range spans {
 		start, end := s.Start, s.End
+		if s.Incomplete && start.Before(ds) && start.Before(de) {
+			// The end of this span is unknown: it may still have been processing on this day.
+			// Its start is on an earlier day, so it adds no known overlap here, but the day's
+			// peak can only be a lower bound.
+			incomplete++
+			continue
+		}
 		if !end.After(ds) || !start.Before(de) {
 			continue
 		}
