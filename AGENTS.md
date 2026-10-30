@@ -12,6 +12,8 @@
 ## Shared checkout hygiene
 
 - Keep `/Users/mikas/github/offload` on `main`, fast-forwarded to `origin/main`, with a clean working tree whenever a task ends.
+- Local and remote must match when a task ends: no uncommitted changes, no local commits missing from the remote, and no remote commits missing locally. Verify with `git fetch origin --prune`, then `git status -sb` and `git rev-list --left-right --count origin/main...main`, which must print `0	0`.
+- Report the result only after that check. Say so explicitly when a change is committed but its PR is not yet merged.
 - Do feature and fix work in a separate worktree or branch. When its PR is merged, return the shared checkout to `main` and update it with `git fetch origin --prune && git merge --ff-only origin/main`.
 - Before switching branches, run `git status`. Commit or stash unfinished changes first, and never discard work that is not committed or pushed.
 - Do not delete branches or worktrees without listing them and getting confirmation.
