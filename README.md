@@ -276,6 +276,7 @@ offload mode [basic|proactive] show or set the saved delegation mode
 offload install-agent [flags] install skills and delegation agent instructions
 offload agent status [--json] user-scope skill/instruction state for Codex and Claude Code
 offload agent enable|disable --agent codex|claude|all [--json]
+offload feedback              print the project homepage URL and open it in the default browser
 offload version
 
   -p profile   profile name (default: $OFFLOAD_PROFILE, then config default)

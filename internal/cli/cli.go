@@ -49,6 +49,7 @@ usage:
   offload install-agent [flags] install delegation instructions for a host agent
   offload agent status|enable|disable [--agent codex|claude|all] [--json]
                                 inspect or toggle the user-scope offload skill
+  offload feedback              open the project homepage in your browser (Issues are one click away)
   offload version
 
 flags:
@@ -105,6 +106,8 @@ func Run(version string, args []string, stdin io.Reader, stdout, stderr io.Write
 			return agentinstall.Run(args[1:], stdout, stderr)
 		case "agent":
 			return agentinstall.RunControl(args[1:], stdout, stderr)
+		case "feedback":
+			return cmdFeedback(args[1:], stdout, stderr)
 		case "version":
 			fmt.Fprintln(stdout, version)
 			return 0
