@@ -54,3 +54,15 @@ func TestCodexBundleArgs(t *testing.T) {
 		t.Fatal(args)
 	}
 }
+
+func TestCodexFastOffAndOnArgs(t *testing.T) {
+	for tier, want := range map[string]string{"default": `service_tier="default"`, "priority": `service_tier="priority"`} {
+		args := buildCodexArgs(Opts{Profile: config.Profile{ServiceTier: tier}})
+		if !slices.Contains(args, want) {
+			t.Fatalf("%s: %q", tier, args)
+		}
+	}
+	if strings.Contains(strings.Join(buildCodexArgs(Opts{Profile: config.Profile{}}), " "), "service_tier") {
+		t.Fatal("an unset tier must stay inherited")
+	}
+}

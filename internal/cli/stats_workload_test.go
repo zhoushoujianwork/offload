@@ -160,6 +160,9 @@ func TestWorkloadUnreadableFileMakesCountsLowerBounds(t *testing.T) {
 
 func TestWorkloadLiveToCompletedIsNotDoubleCounted(t *testing.T) {
 	now := fresh(t)
+	// Keep both completed fixtures in today's window, including when the
+	// suite runs during the first hour after midnight.
+	now = time.Date(now.Year(), now.Month(), now.Day(), 12, 0, 0, 0, now.Location())
 	live.Publish(live.State{PID: 1, RunID: "r", Phase: live.Running, StartedAt: now, LastEventAt: now})
 	appendListRecord(t, history.Record{TS: now.Add(-time.Hour).Format("2006-01-02 15:04:05"), RunID: "old", Status: "ok"})
 	d, _ := statsDoc(t, now)

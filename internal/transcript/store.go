@@ -133,7 +133,13 @@ func storeFiles(dir string) []storeFile {
 // A file whose writer is still alive is never removed, however old it is.
 func Prune(dir, keep string, now time.Time) int {
 	removed, total := 0, int64(0)
-	for i, f := range storeFiles(dir) {
+	files := storeFiles(dir)
+	// Count the protected capture first, including when filesystem timestamp
+	// precision ties its new file with a completed capture.
+	sort.SliceStable(files, func(i, j int) bool {
+		return files[i].runID == keep && files[j].runID != keep
+	})
+	for i, f := range files {
 		total += f.size
 		drop := f.runID != keep && (now.Sub(f.mod) > RetainFor || i >= RetainFiles || total > RetainBytes)
 		if !drop || writerAlive(f.path) {

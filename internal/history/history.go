@@ -69,6 +69,23 @@ type Record struct {
 	Result   string `json:"result"`
 	Error    string `json:"error,omitempty"`
 	Salvaged bool   `json:"salvaged,omitempty"` // Result is a report written after the worker was stopped
+
+	ResumeSettings *ResumeSettings `json:"resume_settings,omitempty"`
+	ResumedFrom    string          `json:"resumed_from,omitempty"`
+}
+
+// ResumeSettings stores non-secret execution flags, never credentials or event destinations.
+// A pointer distinguishes complete settings from legacy records that cannot be safely replayed.
+type ResumeSettings struct {
+	Version int      `json:"version"`
+	Args    []string `json:"args"`
+	Task    string   `json:"task"`
+}
+
+// HasResumeSettings reports saved-state support, not provider availability. Admission and
+// configuration are checked again when the caller explicitly starts a resume invocation.
+func (r Record) HasResumeSettings() bool {
+	return r.Session != "" && r.ResumeSettings != nil && r.ResumeSettings.Version == 1
 }
 
 // Termination classes. They describe why a worker ended before producing a result, so automation
@@ -176,6 +193,10 @@ const (
 // Old versions serialized a missing cost as 0 without cost_is_estimate, so an
 // unmarked zero is ambiguous and is treated as unavailable rather than as $0.
 func normalizeCost(r *Record) {
+	if r.Backend == "codex" && r.CostUSD == nil && r.UsageScope == "run" && r.CostBasis == "subscription" {
+		EstimateCodexCost(r)
+	}
+
 	r.CostNote = ""
 	switch {
 	case r.CostUSD != nil && !ValidCost(*r.CostUSD):

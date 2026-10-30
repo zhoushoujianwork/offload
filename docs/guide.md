@@ -69,7 +69,7 @@ Profiles select a `backend`: `claude` (the default for existing profiles) or `co
 
 ### Codex workers
 
-A profile with `"backend": "codex"` runs `codex exec --json`. It uses your existing Codex authentication, provider, and configuration, including `CODEX_HOME`. The optional `model` field or `-m` selects a model; omit both to use the Codex default. Log in with the native Codex CLI before running a Codex profile. Optional `reasoning_effort` and `service_tier` override native settings for that worker only; omitted or empty values inherit them. The wizard offers Inherit/Low/Medium/High/Extra high reasoning and Inherit/Standard/Fast speed (`default`/`priority`). Fast is not a token or cost savings guarantee. Gateway fields (`base_url`, `token`, `token_cmd`) apply only to Claude profiles. `OFFLOAD_CODEX` can override the Codex executable.
+A profile with `"backend": "codex"` runs `codex exec --json`. It uses your existing Codex authentication, provider, and configuration, including `CODEX_HOME`. The optional `model` field or `-m` selects a model; omit both to use the Codex default. Log in with the native Codex CLI before running a Codex profile. Optional `reasoning_effort` and `service_tier` override native settings for that worker only; omitted or empty values inherit them. The wizard offers Inherit/Low/Medium/High/Extra high reasoning and a **Fast** switch: Off saves `service_tier` `default` (standard service) and On saves `priority`. A new profile starts Off. A saved profile with no tier shows an extra "Not set" choice, preselected, that keeps it inheriting the native Codex setting; opening settings and cancelling never rewrites a profile, and choosing Off or On saves that explicit value for later runs. The macOS Settings Profiles form has the same Off/On control for Codex profiles. Claude profiles have no Fast control. Fast changes the execution service tier only; it is not a token, cost or end-to-end duration guarantee. Gateway fields (`base_url`, `token`, `token_cmd`) apply only to Claude profiles. `OFFLOAD_CODEX` can override the Codex executable.
 
 By default, Codex runs with `--dangerously-bypass-approvals-and-sandbox` for both read-only and `-w` tasks; offload adds no sandbox (see Permissions below). Instructions and the task are sent over stdin. Codex also discovers its own agent instructions. JSONL events supply the report, session ID, and live tool progress; `turns` counts tool calls. Codex reports cumulative token usage. offload preserves run-scoped tokens and can calculate the limited API baseline estimate described below; this is separate from native billing.
 
@@ -150,7 +150,7 @@ Use the up/down arrow keys to choose an item and Enter to confirm. Each change i
 
 The **Offload level** setting uses a horizontal slider. Press Left/Right to choose **Less offload** (`basic`) or **More offload** (`proactive`), then Enter to apply. More offload shifts more work away from the caller model: it also delegates implementation, tests, and documentation after the main agent designs the change. Less offload covers research, code lookup, and mechanical changes. The main agent always owns design and final review. Actual caller token savings depend on the task and coordination overhead; this is a work-sharing setting, not a measured savings percentage. Existing mode values and CLI commands remain compatible.
 
-The main menu contains **Profile**, **Offload level**, and **Exit**. Profile lists saved bundles with their backend, model, and explicit reasoning/speed settings. Enter on a saved bundle immediately selects it for the next task. **Add profile** collects a new bundle; **Edit current profile** updates the saved default's backend-specific fields while keeping its name and backend. There is no separate model setting. Long menu items shorten to fit the terminal width. An `OFFLOAD_PROFILE` shell override is shown separately and still takes precedence.
+The main menu contains **Profile**, **Offload level**, and **Exit**. Profile lists saved bundles with their backend, model, and explicit reasoning and Fast settings. Enter on a saved bundle immediately selects it for the next task. **Add profile** collects a new bundle; **Edit current profile** updates the saved default's backend-specific fields while keeping its name and backend. There is no separate model setting. Long menu items shorten to fit the terminal width. An `OFFLOAD_PROFILE` shell override is shown separately and still takes precedence.
 
 Codex models may be empty to inherit the native default. Claude gateway profiles require an HTTP(S) base URL, model, and token command or masked API token. Configuration never executes the token command. Editing can keep current authentication without displaying it, or replace it. A completed wizard saves the entire bundle atomically; Ctrl-C at any step leaves configuration unchanged.
 
@@ -228,6 +228,35 @@ offload -w -json -d /abs/docs "..."
 - **One run per session; no overlapping follow-ups.** `offload -r` refuses a session that still has an active run (exit 2). Wait with `offload watch -t`, then resume.
 - **Profile safety.** A resume uses the session's recorded profile. If it was renamed or deleted, offload stops with recovery steps instead of falling back to the default provider. Restore the profile, or start a new session with `-p` and restate the context.
 - **Interrupted runs.** Inspect with `offload show <session>` and `git diff` first. Partial edits stay in the tree; the follow-up says what to keep or finish.
+
+**Continue a failed task without rebuilding its invocation.** For runs recorded by this version,
+call `offload resume --id <run_id-or-session_id> --json`. This starts one new invocation in the
+same provider session; there is no background recovery loop or in-process retry. With a session
+ID, the latest recorded run supplies the settings. A run ID selects that exact run's settings.
+The continuation asks the worker to verify existing edits, commits, checks and external effects
+before completing the remaining original task.
+
+The saved settings retain write intent, model, profile, working/additional directories, tool
+restrictions, execution policy, sandbox choice, instructions-file path, timeout, idle limit and
+salvage choice. Credentials are resolved from the current profile, never copied to the saved
+settings. An instructions file must still exist and pass the normal checks. Missing profiles,
+changed backends and busy sessions are rejected; directory and account checks remain in force.
+Profile credentials and instruction-file contents are not frozen snapshots.
+
+```bash
+offload resume --id <failed-run-id> --json --caller clawflow \
+  --caller-run-id <new-attempt-id> --events-file /absolute/private/new-attempt.ndjson
+```
+
+Each invocation gets a new `run_id`; `resumed_from` identifies its source run. Supply a new
+caller/correlation and event destination as needed: they are never inherited. Final JSON and
+metadata events use the existing run contract. `history list/show --json` adds
+`resume_available` (supported saved settings and no known active session), and history runs
+include the native `run_id` and `resumed_from`. This indicator does not guarantee provider,
+profile or filesystem availability; admission checks run when resume is requested. Old records
+without saved settings and runs without a provider session cannot use this command; inspect
+them and use `offload -r <session> <explicit flags> "follow-up"` where appropriate. A deliberate
+resume of a completed session is allowed, so supervisors must select failures by their own policy.
 
 **Wait less often.** `offload watch -t 10m` prints events (started, progress, `STALLED`, `LOST`, finished) and returns when all workers end (exit 0) or when the bound passes with workers still active (exit 124, which is not a worker failure). Prefer the host's completion notification for background commands; otherwise use a few long bounded waits within the host's responsiveness limit instead of a status check every few seconds. Waiting is headless and never touches the desktop.
 
@@ -445,7 +474,7 @@ For Codex, offload estimates only an explicitly selected `gpt-6.1-sol` with expl
 
 Codex values are labeled **API baseline est.**, an API-equivalent short-context/30m cache-write baseline, not actual billing. They exclude long-context (>272k per request), regional and tool surcharges and subscription accounting; actual service delivery may differ. Aggregated run input cannot establish individual request context size, so offload does not infer long-context rates from run totals. Model, tier, rate snapshot, reference source/date, assumptions, usage source/scope and missing reasons are persisted; historical estimates never recompute from current rates.
 
-Codex 的 `model` 按以下顺序确定：显式 profile/`-m` 设置、匹配会话 rollout 中最后一个 `turn_context.payload.model`、`$CODEX_HOME/config.toml`（默认 `~/.codex/config.toml`）的顶层 `model` 字符串。JSON 和历史记录保存 `model_source`（`profile`、`session`、`config` 或 `unknown`），`ls/show` 展示来源；无法确定时模型为空，`model_unavailable` 说明原因。配置回退支持单行基本字符串和字面量字符串，不推断嵌套 profile 或多行配置值。模型回答文本不会作为模型来源。原生 `auth.json` 表明 ChatGPT 订阅身份时，费用始终为 `null`，并记录 `cost_basis: "subscription"` 和未报告费用的原因。
+Codex 的 `model` 按以下顺序确定：显式 profile/`-m` 设置、匹配会话 rollout 中最后一个 `turn_context.payload.model`、`$CODEX_HOME/config.toml`（默认 `~/.codex/config.toml`）的顶层 `model` 字符串。JSON 和历史记录保存 `model_source`（`profile`、`session`、`config` 或 `unknown`），`ls/show` 展示来源；无法确定时模型为空，`model_unavailable` 说明原因。配置回退支持单行基本字符串和字面量字符串，不推断嵌套 profile 或多行配置值。模型回答文本不会作为模型来源。Subscription runs with validated per-run tokens and supported explicit model/tier receive the same API-equivalent estimate, not an actual subscription charge. Existing subscription records with those fields are enriched on read without rewriting the history file; unsupported or incomplete records remain unpriced. Configuration errors without a session or model remain in history and overall totals but are excluded from the Models breakdown.
 
 Fresh Codex runs start at zero; resumed runs subtract the native session rollout baseline captured before launch under `$CODEX_HOME/sessions` (default `~/.codex/sessions`). Missing/corrupt baselines, invalid or regressed counters, and interrupted runs produce no run usage/cost estimate. Tokens remain available when only pricing is unsupported or inherited. JSON exposes optional `usage`, `cumulative_usage`, `usage_source`, `usage_scope`, `usage_unavailable`, `cost_unavailable`, `cost_basis`, `service_tier` and `pricing` fields. `offload ls` shows compact token counts, `N/A` for missing costs, and one explanatory footer; `offload show <session>` gives the breakdown and provenance. Stderr marks computed Codex estimates as `API baseline est.`. Missing cost remains `null` in JSON and `unknown` in stderr; measured zero is valid. Legacy history loads unchanged: ambiguous unmarked zero remains unavailable, nonzero Claude estimates are preserved, and old Codex records stay `N/A`. All estimates exclude parent-agent/native-subagent coordination; actual bills and savings remain unverified.
 

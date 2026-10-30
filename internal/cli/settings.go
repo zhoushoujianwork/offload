@@ -263,12 +263,11 @@ func settingsProfile(p settingsPrompt, cfg *config.Config) error {
 		if profile.ReasoningEffort != "" {
 			label += " | reasoning: " + profile.ReasoningEffort
 		}
-		if profile.ServiceTier != "" {
-			speed := "Standard"
-			if profile.ServiceTier == "priority" {
-				speed = "Fast"
-			}
-			label += " | " + speed
+		switch profile.ServiceTier {
+		case "priority":
+			label += " | Fast on"
+		case "default":
+			label += " | Fast off"
 		}
 		labels = append(labels, label)
 		if name == currentName {
@@ -295,6 +294,29 @@ func settingsProfile(p settingsPrompt, cfg *config.Config) error {
 		return settingsWizard(p, cfg, currentName, false)
 	}
 	return nil
+}
+
+// settingsFast asks for the Fast switch of a Codex profile and returns the service tier to save.
+// Off saves the standard tier explicitly and On saves the priority tier. A saved profile that never
+// set a tier (inherited) gets a third choice that keeps it unset, preselected, so that opening the
+// settings and confirming does not rewrite it. New profiles start on Off.
+func settingsFast(p settingsPrompt, current string, add bool) (string, error) {
+	tiers := []string{"default", "priority"}
+	labels := []string{"Off (standard service)", "On (Fast service)"}
+	cursor := 0
+	if current == "priority" {
+		cursor = 1
+	}
+	if current == "" && !add {
+		tiers = append(tiers, "")
+		labels = append(labels, "Not set (follows the native Codex configuration)")
+		cursor = 2
+	}
+	index, err := settingsChoice(p, "Fast (changes the service tier only; does not guarantee a shorter task time)", labels, cursor)
+	if err != nil {
+		return "", err
+	}
+	return tiers[index], nil
 }
 
 func settingsWizard(p settingsPrompt, cfg *config.Config, name string, add bool) error {
@@ -343,18 +365,10 @@ func settingsWizard(p settingsPrompt, cfg *config.Config, name string, add bool)
 			return err
 		}
 		profile.ReasoningEffort = efforts[index]
-		tiers := []string{"", "default", "priority"}
-		cursor = 0
-		for i, tier := range tiers {
-			if tier == profile.ServiceTier {
-				cursor = i
-			}
-		}
-		index, err = settingsChoice(p, "Speed", []string{"Inherit", "Standard", "Fast"}, cursor)
+		profile.ServiceTier, err = settingsFast(p, profile.ServiceTier, add)
 		if err != nil {
 			return err
 		}
-		profile.ServiceTier = tiers[index]
 	} else {
 		profile.BaseURL, err = p.Ask("Base URL", profile.BaseURL)
 		if err != nil {

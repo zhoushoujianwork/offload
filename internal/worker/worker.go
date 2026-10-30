@@ -401,6 +401,9 @@ func Run(ctx context.Context, o Opts) (rec history.Record, err error) {
 		leftover = a.leftover
 	}
 	s := a.s
+	// A resumed provider may fail before emitting its init/session event. Keep the
+	// known session so the failed attempt remains resumable and grouped correctly.
+	s.Session = firstNonEmpty(s.Session, o.Resume)
 	rec.StopReason = stopReason(a.cause)
 	rec.ErrorKind = "execution"
 	var launchErr *exec.Error

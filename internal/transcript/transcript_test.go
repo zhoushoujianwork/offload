@@ -712,3 +712,27 @@ func TestNilRecorderIsNoOp(t *testing.T) {
 	r.Skipped("x", 1)
 	r.End(EndInfo{})
 }
+
+func TestPruneCountsProtectedCaptureWhenTimestampsTie(t *testing.T) {
+	state(t)
+	end(open(t, runA, "", "claude"))
+	end(open(t, runB, "", "claude"))
+	tied := time.Now().Add(-time.Hour)
+	for _, id := range []string{runA, runB} {
+		if err := os.Chtimes(Path(id), tied, tied); err != nil {
+			t.Fatal(err)
+		}
+	}
+	old := RetainFiles
+	RetainFiles = 1
+	defer func() { RetainFiles = old }()
+	if n := Prune(Dir(), runB, time.Now()); n != 1 {
+		t.Fatalf("removed %d; protected capture must count toward file limit", n)
+	}
+	if _, err := os.Stat(Path(runB)); err != nil {
+		t.Fatal("protected capture removed", err)
+	}
+	if _, err := os.Stat(Path(runA)); !os.IsNotExist(err) {
+		t.Fatal("older completed capture retained", err)
+	}
+}

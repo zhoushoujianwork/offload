@@ -3,7 +3,6 @@ package worker
 import (
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/zhoushoujianwork/offload/internal/config"
@@ -135,7 +134,7 @@ func TestCodexConfigModelStrings(t *testing.T) {
 	}
 }
 
-func TestCodexSubscriptionNeverEstimatesCost(t *testing.T) {
+func TestCodexSubscriptionAPIEquivalentEstimate(t *testing.T) {
 	t.Setenv("CODEX_HOME", t.TempDir())
 	for _, auth := range []string{`{"auth_mode":"chatgpt"}`, `{"tokens":{"access_token":"fixture"},"OPENAI_API_KEY":null}`} {
 		if err := os.WriteFile(filepath.Join(codexHome(), "auth.json"), []byte(auth), 0600); err != nil {
@@ -144,8 +143,11 @@ func TestCodexSubscriptionNeverEstimatesCost(t *testing.T) {
 		for _, completed := range []bool{true, false} {
 			rec := history.Record{}
 			applyCodexAccounting(&rec, parseCodexStream(usageStream(freshUsage)), &history.TokenUsage{}, "", Opts{Model: "gpt-6.1-sol", Profile: config.Profile{ServiceTier: "default"}}, completed)
-			if rec.CostUSD != nil || rec.CostIsEstimate || rec.Pricing != nil || !strings.Contains(rec.CostUnavailable, "subscription") {
+			if completed && (rec.CostUSD == nil || !rec.CostIsEstimate || rec.Pricing == nil || rec.CostBasis != "api_baseline") {
 				t.Fatalf("%+v", rec)
+			}
+			if !completed && rec.CostUSD != nil {
+				t.Fatal("priced interrupted run")
 			}
 		}
 	}

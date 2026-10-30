@@ -386,6 +386,10 @@ func Aggregate(rs []Record, period string, now time.Time) (Stats, error) {
 			}
 		}
 		projects[pk].add(r, elapsedOK)
+		// Configuration failures without a session never executed a model.
+		if r.ErrorKind == "configuration" && r.Session == "" && r.Model == "" {
+			continue
+		}
 		mk := r.Backend + "/" + r.Model
 		if models[mk] == nil {
 			models[mk] = &statsAcc{}
