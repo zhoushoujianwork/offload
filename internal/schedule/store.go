@@ -63,6 +63,8 @@ type Task struct {
 	ToolsDisabled   bool     `json:"tools_disabled,omitempty"`
 	AllowedTools    string   `json:"allowed_tools,omitempty"`
 	DisallowedTools string   `json:"disallowed_tools,omitempty"`
+	// OnUnsupportedTools is "fail" (default) or "ignore"; see offload -on-unsupported-tools.
+	OnUnsupportedTools string `json:"on_unsupported_tools,omitempty"`
 
 	// Keep is how many results to retain (default DefaultKeep).
 	Keep int `json:"keep,omitempty"`

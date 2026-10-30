@@ -12,14 +12,16 @@ import (
 
 // Record is one line of the run log.
 type Record struct {
-	ProfileAlias     string           `json:"profile_alias,omitempty"`
-	StopReason       string           `json:"stop_reason,omitempty"`
-	Termination      *Termination     `json:"termination,omitempty"`
-	IdleTimeout      string           `json:"idle_timeout"`
-	RunID            string           `json:"run_id,omitempty"`
-	CallerRunID      string           `json:"caller_run_id,omitempty"`
-	ExecutionPolicy  string           `json:"execution_policy,omitempty"`
-	ErrorKind        string           `json:"error_kind,omitempty"`
+	ProfileAlias    string       `json:"profile_alias,omitempty"`
+	StopReason      string       `json:"stop_reason,omitempty"`
+	Termination     *Termination `json:"termination,omitempty"`
+	IdleTimeout     string       `json:"idle_timeout"`
+	RunID           string       `json:"run_id,omitempty"`
+	CallerRunID     string       `json:"caller_run_id,omitempty"`
+	ExecutionPolicy string       `json:"execution_policy,omitempty"`
+	ErrorKind       string       `json:"error_kind,omitempty"`
+	// ToolRestriction marks requested restrictions that the backend did not enforce.
+	ToolRestriction  string           `json:"tool_restriction,omitempty"`
 	TS               string           `json:"ts"`
 	Status           string           `json:"status"` // ok | error | timeout
 	ExitCode         *int             `json:"exit_code"`
@@ -100,6 +102,9 @@ func (r Record) TerminationClass() string {
 	}
 	return r.Termination.Class
 }
+
+// ToolRestrictionNotEnforced marks a run whose requested tool restriction was ignored.
+const ToolRestrictionNotEnforced = "not_enforced"
 
 // Path is the run log location.
 func Path() string {

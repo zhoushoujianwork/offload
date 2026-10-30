@@ -58,8 +58,12 @@ type Opts struct {
 	Instructions                  []byte
 	ToolsDisabled                 bool
 	AllowedTools, DisallowedTools string
-	GitRoots                      []string
-	OnLine                        func([]byte) error
+	// OnUnsupportedTools chooses what happens when a tool restriction is requested on a backend
+	// that cannot enforce it: "fail" (default) or "ignore" (run unrestricted and record it).
+	OnUnsupportedTools string
+	toolsNotEnforced   bool
+	GitRoots           []string
+	OnLine             func([]byte) error
 
 	ProfileName string
 	Profile     config.Profile
@@ -306,6 +310,9 @@ func Run(ctx context.Context, o Opts) (rec history.Record, err error) {
 	if err = Validate(&o); err != nil {
 		rec.ErrorKind = ErrorKind(err)
 		return rec, err
+	}
+	if o.toolsNotEnforced {
+		rec.ToolRestriction = history.ToolRestrictionNotEnforced
 	}
 	limit, limitErr := o.idleLimit()
 	if limitErr != nil {

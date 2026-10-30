@@ -55,6 +55,52 @@ func NewRunID() string {
 	return hex.EncodeToString(b[:])
 }
 
+// Values of the on-unsupported-tools option.
+const (
+	UnsupportedToolsFail   = "fail"
+	UnsupportedToolsIgnore = "ignore"
+)
+
+// requestedToolFlags names the tool restriction flags the caller passed.
+func requestedToolFlags(o *Opts) []string {
+	var flags []string
+	if o.ToolsDisabled {
+		flags = append(flags, "-tools-disabled")
+	}
+	if o.AllowedTools != "" {
+		flags = append(flags, "-allowed-tools")
+	}
+	if o.DisallowedTools != "" {
+		flags = append(flags, "-disallowed-tools")
+	}
+	return flags
+}
+
+// CheckToolRestrictions validates the tool restriction flags against the selected backend. It
+// needs no worker slot, so callers run it during argument handling. The result is true when the
+// restriction cannot be enforced and the caller chose -on-unsupported-tools ignore: the run then
+// proceeds without it and must record tool_restriction: not_enforced.
+func CheckToolRestrictions(o *Opts) (notEnforced bool, err error) {
+	switch o.OnUnsupportedTools {
+	case "", UnsupportedToolsFail, UnsupportedToolsIgnore:
+	default:
+		return false, fmt.Errorf("invalid on-unsupported-tools %q (want fail or ignore)", o.OnUnsupportedTools)
+	}
+	if o.ToolsDisabled && o.AllowedTools != "" {
+		return false, errors.New("tools-disabled conflicts with allowed-tools")
+	}
+	flags := requestedToolFlags(o)
+	if len(flags) == 0 || o.Profile.SupportsToolRestrictions() {
+		return false, nil
+	}
+	if o.OnUnsupportedTools == UnsupportedToolsIgnore {
+		return true, nil
+	}
+	return false, &configError{"unsupported_tools", fmt.Errorf("%s cannot be enforced: profile %q uses the %s backend, which does not support tool restrictions. "+
+		"Remove %s, choose a Claude profile with -p, or pass -on-unsupported-tools ignore to run without the restriction (the result and history then record tool_restriction: not_enforced)",
+		strings.Join(flags, ", "), o.ProfileName, o.Profile.BackendName(), strings.Join(flags, ", "))}
+}
+
 // Validate checks supervisor constraints before any provider is started.
 func Validate(o *Opts) error {
 	o.ExecutionPolicy = policyName(o.ExecutionPolicy)
@@ -74,12 +120,11 @@ func Validate(o *Opts) error {
 	if o.CodexSandbox != "" && o.Profile.BackendName() != "codex" {
 		return errors.New("codex-sandbox requires Codex backend")
 	}
-	if o.ToolsDisabled && o.AllowedTools != "" {
-		return errors.New("tools-disabled conflicts with allowed-tools")
+	notEnforced, err := CheckToolRestrictions(o)
+	if err != nil {
+		return err
 	}
-	if o.Profile.BackendName() == "codex" && (o.ToolsDisabled || o.AllowedTools != "" || o.DisallowedTools != "") {
-		return &configError{"unsupported_tools", errors.New("Codex does not support explicit tool restrictions")}
-	}
+	o.toolsNotEnforced = notEnforced
 	for _, list := range []string{o.AllowedTools, o.DisallowedTools} {
 		if list != "" {
 			for _, v := range strings.Split(list, ",") {

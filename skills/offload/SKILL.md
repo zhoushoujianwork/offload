@@ -207,8 +207,19 @@ forward explicit Claude restrictions; an explicit allowlist replaces the managed
 broad allowlist and uses default permission mode rather than automatic edit approval.
 Combining `-tools-disabled` with `-allowed-tools` is rejected. Deny restrictions
 remain effective. Managed Claude tasks travel through stdin; default mode retains
-its existing task argument behavior. Codex rejects otherwise valid explicit tool
-constraints before launch with `error_kind: "unsupported_tools"`.
+its existing task argument behavior. `offload profiles` shows per profile whether
+the backend supports tool restrictions (`tool-limits=yes|no` in text, `tool_restrictions`
+in `--json`); Codex does not.
+
+A tool restriction on a profile without support is checked while arguments are
+parsed, before any worker slot is requested. The default,
+`-on-unsupported-tools fail`, rejects it with `error_kind: "unsupported_tools"` and a
+message naming the flag, profile and backend. `-on-unsupported-tools ignore` instead
+runs the task without the restriction. That run carries `tool_restriction:
+"not_enforced"` in its JSON result and in `runs.jsonl`, its status line shows
+`tool_restriction=not_enforced`, and `offload stats` counts it separately
+(`tool_restriction_not_enforced`). Backends that support restrictions ignore the option
+and keep enforcing them. `offload schedule add|update` accept the same option.
 
 `-codex-sandbox` is optional and requires managed development, `-w`, and Codex.
 `workspace-write` enables sandbox network access and adds canonical Git directory
