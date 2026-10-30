@@ -12,6 +12,8 @@ import (
 
 // Record is one line of the run log.
 type Record struct {
+	CodexAccount    string       `json:"codex_account,omitempty"`
+	CodexHome       string       `json:"codex_home,omitempty"`
 	ProfileAlias    string       `json:"profile_alias,omitempty"`
 	StopReason      string       `json:"stop_reason,omitempty"`
 	Termination     *Termination `json:"termination,omitempty"`

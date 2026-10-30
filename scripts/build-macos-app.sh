@@ -11,8 +11,8 @@ root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 default_version="$(git -C "$root" describe --tags --abbrev=0 2>/dev/null || true)"
 version="${OFFLOAD_VERSION:-${default_version:-0.3.0}}"
 version="${version#v}"
-if ! [[ "$version" =~ ^[0-9]+(\.[0-9]+){1,3}$ ]]; then
-  echo "OFFLOAD_VERSION must look like 1.2.3 (got '$version')" >&2
+if ! [[ "$version" =~ ^[0-9]+(\.[0-9]+){1,3}(-dev\.[0-9]+\.[a-f0-9]+(\.dirty)?)?$ ]]; then
+  echo "OFFLOAD_VERSION must be numeric or use -dev.<timestamp>.<commit>[.dirty] (got '$version')" >&2
   exit 2
 fi
 

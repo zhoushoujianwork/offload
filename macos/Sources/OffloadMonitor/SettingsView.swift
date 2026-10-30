@@ -45,6 +45,7 @@ struct SettingsView: View {
 
 struct ProfilesSettingsView: View {
     @ObservedObject var profiles: ProfilesModel
+    @State private var accountName = ""
     @State private var selection: String = ""
     @State private var draft = ProfileDraft.new()
     @State private var formError: String?
@@ -170,6 +171,27 @@ struct ProfilesSettingsView: View {
 
     @ViewBuilder private var codexRows: some View {
         GridRow {
+            label("Account")
+            Picker("Account", selection: $draft.codexAccount) {
+                Text("System Codex account").tag("")
+                ForEach(snap?.managedAccounts ?? [], id: \.self) { Text($0).tag($0) }
+                if !draft.codexAccount.isEmpty && !(snap?.managedAccounts ?? []).contains(draft.codexAccount) {
+                    Text(draft.codexAccount + " (unavailable)").tag(draft.codexAccount)
+                }
+            }.labelsHidden()
+        }
+        GridRow {
+            label("Add account")
+            HStack {
+                TextField("account-name", text: $accountName).textFieldStyle(.roundedBorder)
+                Button("Sign in…") { profiles.addAccount(name: accountName) }
+                    .disabled(profiles.accountLoginRunning || profiles.busy || accountName.isEmpty)
+                Button("Import…") { importAccount() }
+                    .disabled(profiles.busy || accountName.isEmpty)
+            }
+        }
+
+        GridRow {
             label("Model")
             TextField("optional: inherit Codex default", text: $draft.model).textFieldStyle(.roundedBorder)
         }
@@ -192,6 +214,16 @@ struct ProfilesSettingsView: View {
     }
 
     @ViewBuilder private var messages: some View {
+        if profiles.accountLoginRunning {
+            Button("Cancel sign-in") { profiles.cancelAccountLogin() }
+        }
+        if !profiles.accountLoginOutput.isEmpty {
+            ScrollView {
+                Text(profiles.accountLoginOutput).font(.system(size: 11, design: .monospaced))
+                    .textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
+            }.frame(maxHeight: 90)
+        }
+
         if changedOnDisk && !draft.isNew {
             HStack(spacing: 6) {
                 Image(systemName: "info.circle.fill").foregroundStyle(Color.omBlue)
@@ -266,6 +298,30 @@ struct ProfilesSettingsView: View {
         case .reload(let e): draft = ProfileDraft(editing: e); changedOnDisk = false
         case .keepEdits: changedOnDisk = true
         case .removed: draft = ProfileDraft.new(); selection = ""; changedOnDisk = false
+        }
+    }
+
+    private func importAccount() {
+        let panel = NSOpenPanel()
+        panel.title = "Import Codex auth.json"
+        panel.message = "Choose an existing Codex OAuth auth.json. A private managed copy will be created."
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.begin { response in
+            guard response == .OK, let url = panel.url else { return }
+            Task { @MainActor in
+                do {
+                    let values = try url.resourceValues(forKeys: [.fileSizeKey])
+                    guard (values.fileSize ?? 0) <= 1_048_576 else { formError = "Authentication file is too large."; return }
+                    let data = try Data(contentsOf: url)
+                    let name = accountName
+                    if await profiles.importAccount(name: name, data: data) {
+                        draft.codexAccount = name
+                        accountName = ""
+                        notice = "Managed account added. Save the profile to use it."
+                    }
+                } catch { formError = "Could not read the selected authentication file." }
+            }
         }
     }
 

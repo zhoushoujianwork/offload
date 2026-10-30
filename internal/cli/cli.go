@@ -31,6 +31,10 @@ const usage = `offload — hand a task to Claude Code or Codex; print only its f
 
 usage:
   offload [flags] "task"        run a task (task may also come on stdin)
+  offload accounts [--json]    list managed Codex accounts
+  offload accounts add <name>  add a managed account using device sign-in
+  offload accounts import <name>
+                                import Codex OAuth auth.json from stdin
   offload config               open interactive settings (also: offload in a terminal)
   offload ls [n]                list the last n runs (default 10)
   offload show <session>        print every report of a session
@@ -96,6 +100,8 @@ func Run(version string, args []string, stdin io.Reader, stdout, stderr io.Write
 			return cmdSchedule(args[1:], stdin, stdout, stderr)
 		case "stats":
 			return cmdStats(args[1:], stdout, stderr)
+		case "accounts":
+			return cmdAccounts(args[1:], stdin, stdout, stderr)
 		case "profiles":
 			return cmdProfilesArgs(args[1:], stdout, stderr)
 		case "profile":
@@ -274,6 +280,7 @@ func cmdRun(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	if err != nil {
 		return failRun(err)
 	}
+	pinnedCodexHome := ""
 	selected := *profile
 	resumedProfile := ""
 	// Resumes retain their original profile even after the default changes.
@@ -293,6 +300,19 @@ func cmdRun(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		if _, exists := cfg.Profiles[resumedProfile]; !exists {
 			name, prof = resumedProfile, config.Profile{}
 			err = fmt.Errorf("unknown profile %q; available: %s", resumedProfile, cfg.ProfileChoices())
+		}
+	}
+	if err == nil && *resume != "" {
+		rs, readErr := history.Read(logPath)
+		if readErr != nil {
+			return failRun(readErr)
+		}
+		if hit := history.BySession(rs, *resume); len(hit) > 0 {
+			previous := hit[len(hit)-1]
+			if previous.Backend == "codex" {
+				prof.CodexAccount = previous.CodexAccount
+				pinnedCodexHome = previous.CodexHome
+			}
 		}
 	}
 	if err == nil && selected != name {
@@ -333,7 +353,7 @@ func cmdRun(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	if err != nil {
 		return failRun(err)
 	}
-	o := worker.Opts{ProfileName: name, Profile: prof, Model: firstNonEmpty(*model, prof.Model), Write: *write,
+	o := worker.Opts{CodexHome: pinnedCodexHome, ProfileName: name, Profile: prof, Model: firstNonEmpty(*model, prof.Model), Write: *write,
 		Resume: *resume, Dir: wd, AddDirs: effectiveDirs, Task: task, Timeout: *timeout, StartedAt: started, NoSalvage: *noSalvage,
 		RunID: rec.RunID, CallerRunID: *callerRunID, Caller: callerID, ExecutionPolicy: *executionPolicy, InstructionsFile: *instructionsFile, CodexSandbox: *codexSandbox,
 		ToolsDisabled: *toolsDisabled, AllowedTools: *allowedTools, DisallowedTools: *disallowedTools, OnUnsupportedTools: *onUnsupportedTools,

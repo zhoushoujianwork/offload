@@ -1,6 +1,6 @@
 ---
 name: offload
-description: Delegate work through the offload CLI according to the active delegation mode (basic or proactive). Both modes keep design decisions and final acceptance with the supervising agent; proactive mode additionally delegates bounded feature/bugfix implementation once the design is decided.
+description: Delegate work through the offload CLI according to the active delegation mode (basic or proactive). Supports explicit account profiles and agent-selected random account-pool routing with bounded quota failover. Both modes keep design decisions and final acceptance with the supervising agent; proactive mode additionally delegates bounded feature/bugfix implementation once the design is decided.
 ---
 
 # offload
@@ -11,13 +11,88 @@ Follow the active mode above. `offload mode` shows the saved user default; a pro
 
 `offload [-p profile] [-m model] [-w] [-r session] [-d dir] [--add-dir dir]... [--clear-add-dirs] [-t 30m] [-json] "task"`
 
-The CLI supports `claude` (default) and `codex` profile backends. Set `"backend": "codex"` in a profile to use `codex exec --json` with native Codex authentication/configuration; model is optional. Run `offload default <profile>` to save either backend as the default, or `offload default` to show the saved choice. `-p` and `OFFLOAD_PROFILE` override it for new runs. Known session resumes retain their original profile unless `-p` is given.
+The CLI supports `claude` (default) and `codex` profile backends. Set `"backend": "codex"` in a profile to use `codex exec --json` with native Codex authentication/configuration; model is optional. Run `offload default <profile>` to save either backend as the default, or `offload default` to show the saved choice. `-p` and `OFFLOAD_PROFILE` override it for new runs. Known session resumes retain their original profile by default. Managed Codex resumes also retain the recorded account/home; changing `-p` does not migrate their authentication to a different account.
 
 Default-policy Codex workers use `--dangerously-bypass-approvals-and-sandbox` for both read-only and `-w` tasks (offload adds no sandbox; `-w` only tells the worker it may modify files), and stdin for instructions/tasks. `OFFLOAD_CODEX` overrides the executable. Claude gateway/token fields do not apply to Codex. Codex preserves run token usage and supports the limited API baseline estimate below; `turns` counts tool calls. Interrupted Codex runs preserve progress and a resume hint, without automatic tool-less salvage.
 
 For Claude profiles, the CLI starts an external `claude -p --bare` worker on the configured Anthropic-compatible gateway, such as MiniMax. It does not replace a native Codex subagent's model provider. Profiles live in `~/.config/offload/config.json`; select with `-p`, `OFFLOAD_PROFILE`, or config `default`. `offload profiles` lists them (`offload profiles --json` gives a redacted machine-readable list; `offload profile save --json` creates or edits one profile from a JSON request on stdin). Each run drops the caller's `ANTHROPIC_*` variables and sets the chosen `ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN` (Bearer), and `ANTHROPIC_MODEL` (`-m` can override). It also passes `--setting-sources ""` so user/project/local settings cannot override the profile; `--bare` alone does not isolate settings. Auth is environment-only, without `apiKeyHelper` or `--settings`.
 
 `offload agent status --json` and `offload agent enable|disable --agent codex|claude|all --json` manage this skill and the delegation policy block at user scope. Only offload-owned files and marker blocks change; modified, symlinked or unmanaged ones are reported as blocked. Status reflects files on disk, not proof that the current agent session loaded them: a session already running keeps its previously loaded copy, so start a new session after a change.
+
+## Account pool: choose a profile before dispatch
+
+A pool is the set of compatible, configured account profiles, not a shared login.
+Each managed Codex profile has a `codex_account`; choosing `-p <name>` selects that
+account's private home, credentials and sessions. Discover names with
+`offload profiles --json`; never invent profile names or read tokens to select one.
+
+- If the user names a profile/account, use it. If the user authorizes several,
+  choose only among those. Respect an explicit `OFFLOAD_PROFILE` unless pool
+  selection was requested. Preserve requested backend, model, tier and tool
+  restrictions; do not silently substitute Claude for Codex or change models.
+- If the user leaves the account unspecified, the supervising agent may randomly
+  choose a compatible managed Codex profile and pass its name with `-p`.
+  Deduplicate candidates by `codex_account`, so aliases/profiles for the same
+  account do not get extra weight. Shuffle candidates once per independent task.
+  If there are no managed candidates, use the configured default normally.
+- This randomness is **agent-side selection**: a bare `offload "task"` still uses
+  `OFFLOAD_PROFILE` or the saved default. The CLI has no automatic pool scheduler.
+  Do not change the saved default merely to dispatch one task.
+- The profile catalog proves configuration, not remaining quota. Exclude accounts
+  already known to be exhausted until their reported reset, and accounts with
+  unresolved authentication errors. Treat an untested account as unknown, not
+  confirmed available; the real task determines availability. Do not send paid
+  quota probes before every dispatch.
+
+For a Codex task without an account preference, this discovery command returns
+one random profile per managed account (filter for the task's requested settings
+before dispatch):
+
+```sh
+offload profiles --json | python3 -c '
+import json, random, sys
+profiles = json.load(sys.stdin)["profiles"]
+random.SystemRandom().shuffle(profiles)
+seen = set()
+for p in profiles:
+    account = p.get("codex_account")
+    if p["backend"] == "codex" and account and account not in seen:
+        seen.add(account)
+        print(p["name"])
+'
+# Choose a compatible candidate from that order, then:
+offload -p <chosen-profile> -json -d /absolute/path "bounded task"
+```
+
+### Quota and capacity failover
+
+Inspect the actual failed run's `status`, `error_kind`, `error`, `session`,
+`turns` and partial report. Structured `rate_limit` / `capacity` errors or an
+explicit provider message such as “hit your usage limit” identify quota/capacity
+failures. Some Codex quota failures currently have `error_kind=execution`; inspect
+the provider error too. A successful report mentioning limits is not a failure.
+Authentication failures need reauthentication; syntax, permission and task failures
+are not reasons to rotate accounts.
+
+When quota/capacity blocks a task and the user has not restricted it to one account,
+select the next compatible account from the shuffled order. Try each account at
+most once for that task; stop when one succeeds or all candidates are exhausted.
+Remember reported reset times and skip exhausted accounts during the current work.
+Do not assume quota exhaustion means another model on the same account is usable.
+
+A different account requires a **new session** with `-p <other-profile>`, not
+`-r <failed-session>`. Carry forward the objective and verified findings. Before
+retrying, inspect the failed run and any partial effects. Read-only tasks can
+usually be retried; for writes or external actions, identify completed effects
+and dispatch only the remaining work. If the outcome is uncertain, report the
+blocker rather than replaying the task. Never rerun a completed external mutation.
+If a single account was explicitly required, report its quota failure and obtain
+an alternative account choice instead of silently switching.
+
+Report attempted profiles, account names, sessions, failure/reset evidence and
+final result. Keep failed attempts in history; do not present a fallback's success
+as success on the original account. This routing guidance does not enable offload
+when higher-priority instructions disable it.
 
 ## Choose the worker early
 

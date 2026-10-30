@@ -12,7 +12,10 @@ import (
 	"github.com/zhoushoujianwork/offload/internal/history"
 )
 
-func codexHome() string {
+func codexHome(scoped ...string) string {
+	if len(scoped) > 0 && scoped[0] != "" {
+		return scoped[0]
+	}
 	if home := os.Getenv("CODEX_HOME"); home != "" {
 		return home
 	}
@@ -23,17 +26,17 @@ func codexHome() string {
 	return filepath.Join(home, ".codex")
 }
 
-func resolveCodexModel(rec *history.Record, explicit string) {
+func resolveCodexModel(rec *history.Record, explicit string, scoped ...string) {
 	rec.ModelUnavailable = ""
 	if explicit != "" {
 		rec.Model, rec.ModelSource = explicit, "profile"
 		return
 	}
-	if model := codexSessionModel(rec.Session); model != "" {
+	if model := codexSessionModel(rec.Session, scoped...); model != "" {
 		rec.Model, rec.ModelSource = model, "session"
 		return
 	}
-	if model := codexConfigModel(); model != "" {
+	if model := codexConfigModel(scoped...); model != "" {
 		rec.Model, rec.ModelSource = model, "config"
 		return
 	}
@@ -41,8 +44,8 @@ func resolveCodexModel(rec *history.Record, explicit string) {
 	rec.ModelUnavailable = "no explicit model; session model missing or unreadable; config model missing, unreadable or unsupported"
 }
 
-func codexSessionModel(session string) string {
-	path, err := codexRollout(session)
+func codexSessionModel(session string, scoped ...string) string {
+	path, err := codexRollout(session, scoped...)
 	if err != nil {
 		return ""
 	}
@@ -86,8 +89,8 @@ func codexSessionModel(session string) string {
 // Read only the root model, excluding nested provider and profile settings.
 var codexModelSetting = regexp.MustCompile(`^(?:model|"model"|'model')\s*=\s*(.*)$`)
 
-func codexConfigModel() string {
-	home := codexHome()
+func codexConfigModel(scoped ...string) string {
+	home := codexHome(scoped...)
 	if home == "" {
 		return ""
 	}
@@ -260,8 +263,8 @@ func codexConfigMultiline(line, delimiter string) string {
 
 // Native authentication belongs to Codex; inspect only the authentication mode,
 // never copy credentials into the run record or diagnostics.
-func codexSubscription() bool {
-	home := codexHome()
+func codexSubscription(scoped ...string) bool {
+	home := codexHome(scoped...)
 	if home == "" {
 		return false
 	}

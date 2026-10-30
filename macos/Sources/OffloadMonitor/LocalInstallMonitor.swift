@@ -164,7 +164,7 @@ final class LocalInstallMonitor: ObservableObject {
         guard let text = info?["CFBundleShortVersionString"] as? String, let version = SemanticVersion(text) else {
             throw UpdateError.helperFailed("the installed App has no valid version")
         }
-        try ArchiveValidator.validateBundle(url, expectedVersion: version)
+        try ArchiveValidator.validateBundle(url, expectedVersion: version, allowLocalDevelopment: true)
         try await ArchiveValidator.verifySignature(url)
     }
 }

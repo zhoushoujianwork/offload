@@ -22,6 +22,7 @@ const (
 
 // profileEntry is one profile in the machine-readable list. It never carries token or token_cmd.
 type profileEntry struct {
+	CodexAccount    string `json:"codex_account"`
 	Name            string `json:"name"`
 	Backend         string `json:"backend"`
 	BaseURL         string `json:"base_url"`
@@ -38,6 +39,7 @@ type profileEntry struct {
 
 // profileSnapshot is the `offload profiles --json` document (schema_version 1).
 type profileSnapshot struct {
+	ManagedAccounts   []string       `json:"managed_accounts"`
 	SchemaVersion     int            `json:"schema_version"`
 	ConfigExists      bool           `json:"config_exists"`
 	ConfiguredDefault string         `json:"configured_default"`
@@ -77,7 +79,7 @@ func authMode(p config.Profile) string {
 // buildProfileSnapshot reads the config at path. A missing file is not an error. It does not
 // run token_cmd and never copies credentials into the result.
 func buildProfileSnapshot(path string) (profileSnapshot, error) {
-	snap := profileSnapshot{SchemaVersion: profilesSchemaVersion, ActiveSource: "none",
+	snap := profileSnapshot{ManagedAccounts: config.ManagedAccountNames(), SchemaVersion: profilesSchemaVersion, ActiveSource: "none",
 		DelegationMode: config.ModeProactive, Profiles: []profileEntry{}, Warnings: []string{}}
 	if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
 		return snap, nil
@@ -103,7 +105,7 @@ func buildProfileSnapshot(path string) (profileSnapshot, error) {
 	for _, n := range names {
 		p := cfg.Profiles[n]
 		base, redacted := safeBaseURL(p.BaseURL)
-		snap.Profiles = append(snap.Profiles, profileEntry{Name: n, Backend: p.BackendName(), BaseURL: base,
+		snap.Profiles = append(snap.Profiles, profileEntry{CodexAccount: p.CodexAccount, Name: n, Backend: p.BackendName(), BaseURL: base,
 			BaseURLRedacted: redacted, Model: p.Model, Endpoint: p.Endpoint,
 			ReasoningEffort: p.ReasoningEffort, ServiceTier: p.ServiceTier, AuthMode: authMode(p),
 			ToolRestrictions: p.SupportsToolRestrictions()})
@@ -161,6 +163,7 @@ func cmdProfilesArgs(args []string, stdout, stderr io.Writer) int {
 // profileSaveRequest is the stdin document of `offload profile save --json`. Pointer fields
 // are patches: omitted (or null) keeps the stored value.
 type profileSaveRequest struct {
+	CodexAccount    *string `json:"codex_account"`
 	Name            string  `json:"name"`
 	Create          bool    `json:"create"`
 	Backend         *string `json:"backend"`
@@ -249,6 +252,12 @@ func applyProfileRequest(p config.Profile, req profileSaveRequest) (config.Profi
 	}
 	if req.ServiceTier != nil {
 		p.ServiceTier = *req.ServiceTier
+	}
+	if req.CodexAccount != nil {
+		p.CodexAccount = *req.CodexAccount
+	}
+	if p.BackendName() != "codex" {
+		p.CodexAccount = ""
 	}
 	mode := "preserve"
 	if req.AuthMode != nil {

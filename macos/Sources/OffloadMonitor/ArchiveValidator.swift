@@ -127,7 +127,7 @@ enum ArchiveValidator {
     // MARK: Bundle
 
     /// Checks identity, version and executables of an extracted bundle.
-    static func validateBundle(_ bundle: URL, expectedVersion: SemanticVersion) throws {
+    static func validateBundle(_ bundle: URL, expectedVersion: SemanticVersion, allowLocalDevelopment: Bool = false) throws {
         let fm = FileManager.default
         let plistURL = bundle.appendingPathComponent("Contents/Info.plist")
         guard let data = try? Data(contentsOf: plistURL),
@@ -136,7 +136,8 @@ enum ArchiveValidator {
         guard plist["CFBundleIdentifier"] as? String == AppIdentity.bundleID else {
             throw UpdateError.badBundle("bundle identifier is not \(AppIdentity.bundleID)")
         }
-        guard let v = plist["CFBundleShortVersionString"] as? String, let version = SemanticVersion(v), !version.isPrerelease else {
+        guard let v = plist["CFBundleShortVersionString"] as? String, let version = SemanticVersion(v),
+              !version.isPrerelease || (allowLocalDevelopment && v.range(of: #"^[0-9]+(?:\.[0-9]+){1,3}-dev\.[0-9]+\.[a-f0-9]+(?:\.dirty)?$"#, options: .regularExpression) != nil) else {
             throw UpdateError.badBundle("version is missing or not a release version")
         }
         guard version == expectedVersion else {
