@@ -11,6 +11,7 @@ struct OffloadMonitorApp: App {
             MenuBarLabel(model: state.model, updates: state.updates, motion: state.motion.menuBar)
         }
         .menuBarExtraStyle(.window)
+        .commands { MonitorCommands() }
     }
 }
 
@@ -31,10 +32,7 @@ struct MenuBarLabel: View {
         static var totalWidth: CGFloat { 16 + spacing + symbolSlot + spacing + countSlot }
     }
 
-    private var updateAvailable: Bool {
-        if case .available = updates.phase { return true }
-        return false
-    }
+    private var updateAvailable: Bool { updates.hasReleaseUpdate }
 
     var body: some View {
         // The model republishes on every poll, success or failure, so this re-evaluates with a fresh `now`.
@@ -42,7 +40,7 @@ struct MenuBarLabel: View {
         HStack(spacing: Metrics.spacing) {
             Image(nsImage: BrandMarkImage.menuBar)
                 .overlay(alignment: .bottomTrailing) {
-                    if updateAvailable { Circle().frame(width: 5, height: 5).offset(x: 1, y: 1) }
+                    if updateAvailable { Circle().fill(.red).frame(width: 5, height: 5).offset(x: 1, y: 1) }
                 }
             Group {
                 if let symbol = status.symbol { StatusSymbolView(name: symbol, motion: motion) } else { Color.clear }

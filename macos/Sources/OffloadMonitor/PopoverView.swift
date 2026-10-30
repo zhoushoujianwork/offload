@@ -59,25 +59,13 @@ struct PopoverView: View {
                 NewTaskPulseBadge(pulse: model.pulse)
                 Spacer(minLength: 2)
                 ProfileMenu(profiles: profiles)
-                Button { AppState.shared.newChat() } label: { Image(systemName: "plus.bubble") }
-                    .buttonStyle(.borderless)
-                    .help("New Chat")
-                    .accessibilityLabel("New Chat")
-                Button { model.refreshNow() } label: {
-                    ZStack {
-                        Image(systemName: "arrow.clockwise").opacity(model.isLoading ? 0 : 1)
-                        if model.isLoading { ProgressView().controlSize(.mini) }
-                    }
-                    .frame(width: 16, height: 18)
-                }
-                    .buttonStyle(.borderless)
-                    .help("Refresh now")
-                    .accessibilityLabel("Refresh now")
-                    .disabled(!model.hasCLI)
-                Button { AppState.shared.showSettings() } label: { Image(systemName: "gearshape") }
-                    .buttonStyle(.borderless)
-                    .help("Settings")
-                    .accessibilityLabel("Settings")
+                PanelAction(symbol: "square.and.pencil", title: "New Chat (⌘N)") { AppState.shared.newChat() }
+                PanelAction(symbol: "arrow.clockwise", title: "Refresh (⌘R)", busy: model.isLoading) { model.refreshNow() }
+                    .disabled(!model.hasCLI || model.isLoading)
+                PanelAction(symbol: "arrow.down.circle", title: updates.hasReleaseUpdate ? "New version available — review update (⇧⌘U)" : "Check for Updates (⇧⌘U)",
+                            badge: updates.hasReleaseUpdate, busy: updates.isBusy) { AppState.shared.reviewUpdate() }
+                    .disabled(updates.isBusy)
+                PanelAction(symbol: "gearshape", title: "Settings (⌘,)") { AppState.shared.showSettings() }
             }
             PanelSegments("Period", values: StatsPeriod.allCases, selection: $model.period) { $0.label }
         }
@@ -125,6 +113,38 @@ struct PopoverView: View {
 
 // MARK: - Pieces
 
+struct PanelAction: View {
+    let symbol: String
+    let title: String
+    var badge = false
+    var busy = false
+    var action: () -> Void
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: action) {
+            ZStack {
+                Image(systemName: symbol).font(.system(size: 12, weight: .medium)).opacity(busy ? 0 : 1)
+                if busy { ProgressView().controlSize(.mini) }
+            }
+            .frame(width: 22, height: 24)
+            .foregroundStyle(.secondary)
+            .background(.primary.opacity(hovering ? 0.08 : 0), in: RoundedRectangle(cornerRadius: 5))
+            .overlay(alignment: .topTrailing) {
+                if badge {
+                    Circle().fill(.red).frame(width: 6, height: 6)
+                        .overlay(Circle().stroke(Color(nsColor: .windowBackgroundColor), lineWidth: 1))
+                }
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+        .help(title)
+        .accessibilityLabel(title)
+    }
+}
+
 /// Equal-width segments avoid AppKit's intrinsic picker width crowding the fixed panel.
 struct PanelSegments<Selection: Hashable>: View {
     let title: String
@@ -168,7 +188,7 @@ struct StatusSummary: View {
     @ObservedObject var model: MonitorModel
     @ObservedObject var motion: MotionModel
     /// Width of the text column. The header row has about this much room next to the actions.
-    static let textWidth: CGFloat = 112
+    static let textWidth: CGFloat = 100
 
     var body: some View {
         // Re-evaluated on every poll result; the clock only matters once a refresh has failed.
@@ -245,7 +265,7 @@ struct ProfileMenu: View {
         }
         .menuStyle(.borderlessButton)
         .menuIndicator(.visible)
-        .frame(width: 104, alignment: .trailing)
+        .frame(width: 90, alignment: .trailing)
         .disabled(profiles.busy)
         .help(help)
         .onAppear { profiles.refreshIfStale() }
@@ -308,12 +328,12 @@ struct UpdateBanner: View {
             case .checking: Banner(symbol: "arrow.triangle.2.circlepath", tint: .omBlue, title: "Checking for updates…", message: "")
             case .available(let c):
                 Banner(symbol: "arrow.down.circle.fill", tint: .omBlue, title: "Version \(c.version) is available", message: "You have \(updates.currentVersionText).")
-                Button("Download Update") { updates.downloadAndPrepare() }.controlSize(.small)
+                Button("Review Update…") { AppState.shared.confirmUpdate(updates) }.controlSize(.small)
             case .downloading(let c): Banner(symbol: "arrow.down.circle", tint: .omBlue, title: "Downloading \(c.version)…", message: "The download is verified before it is used.")
             case .ready(let c):
                 Banner(symbol: "checkmark.seal.fill", tint: .green, title: "Version \(c.version) is verified and ready",
                        message: updates.restartWaitReason ?? "Installs the whole App and bundled CLI when idle.")
-                Button("Update and Restart") { updates.installAndRestart() }.controlSize(.small)
+                Button("Review Update…") { AppState.shared.confirmUpdate(updates) }.controlSize(.small)
             case .installing(let c): Banner(symbol: "arrow.triangle.2.circlepath", tint: .omBlue, title: "Installing \(c.version)…", message: "")
             case .failed(let m): Banner(symbol: "exclamationmark.triangle.fill", tint: .red, title: "Update problem", message: m + " The current version keeps running.")
             }
@@ -381,8 +401,8 @@ struct NoticeRow: View {
                     }
                     Spacer(minLength: 4)
                     switch first.action {
-                    case .download: Button("Download") { updates.downloadAndPrepare() }
-                    case .restart: Button("Update and Restart") { updates.installAndRestart() }
+                    case .download: Button("Review…") { AppState.shared.confirmUpdate(updates) }
+                    case .restart: Button("Review Update…") { AppState.shared.confirmUpdate(updates) }
                     case .reloadApp: Button("Restart App") { updates.restartInstalledApp() }
                     case .none: EmptyView()
                     }
