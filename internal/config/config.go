@@ -148,6 +148,12 @@ func (c *Config) Resolve(name string) (string, Profile, error) {
 	return name, p, nil
 }
 
+// SupportsToolRestrictions reports whether the backend can enforce explicit tool allow or deny
+// lists. Claude forwards them to the CLI; Codex has no equivalent control.
+func (p Profile) SupportsToolRestrictions() bool {
+	return p.BackendName() != "codex"
+}
+
 func (p Profile) BackendName() string {
 	if p.Backend == "" {
 		return "claude"

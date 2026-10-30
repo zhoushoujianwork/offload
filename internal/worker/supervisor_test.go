@@ -105,6 +105,21 @@ func TestSupervisorValidationAndInstructionFiles(t *testing.T) {
 			t.Fatalf("%+v %v", o, err)
 		}
 	}
+	for _, o := range []Opts{{ToolsDisabled: true}, {AllowedTools: "Read"}, {DisallowedTools: "Bash"}} {
+		o.Profile, o.ProfileName, o.OnUnsupportedTools = config.Profile{Backend: "codex"}, "cx", UnsupportedToolsIgnore
+		if err := Validate(&o); err != nil || !o.toolsNotEnforced {
+			t.Fatalf("ignore mode: %+v %v", o, err)
+		}
+	}
+	for _, backend := range []string{"claude", ""} {
+		o := Opts{AllowedTools: "Read", OnUnsupportedTools: UnsupportedToolsIgnore, Profile: config.Profile{Backend: backend}}
+		if err := Validate(&o); err != nil || o.toolsNotEnforced {
+			t.Fatalf("%q: restriction must stay enforced: %+v %v", backend, o, err)
+		}
+	}
+	if err := Validate(&Opts{OnUnsupportedTools: "maybe"}); err == nil {
+		t.Fatal("accepted invalid on-unsupported-tools")
+	}
 	o := Opts{CallerRunID: "A-z_0.1:job", InstructionsFile: good}
 	if err := Validate(&o); err != nil || string(o.Instructions) != "VERBATIM\n" {
 		t.Fatalf("%+v %v", o, err)

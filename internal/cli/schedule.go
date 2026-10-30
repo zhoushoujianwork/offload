@@ -18,6 +18,7 @@ import (
 	"github.com/zhoushoujianwork/offload/internal/config"
 	"github.com/zhoushoujianwork/offload/internal/schedule"
 	"github.com/zhoushoujianwork/offload/internal/text"
+	"github.com/zhoushoujianwork/offload/internal/worker"
 )
 
 const scheduleSchemaVersion = 1
@@ -117,7 +118,7 @@ func parseMixed(fs *flag.FlagSet, args []string) ([]string, error) {
 // taskFlags are the options shared by add and update.
 type taskFlags struct {
 	name, cronExpr, every, at, tz, profile, model, dir, policy, timeout, idle, sandbox, misfire string
-	allowed, disallowed                                                                         string
+	allowed, disallowed, onUnsupportedTools                                                     string
 	write, noSalvage, toolsDisabled, jsonOut                                                    bool
 	keep                                                                                        int
 	addDirs                                                                                     dirList
@@ -145,6 +146,7 @@ func newTaskFlagSet(name string, stderr io.Writer, verb string) (*flag.FlagSet, 
 	fs.BoolVar(&f.toolsDisabled, "tools-disabled", false, "disable all worker tools (Claude only)")
 	fs.StringVar(&f.allowed, "allowed-tools", "", "comma-separated Claude tool allowlist")
 	fs.StringVar(&f.disallowed, "disallowed-tools", "", "comma-separated Claude tool denylist")
+	fs.StringVar(&f.onUnsupportedTools, "on-unsupported-tools", "", `backend without tool restriction support (Codex): "fail" (default) or "ignore" (run without it and record tool_restriction: not_enforced)`)
 	fs.StringVar(&f.misfire, "misfire", "", `overdue occurrence: "skip" (default; record it as missed) or "run-once" (run once on catch-up)`)
 	fs.IntVar(&f.keep, "keep", 0, fmt.Sprintf("results to retain (default %d)", schedule.DefaultKeep))
 	fs.BoolVar(&f.jsonOut, "json", false, "print JSON")
@@ -235,6 +237,9 @@ func validateRun(t *schedule.Task) error {
 	if t.ToolsDisabled && t.AllowedTools != "" {
 		return errors.New("tools-disabled conflicts with allowed-tools")
 	}
+	if t.OnUnsupportedTools != "" && t.OnUnsupportedTools != worker.UnsupportedToolsFail && t.OnUnsupportedTools != worker.UnsupportedToolsIgnore {
+		return fmt.Errorf("invalid on-unsupported-tools %q (want fail or ignore)", t.OnUnsupportedTools)
+	}
 	if t.Keep < 0 {
 		return errors.New("keep must not be negative")
 	}
@@ -248,6 +253,11 @@ func validateRun(t *schedule.Task) error {
 		}
 		name, p, err := cfg.Resolve(t.Profile)
 		if err != nil {
+			return err
+		}
+		check := worker.Opts{ProfileName: name, Profile: p, ToolsDisabled: t.ToolsDisabled, AllowedTools: t.AllowedTools,
+			DisallowedTools: t.DisallowedTools, OnUnsupportedTools: t.OnUnsupportedTools}
+		if _, err := worker.CheckToolRestrictions(&check); err != nil {
 			return err
 		}
 		if t.Sandbox != "" && p.BackendName() != "codex" {
@@ -289,7 +299,7 @@ func scheduleAdd(st *schedule.Store, args []string, stdin io.Reader, stdout, std
 	}
 	t := &schedule.Task{ID: schedule.NewID(), Name: f.name, Prompt: prompt, Dir: dir, Profile: f.profile, Model: f.model, Write: f.write,
 		Policy: firstNonEmpty(f.policy, "default"), Timeout: f.timeout, Idle: f.idle, Sandbox: f.sandbox, NoSalvage: f.noSalvage,
-		ToolsDisabled: f.toolsDisabled, AllowedTools: f.allowed, DisallowedTools: f.disallowed, Keep: f.keep,
+		ToolsDisabled: f.toolsDisabled, AllowedTools: f.allowed, DisallowedTools: f.disallowed, OnUnsupportedTools: f.onUnsupportedTools, Keep: f.keep,
 		Schedule: spec, Misfire: firstNonEmpty(f.misfire, schedule.MisfireSkip), CreatedAt: now, UpdatedAt: now}
 	if dirs, err := normalizeAddDirs(f.addDirs, false); err != nil {
 		return fail(stderr, err)
@@ -421,6 +431,9 @@ func scheduleUpdate(st *schedule.Store, args []string, stdout, stderr io.Writer)
 	if set["disallowed-tools"] {
 		t.DisallowedTools = f.disallowed
 	}
+	if set["on-unsupported-tools"] {
+		t.OnUnsupportedTools = f.onUnsupportedTools
+	}
 	if set["misfire"] {
 		t.Misfire = f.misfire
 	}
@@ -541,7 +554,7 @@ func writeTaskDetail(w io.Writer, t *schedule.Task) {
 		opts = append(opts, "write")
 	}
 	for k, v := range map[string]string{"model": t.Model, "timeout": t.Timeout, "idle": t.Idle, "codex-sandbox": t.Sandbox,
-		"allowed-tools": t.AllowedTools, "disallowed-tools": t.DisallowedTools} {
+		"allowed-tools": t.AllowedTools, "disallowed-tools": t.DisallowedTools, "on-unsupported-tools": t.OnUnsupportedTools} {
 		if v != "" {
 			opts = append(opts, k+"="+v)
 		}

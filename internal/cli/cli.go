@@ -145,6 +145,7 @@ func cmdRun(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	toolsDisabled := fs.Bool("tools-disabled", false, "disable all worker tools (Claude only)")
 	allowedTools := fs.String("allowed-tools", "", "explicit comma-separated Claude tool allowlist")
 	disallowedTools := fs.String("disallowed-tools", "", "explicit comma-separated Claude tool denylist")
+	onUnsupportedTools := fs.String("on-unsupported-tools", worker.UnsupportedToolsFail, "when the profile's backend cannot enforce a tool restriction (Codex): fail (default) or ignore (run without it and record tool_restriction: not_enforced)")
 	parseErr := fs.Parse(args)
 	task := strings.Join(fs.Args(), " ")
 
@@ -288,6 +289,13 @@ func cmdRun(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	if err != nil {
 		return failRun(err)
 	}
+	// Check tool restrictions against the backend now, before the events file reports a start and
+	// before Run can request a worker slot.
+	toolCheck := worker.Opts{ProfileName: name, Profile: prof, ToolsDisabled: *toolsDisabled, AllowedTools: *allowedTools,
+		DisallowedTools: *disallowedTools, OnUnsupportedTools: *onUnsupportedTools}
+	if _, err := worker.CheckToolRestrictions(&toolCheck); err != nil {
+		return failRun(err)
+	}
 	maxWorkers, err := cfg.Limits.EffectiveMaxWorkers()
 	if err != nil {
 		return failRun(err)
@@ -295,7 +303,7 @@ func cmdRun(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	o := worker.Opts{ProfileName: name, Profile: prof, Model: firstNonEmpty(*model, prof.Model), Write: *write,
 		Resume: *resume, Dir: wd, AddDirs: effectiveDirs, Task: task, Timeout: *timeout, StartedAt: started, NoSalvage: *noSalvage,
 		RunID: rec.RunID, CallerRunID: *callerRunID, ExecutionPolicy: *executionPolicy, InstructionsFile: *instructionsFile, CodexSandbox: *codexSandbox,
-		ToolsDisabled: *toolsDisabled, AllowedTools: *allowedTools, DisallowedTools: *disallowedTools,
+		ToolsDisabled: *toolsDisabled, AllowedTools: *allowedTools, DisallowedTools: *disallowedTools, OnUnsupportedTools: *onUnsupportedTools,
 		MaxWorkers: maxWorkers, Limits: cfg.Limits}
 	fs.Visit(func(f *flag.Flag) {
 		if f.Name == "idle" {
@@ -373,6 +381,9 @@ func printRun(rec history.Record, logPath string, jsonOutput bool, stdout, stder
 	}
 	if rec.Denials > 0 {
 		errText = fmt.Sprintf(" permission_denials=%d", rec.Denials) + errText
+	}
+	if rec.ToolRestriction != "" {
+		errText += " tool_restriction=" + rec.ToolRestriction
 	}
 	if rec.Cleanup != "" {
 		errText += " cleanup=" + text.OneLine(rec.Cleanup)
@@ -573,7 +584,11 @@ func cmdProfiles(stdout, stderr io.Writer) int {
 		if len(p.Aliases) > 0 {
 			aliases = " (aliases: " + strings.Join(p.Aliases, ", ") + ")"
 		}
-		fmt.Fprintf(stdout, "%s %-12s %-8s %-5s %-24s %s%s\n", mark, n, p.BackendName(), firstNonEmpty(p.Endpoint, "-"), p.Model, p.BaseURL, aliases)
+		tools := "tool-limits=no"
+		if p.SupportsToolRestrictions() {
+			tools = "tool-limits=yes"
+		}
+		fmt.Fprintf(stdout, "%s %-12s %-8s %-5s %-15s %-24s %s%s\n", mark, n, p.BackendName(), firstNonEmpty(p.Endpoint, "-"), tools, p.Model, p.BaseURL, aliases)
 	}
 	return 0
 }
