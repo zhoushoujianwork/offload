@@ -765,8 +765,13 @@ sign-in when both the original installation and offload will remain active.
 Profiles with no account selection continue to use the system Codex account.
 Managed runs isolate authentication, session/model lookup and usage accounting.
 Resume keeps the recorded account and home even after profile edits. This
-version provides explicit account selection; automatic quota-based pooling is
-not included. Managed homes start with Codex defaults and do not copy the system
+version provides explicit account selection. The bundled agent skill also explains
+how an agent can choose a random compatible account when none is specified and
+try another account on confirmed quota/capacity failures. Selection and bounded
+failover are performed by the supervising agent using `-p`; the CLI itself still
+uses the configured default when `-p` is omitted. Resumes stay bound to their
+original account, so switching accounts starts a new session and must account for
+any partial effects. Managed homes start with Codex defaults and do not copy the system
 home's skills, MCP configuration or other settings.
 
 ## Fast local development updates
