@@ -53,7 +53,7 @@ struct PopoverView: View {
     /// Hierarchy: brand mark, then the work status (primary) with its counts (secondary), then the quiet actions.
     private var header: some View {
         VStack(spacing: 6) {
-            HStack(spacing: 8) {
+            HStack(spacing: 6) {
                 BrandMark(size: 17)
                 StatusSummary(model: model, motion: motion.header)
                 NewTaskPulseBadge(pulse: model.pulse)
@@ -63,8 +63,13 @@ struct PopoverView: View {
                     .buttonStyle(.borderless)
                     .help("New Chat")
                     .accessibilityLabel("New Chat")
-                if model.isLoading { ProgressView().controlSize(.mini) }
-                Button { model.refreshNow() } label: { Image(systemName: "arrow.clockwise") }
+                Button { model.refreshNow() } label: {
+                    ZStack {
+                        Image(systemName: "arrow.clockwise").opacity(model.isLoading ? 0 : 1)
+                        if model.isLoading { ProgressView().controlSize(.mini) }
+                    }
+                    .frame(width: 16, height: 18)
+                }
                     .buttonStyle(.borderless)
                     .help("Refresh now")
                     .accessibilityLabel("Refresh now")
@@ -74,12 +79,7 @@ struct PopoverView: View {
                     .help("Settings")
                     .accessibilityLabel("Settings")
             }
-            Picker("Period", selection: $model.period) {
-                ForEach(StatsPeriod.allCases) { Text($0.label).tag($0) }
-            }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .controlSize(.small)
+            PanelSegments("Period", values: StatsPeriod.allCases, selection: $model.period) { $0.label }
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
@@ -122,13 +122,50 @@ struct PopoverView: View {
 
 // MARK: - Pieces
 
+/// Equal-width segments avoid AppKit's intrinsic picker width crowding the fixed panel.
+struct PanelSegments<Selection: Hashable>: View {
+    let title: String
+    let values: [Selection]
+    @Binding var selection: Selection
+    let label: (Selection) -> String
+
+    init(_ title: String, values: [Selection], selection: Binding<Selection>, label: @escaping (Selection) -> String) {
+        self.title = title
+        self.values = values
+        self._selection = selection
+        self.label = label
+    }
+
+    var body: some View {
+        HStack(spacing: 2) {
+            ForEach(values, id: \.self) { value in
+                Button { selection = value } label: {
+                    Text(label(value)).font(.system(size: 10, weight: selection == value ? .semibold : .regular))
+                        .lineLimit(1).minimumScaleFactor(0.85)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 3)
+                        .foregroundStyle(selection == value ? Color.white : .primary)
+                        .background(selection == value ? Color.omBlue : .clear, in: RoundedRectangle(cornerRadius: 5))
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityAddTraits(selection == value ? .isSelected : [])
+            }
+        }
+        .padding(2)
+        .background(.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 7))
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(title)
+    }
+}
+
 /// The primary header element: a state symbol and title, with the counts below. The symbol shape differs
 /// per state, so the state does not depend on color. The whole element reads as one accessibility value.
 struct StatusSummary: View {
     @ObservedObject var model: MonitorModel
     @ObservedObject var motion: MotionModel
     /// Width of the text column. The header row has about this much room next to the actions.
-    static let textWidth: CGFloat = 150
+    static let textWidth: CGFloat = 112
 
     var body: some View {
         // Re-evaluated on every poll result; the clock only matters once a refresh has failed.
@@ -139,7 +176,7 @@ struct StatusSummary: View {
                     if let symbol = status.symbol {
                         StatusSymbolView(name: symbol, motion: motion).font(.system(size: 11, weight: .semibold)).foregroundStyle(tint(status))
                     }
-                    Text(status.title).font(.system(size: 13, weight: .semibold)).lineLimit(1)
+                    Text(status.title).font(.system(size: 12.5, weight: .semibold)).lineLimit(1).minimumScaleFactor(0.8)
                 }
                 Text(status.detail)
                     .font(.system(size: 10)).foregroundStyle(.secondary)
@@ -412,14 +449,9 @@ struct SnapshotView: View {
             WorkloadPanel(snapshot: snapshot)
             SummaryStrip(totals: snapshot.totals)
             TrendCard(trend: snapshot.trend)
-            Picker("Detail", selection: $tab) {
-                ForEach(DetailTab.allCases) { t in
-                    Text(t == .tasks && !snapshot.active.isEmpty ? "Tasks (\(snapshot.active.count))" : t.rawValue).tag(t)
-                }
+            PanelSegments("Detail", values: DetailTab.allCases, selection: $tab) { t in
+                t == .tasks && !snapshot.active.isEmpty ? "Tasks (\(snapshot.active.count))" : t.rawValue
             }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .controlSize(.small)
             .onChange(of: tab) { _ in page = 0 }
             list
             HStack(spacing: 12) {
@@ -431,6 +463,7 @@ struct SnapshotView: View {
             }
             .buttonStyle(.link)
             .font(.system(size: 10))
+            .lineLimit(1)
             .frame(height: 16)
         }
     }
@@ -455,27 +488,43 @@ struct SnapshotView: View {
         let p = Pagination.clamp(page, total: items.count, size: size)
         let pages = Pagination.pageCount(total: items.count, size: size)
         return VStack(spacing: 0) {
-            VStack(spacing: 3) {
-                if items.isEmpty { Text(empty).font(.system(size: 10)).foregroundStyle(.secondary).frame(maxWidth: .infinity, minHeight: 60) }
-                // Items are identified by position within the page; the pages are rebuilt on every data change.
-                ForEach(Array(Pagination.slice(items, page: p, size: size).enumerated()), id: \.offset) { _, item in row(item) }
-            }
-            Spacer(minLength: 0)
-            HStack(spacing: 6) {
-                Text(Pagination.rangeLabel(page: p, total: items.count, size: size)).font(.system(size: 9)).foregroundStyle(.secondary)
-                Spacer()
-                if tab == .history {
-                    Button("Browse all") { AppState.shared.browseHistory() }
-                        .help("Search and open every conversation")
+            if items.isEmpty {
+                VStack(spacing: 6) {
+                    Image(systemName: tab == .tasks ? "checkmark.circle" : "tray")
+                        .font(.system(size: 20, weight: .light)).foregroundStyle(tab == .tasks ? Color.omTeal : .secondary)
+                    Text(empty).font(.system(size: 11, weight: .medium)).foregroundStyle(.secondary)
+                    if tab == .tasks {
+                        Button("New Chat") { AppState.shared.newChat() }
+                    } else if tab == .history {
+                        Button("Browse all conversations") { AppState.shared.browseHistory() }
+                    }
                 }
-                if pages > 1 {
-                    Button { page = p - 1 } label: { Image(systemName: "chevron.left") }.disabled(p == 0).help("Previous page")
-                    Button { page = p + 1 } label: { Image(systemName: "chevron.right") }.disabled(p >= pages - 1).help("Next page")
+                .buttonStyle(.borderless)
+                .controlSize(.small)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(.quaternary.opacity(0.3), in: RoundedRectangle(cornerRadius: 10))
+            } else {
+                VStack(spacing: 3) {
+                    // Items are identified by position within the page; the pages are rebuilt on every data change.
+                    ForEach(Array(Pagination.slice(items, page: p, size: size).enumerated()), id: \.offset) { _, item in row(item) }
                 }
+                Spacer(minLength: 0)
+                HStack(spacing: 6) {
+                    Text(Pagination.rangeLabel(page: p, total: items.count, size: size)).font(.system(size: 9)).foregroundStyle(.secondary)
+                    Spacer()
+                    if tab == .history {
+                        Button("Browse all") { AppState.shared.browseHistory() }
+                            .help("Search and open every conversation")
+                    }
+                    if pages > 1 {
+                        Button { page = p - 1 } label: { Image(systemName: "chevron.left") }.disabled(p == 0).help("Previous page")
+                        Button { page = p + 1 } label: { Image(systemName: "chevron.right") }.disabled(p >= pages - 1).help("Next page")
+                    }
+                }
+                .buttonStyle(.borderless)
+                .controlSize(.mini)
+                .frame(height: Layout.pager)
             }
-            .buttonStyle(.borderless)
-            .controlSize(.mini)
-            .frame(height: Layout.pager)
         }
         .onChange(of: items.count) { _ in page = Pagination.clamp(page, total: items.count, size: size) }
     }
@@ -517,17 +566,12 @@ struct TrendCard: View {
                     Text("Trend").font(.system(size: 11, weight: .semibold))
                     if !trend.label.isEmpty { Text(trend.label).font(.system(size: 9)).foregroundStyle(.secondary).lineLimit(1) }
                     Spacer()
-                    Picker("Metric", selection: $metric) {
-                        ForEach(TrendMetric.allCases) { Text($0.label).tag($0) }
-                    }
-                    .pickerStyle(.segmented)
-                    .labelsHidden()
-                    .controlSize(.mini)
+                    PanelSegments("Metric", values: TrendMetric.allCases, selection: $metric) { $0.label }
                     .frame(width: 150)
                 }
                 if let message = TrendData.emptyMessage(trend, metric: metric) {
                     Text(message).font(.system(size: 10)).foregroundStyle(.secondary)
-                        .frame(maxWidth: .infinity, minHeight: 36, maxHeight: 36)
+                        .frame(maxWidth: .infinity, minHeight: Layout.chart, maxHeight: Layout.chart)
                 } else {
                     chart
                 }
@@ -556,13 +600,13 @@ struct TrendCard: View {
         }
         .chartXScale(domain: domain ?? Date()...Date().addingTimeInterval(3600))
         .chartXAxis {
-            AxisMarks(values: .automatic(desiredCount: 6)) { _ in
+            AxisMarks(values: .automatic(desiredCount: 4)) { _ in
                 AxisTick()
                 AxisValueLabel(format: TrendData.axisFormat(interval: trend.interval)).font(.system(size: 8))
             }
         }
         .chartYAxis {
-            AxisMarks(position: .leading, values: .automatic(desiredCount: 3)) { value in
+            AxisMarks(position: .leading, values: yAxisValues) { value in
                 AxisGridLine()
                 AxisValueLabel {
                     if let d = value.as(Double.self) { Text(metric.formatted(d)).font(.system(size: 8)) }
@@ -580,7 +624,15 @@ struct TrendCard: View {
                     })
             }
         }
-        .frame(height: 36)
+        .frame(height: Layout.chart)
+    }
+
+    private var yAxisValues: AxisMarkValues {
+        if metric == .runs {
+            // Calls are integers: a half-call tick would otherwise format as another zero.
+            return .stride(by: max(1, ceil((bars.compactMap(\.value).max() ?? 1) / 2)))
+        }
+        return .automatic(desiredCount: 3)
     }
 
     @ViewBuilder private var detail: some View {
