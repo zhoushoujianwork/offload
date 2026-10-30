@@ -116,7 +116,8 @@ final class WorkloadLayoutTests: XCTestCase {
     func fit(_ m: MonitorModel, notice: Bool = false) -> CGFloat {
         let d = UserDefaults(suiteName: "om-test-\(UUID().uuidString)")!
         let u = UpdateManager(prefs: Preferences(defaults: d), consumeReport: false)
-        let view = PopoverView(model: m, updates: u, profiles: ProfilesModel(testingSnapshot: nil), isDashboard: false, measuring: true)
+        let motion = MotionController(monitor: m, prefs: Preferences(defaults: d), scheduler: ManualScheduler(), observeSystem: false)
+        let view = PopoverView(model: m, updates: u, profiles: ProfilesModel(testingSnapshot: nil), motion: motion, isDashboard: false, measuring: true)
         return NSHostingView(rootView: view).fittingSize.height
     }
 

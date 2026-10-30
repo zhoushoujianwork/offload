@@ -12,6 +12,7 @@ final class AppState {
     let skills: AgentSkillsModel
     let history: HistoryModel
     let chats: ChatStore
+    let motion: MotionController
     private var chatWindow: NSWindow?
     private var settingsWindow: NSWindow?
     private var window: NSWindow?
@@ -22,13 +23,14 @@ final class AppState {
         profiles = ProfilesModel(cli: cli)
         skills = AgentSkillsModel(cli: cli)
         history = HistoryModel(cli: cli)
+        motion = MotionController(monitor: model)
         chats = ChatStore(env: ChatEnv(cli: cli, profiles: profiles, monitor: model, history: history))
     }
 
     /// Shows the dashboard window, creating it on first use. Closing it leaves the menu bar app running.
     func showDashboard() {
         if window == nil {
-            let hosting = NSHostingController(rootView: PopoverView(model: model, updates: updates, profiles: profiles, isDashboard: true))
+            let hosting = NSHostingController(rootView: PopoverView(model: model, updates: updates, profiles: profiles, motion: motion, isDashboard: true))
             let w = NSWindow(contentViewController: hosting)
             w.title = "Offload Monitor"
             w.styleMask = [.titled, .closable, .miniaturizable]
@@ -80,7 +82,7 @@ extension AppState {
     /// The Settings window is created once, so edits in progress survive closing and reopening it.
     func showSettings() {
         if settingsWindow == nil {
-            let hosting = NSHostingController(rootView: SettingsView(profiles: profiles, skills: skills, updates: updates))
+            let hosting = NSHostingController(rootView: SettingsView(profiles: profiles, skills: skills, updates: updates, motion: motion))
             let w = NSWindow(contentViewController: hosting)
             w.title = "Offload Monitor Settings"
             w.styleMask = [.titled, .closable]

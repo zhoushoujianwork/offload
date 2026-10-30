@@ -41,7 +41,9 @@ final class PaginationTests: XCTestCase {
 @MainActor
 final class PanelFitTests: XCTestCase {
     func fitHeight(_ model: MonitorModel, _ updates: UpdateManager, profiles: ProfilesModel? = nil) -> CGFloat {
-        let view = PopoverView(model: model, updates: updates, profiles: profiles ?? ProfilesModel(testingSnapshot: nil), isDashboard: false, measuring: true)
+        let view = PopoverView(model: model, updates: updates, profiles: profiles ?? ProfilesModel(testingSnapshot: nil),
+                           motion: MotionController(monitor: model, prefs: Preferences(defaults: UserDefaults(suiteName: "om-test-\(UUID().uuidString)")!), scheduler: ManualScheduler(), observeSystem: false),
+                           isDashboard: false, measuring: true)
         let host = NSHostingView(rootView: view)
         return host.fittingSize.height
     }

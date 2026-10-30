@@ -15,6 +15,7 @@ struct SettingsView: View {
     @ObservedObject var profiles: ProfilesModel
     @ObservedObject var skills: AgentSkillsModel
     @ObservedObject var updates: UpdateManager
+    @ObservedObject var motion: MotionController
     @State var tab: SettingsTab = .profiles
 
     var body: some View {
@@ -30,7 +31,7 @@ struct SettingsView: View {
                 switch tab {
                 case .profiles: ProfilesSettingsView(profiles: profiles)
                 case .skills: SkillsSettingsView(skills: skills)
-                case .app: AppSettingsView(updates: updates)
+                case .app: AppSettingsView(updates: updates, motion: motion)
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -392,6 +393,7 @@ struct AgentCard: View {
 
 struct AppSettingsView: View {
     @ObservedObject var updates: UpdateManager
+    @ObservedObject var motion: MotionController
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -401,6 +403,15 @@ struct AppSettingsView: View {
                 .disabled(!updates.autoCheck)
             Text("Automatic install restarts the app without asking once a verified update is ready.")
                 .font(.system(size: 10)).foregroundStyle(.secondary)
+            Divider()
+            Text("Appearance").font(.system(size: 13, weight: .semibold))
+            Toggle("Animate status symbol", isOn: $motion.decorativeEnabled)
+                .disabled(motion.systemReduceMotion)
+            Text(motion.systemReduceMotion
+                 ? "Off because Reduce Motion is on in System Settings. The status text and counts are unchanged."
+                 : "A slow fade while work is running, and one short pulse when something needs attention. The status text and counts are the same with it off.")
+                .font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(2).fixedSize(horizontal: false, vertical: true)
+            Divider()
             HStack {
                 Button("Check for Updates Now") { updates.checkNow(manual: true) }.disabled(updates.isBusy)
                 Text(status).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(2)

@@ -24,6 +24,8 @@ struct PopoverView: View {
     @ObservedObject var model: MonitorModel
     @ObservedObject var updates: UpdateManager
     @ObservedObject var profiles: ProfilesModel
+    /// Motion for the header status symbol.
+    @ObservedObject var motion: MotionController
     var isDashboard = false
     /// Layout tests measure the natural height instead of forcing the fixed one.
     var measuring = false
@@ -53,7 +55,7 @@ struct PopoverView: View {
         VStack(spacing: 6) {
             HStack(spacing: 8) {
                 BrandMark(size: 17)
-                StatusSummary(model: model)
+                StatusSummary(model: model, motion: motion.header)
                 NewTaskPulseBadge(pulse: model.pulse)
                 Spacer(minLength: 2)
                 ProfileMenu(profiles: profiles)
@@ -124,6 +126,7 @@ struct PopoverView: View {
 /// per state, so the state does not depend on color. The whole element reads as one accessibility value.
 struct StatusSummary: View {
     @ObservedObject var model: MonitorModel
+    @ObservedObject var motion: MotionModel
     /// Width of the text column. The header row has about this much room next to the actions.
     static let textWidth: CGFloat = 150
 
@@ -134,7 +137,7 @@ struct StatusSummary: View {
             VStack(alignment: .leading, spacing: 1) {
                 HStack(spacing: 4) {
                     if let symbol = status.symbol {
-                        Image(systemName: symbol).font(.system(size: 11, weight: .semibold)).foregroundStyle(tint(status))
+                        StatusSymbolView(name: symbol, motion: motion).font(.system(size: 11, weight: .semibold)).foregroundStyle(tint(status))
                     }
                     Text(status.title).font(.system(size: 13, weight: .semibold)).lineLimit(1)
                 }
@@ -148,6 +151,9 @@ struct StatusSummary: View {
             .accessibilityLabel("Offload status")
             .accessibilityValue(status.accessibilityValue)
         }
+        // The panel only animates while a view is on screen; closing it cancels the pending timer.
+        .onAppear { motion.viewAppeared() }
+        .onDisappear { motion.viewDisappeared() }
     }
 
     private func tint(_ s: OffloadStatus) -> Color {

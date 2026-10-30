@@ -9,6 +9,7 @@ struct Preferences {
         static let lastCheck = "lastUpdateCheck"
         static let dashboardShown = "dashboardShownOnce"
         static let lastWorkspace = "chatLastWorkspace"
+        static let decorativeMotion = "decorativeMotion"
     }
 
     var defaults: UserDefaults = .standard
@@ -33,6 +34,12 @@ struct Preferences {
     var lastWorkspace: String? {
         get { defaults.string(forKey: Key.lastWorkspace) }
         nonmutating set { defaults.set(newValue, forKey: Key.lastWorkspace) }
+    }
+    /// Decorative status motion in the menu bar and the panel header. Default on; the system Reduce Motion
+    /// setting turns it off regardless.
+    var decorativeMotion: Bool {
+        get { defaults.object(forKey: Key.decorativeMotion) as? Bool ?? true }
+        nonmutating set { defaults.set(newValue, forKey: Key.decorativeMotion) }
     }
     /// Default off.
     var autoInstall: Bool {

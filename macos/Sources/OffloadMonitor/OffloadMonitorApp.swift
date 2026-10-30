@@ -6,9 +6,9 @@ struct OffloadMonitorApp: App {
 
     var body: some Scene {
         MenuBarExtra {
-            PopoverView(model: state.model, updates: state.updates, profiles: state.profiles)
+            PopoverView(model: state.model, updates: state.updates, profiles: state.profiles, motion: state.motion)
         } label: {
-            MenuBarLabel(model: state.model, updates: state.updates)
+            MenuBarLabel(model: state.model, updates: state.updates, motion: state.motion.menuBar)
         }
         .menuBarExtraStyle(.window)
     }
@@ -20,6 +20,8 @@ struct OffloadMonitorApp: App {
 struct MenuBarLabel: View {
     @ObservedObject var model: MonitorModel
     @ObservedObject var updates: UpdateManager
+    /// Drives the opacity of the state symbol. It reads the same status; it never changes what is shown.
+    @ObservedObject var motion: MotionModel
 
     /// Slot sizes in points. The count slot fits "99+" in the menu-bar font with monospaced digits.
     enum Metrics {
@@ -43,7 +45,7 @@ struct MenuBarLabel: View {
                     if updateAvailable { Circle().frame(width: 5, height: 5).offset(x: 1, y: 1) }
                 }
             Group {
-                if let symbol = status.symbol { Image(systemName: symbol) } else { Color.clear }
+                if let symbol = status.symbol { StatusSymbolView(name: symbol, motion: motion) } else { Color.clear }
             }
             .frame(width: Metrics.symbolSlot)
             Text(status.menuBarCountText)
@@ -51,6 +53,7 @@ struct MenuBarLabel: View {
                 .lineLimit(1)
                 .fixedSize()
                 .frame(width: Metrics.countSlot, alignment: .leading)
+                .countTransition(animates: MotionPolicy.animatesCount(status, context: motion.context), value: status.counts?.working ?? 0)
         }
         .frame(width: Metrics.totalWidth)
         // The new-task pulse floats above the row, so it never changes the fixed width.
