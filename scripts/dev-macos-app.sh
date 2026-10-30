@@ -22,6 +22,13 @@ if $install_dev; then
   trap 'rm -rf "$staging"' EXIT
   ditto "$root/dist/Offload Monitor.app" "$staging/Offload Monitor.app"
   codesign --verify --deep --strict "$staging/Offload Monitor.app"
+  codesign --verify --strict "$staging/Offload Monitor.app/Contents/Resources/offload"
+  installed_version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$staging/Offload Monitor.app/Contents/Info.plist")"
+  cli_version="$("$staging/Offload Monitor.app/Contents/Resources/offload" version)"
+  if [ "$installed_version" != "$OFFLOAD_VERSION" ] || [ "$cli_version" != "$OFFLOAD_VERSION" ]; then
+    echo "App and bundled CLI versions must both match $OFFLOAD_VERSION" >&2
+    exit 1
+  fi
   destination="$parent/Offload Monitor.app"
   if [ -e "$destination" ]; then mv "$destination" "$staging/previous.app"; fi
   if ! mv "$staging/Offload Monitor.app" "$destination"; then

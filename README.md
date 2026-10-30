@@ -734,8 +734,12 @@ home's skills, MCP configuration or other settings.
 
 ## Fast local development updates
 
-Run `bash scripts/dev-macos-app.sh --install` to build and install a development
-bundle into `~/Applications/Offload Monitor.app`. Omit `--install` to build only.
+Run `make dev` to build and replace the entire development app bundle at
+`~/Applications/Offload Monitor.app`, including its bundled CLI. Both signatures
+and matching version labels are verified before replacement. Use `make dev-build`
+to build only, or `make dev OFFLOAD_DEV_INSTALL_DIR=/path/to/Applications` to
+choose another installation directory. Existing bundles are replaced as a whole;
+files left over from older versions are not merged into the new bundle.
 The app and bundled CLI share a label such as
 `0.4.3-dev.20261030180000.88aa20b`; uncommitted changes add `.dirty`. The label
 appears in the dashboard footer, App settings, and `offload version`. Set
