@@ -269,6 +269,8 @@ offload stats [--json] [--period today|week|month|all]
                               run, token and cost totals for a period (default today)
 offload watch [-t dur]        one line per event (started, progress, STALLED, finished) until all workers end;
                               with -t, stop after dur and exit 124 if workers are still active
+offload schedule add|list|show|update|pause|resume|delete|results|start|status
+                              scheduled tasks (see "Scheduled tasks")
 offload profiles [--json]     list profiles (* = the one a run would use); --json is a redacted machine-readable list
 offload profile save --json   create or edit one profile from a JSON request on stdin
 offload default [profile]     show or set the saved default profile
@@ -276,6 +278,7 @@ offload mode [basic|proactive] show or set the saved delegation mode
 offload install-agent [flags] install skills and delegation agent instructions
 offload agent status [--json] user-scope skill/instruction state for Codex and Claude Code
 offload agent enable|disable --agent codex|claude|all [--json]
+offload feedback              print the project homepage URL and open it in the default browser
 offload version
 
   -p profile   profile name (default: $OFFLOAD_PROFILE, then config default)
@@ -312,6 +315,50 @@ offload -r <session> -json --clear-add-dirs "Follow-up"      # clears it
   Review the retry logic
   Session: 12345678-1234-1234-1234-123456789abc
 ```
+
+### Scheduled tasks
+
+`offload schedule` runs a task later or repeatedly. You choose the task and the schedule; nothing is scheduled by default.
+
+```sh
+offload schedule add --name nightly --cron "30 2 * * *" --tz Asia/Shanghai -d /abs/app -p cheap "Summarize yesterday's failing tests. Read-only."
+offload schedule add --every 6h -d /abs/app "Check dependency advisories"
+offload schedule add --at 2026-11-01T09:00 --tz America/New_York -w -d /abs/app "Apply the migration plan"
+offload schedule start                     # keep this running; due tasks start from here
+offload schedule list [--json]             # state, schedule, next run, last result
+offload schedule show nightly [--json]     # full definition, including the prompt
+offload schedule results nightly --latest  # report of the newest run (also: --run ID, --limit N, --json)
+offload schedule update nightly --cron "0 3 * * *" -m other-model ["new prompt"]
+offload schedule pause nightly | resume nightly | delete nightly
+offload schedule status [--json]           # is a scheduler running?
+```
+
+A task is addressed by its id (`t-xxxxxxxx`), its `--name`, or an unambiguous id prefix.
+
+**Schedule syntax.** Give exactly one of:
+
+- `--cron "M H DOM MON DOW"`: five fields, evaluated in `--tz`. Each field takes `*`, `N`, `A-B`, comma lists, and `*/N` or `A-B/N` steps. Months and weekdays accept names (`jan`, `mon`); `0` and `7` are Sunday. When both day-of-month and day-of-week are restricted, either may match (classic cron). Seconds, `@daily` and `L`/`W`/`#` are not supported.
+- `--every DUR`: a fixed interval of at least 1 minute (`90m`, `6h`), counted from the moment the schedule is saved or updated.
+- `--at TIME`: one occurrence. RFC3339 with an offset (`2026-11-01T09:00:00+08:00`, the offset wins) or `YYYY-MM-DDTHH:MM[:SS]` read in `--tz`. It must be in the future.
+
+**Timezones.** `--tz` takes an IANA name and is stored with the task, so the schedule means the same thing on any machine. It defaults to the machine's zone, detected from `$TZ` or `/etc/localtime`; if that fails, `add` asks for `--tz`. `Local` is refused. Cron times follow the zone's daylight-saving rules: a wall-clock time that does not exist (spring forward) is skipped that day, and one that occurs twice (fall back) runs once, at its first occurrence. `show`, `list` and `--json` print the next run in the task's zone (`next_run_local`) and in UTC (`next_run`).
+
+**What a run is.** Each occurrence starts an ordinary `offload -json` process with the saved prompt (sent on stdin), working directory, `--add-dir`, profile, model, `-w`, execution policy, timeouts and tool options. It therefore uses the normal worker lifecycle: the machine-wide worker limit (`limits.max_workers`) queues scheduled runs with everything else, and `offload status`, `watch`, `ls` and `stats` see them. Each run's `caller_run_id` is `sched:<task id>:<run id>`. A task stores only the profile **name**. The token is read through `token_cmd` or `token` in the profile when the run starts, and is never copied into the schedule files. If the profile is later renamed or deleted, the run fails with a normal "unknown profile" result. Without `-p`, the default profile at run time applies.
+
+**Starting the scheduler.** Schedules are stored on disk, but only a running scheduler starts them. `offload schedule start` is a foreground process that checks every 15 seconds (`--interval`). Only one runs per user state directory; a second one exits with an error. Keep it alive with whatever you already use: a terminal multiplexer, `launchd`, `systemd --user`, or `nohup offload schedule start &`. Alternatively run `offload schedule start --once` from cron or a timer: it starts everything due, waits for those runs to finish, and exits. Stopping the scheduler (Ctrl-C or SIGTERM) does not stop runs it already started; the next scheduler records their results when it sees them finished. offload installs no background service and no login item.
+
+**Sleep, downtime and missed runs.** The scheduler compares the wall clock at each check, so a machine that slept or a scheduler that was down resumes on wake or start. For an occurrence more than 2 minutes overdue (`--misfire-grace` on `start`), the task's `--misfire` policy applies:
+
+- `skip` (default): nothing runs. A `missed` result records how many occurrences were overdue, and the next run is the next future occurrence.
+- `run-once`: one catch-up run starts at once, however many occurrences were missed. It is never one run per missed occurrence.
+
+Time a task spends paused is never caught up; `resume` computes the next occurrence from that moment.
+
+**No overlap, no duplicates.** An occurrence is claimed in the task file before its process starts, so two schedulers or a restart cannot start it twice. If the previous run of a task is still going when the next occurrence is due, that occurrence is recorded as `skipped` and not started. If the global switch is off (`offload disable`), due occurrences are recorded as `skipped` and not started; `offload enable` takes effect from the next occurrence, and skipped ones are not replayed. If a run's process disappeared without a result (reboot, `kill -9`), the next scheduler records it as `lost` and does not run it again.
+
+**Failures.** A failed or timed-out run is recorded and counted in `consecutive_failures` (reset by the next success). It is not retried; the schedule continues with its next occurrence. The execution policy, `-t` timeout and idle limit saved with the task apply to every run.
+
+**Results.** Per task, the newest 50 runs are kept (`--keep N`), plus separately the newest 50 `missed`/`skipped` records, in `$XDG_STATE_HOME/offload/schedules/` (default `~/.local/state/offload/schedules/`). A result has `status` (`ok`, `failed`, `timeout`, `missed`, `skipped`, `lost`), `scheduled_for`, start and finish times, `exit_code`, `session`, the worker's `report`, the tail of offload's stderr, and the full run `record`. Every scheduled run is also appended to the normal run log, so `offload show <session>` and `offload -r <session>` work on it. `list --json`, `show --json` and `results --json` print documents with `schema_version: 1` for automation. `update` changes only the flags you pass; changing the schedule recomputes the next run, and `delete` removes the definition and its retained results.
 
 ### Settings JSON commands
 
@@ -458,6 +505,7 @@ internal/cli/              flags, subcommands (ls, show, status, watch, profiles
 internal/worker/           Claude/Codex worker runs: args, env, prompt, stream-json parsing, timeout progress
 internal/config/           gateway profiles and token lookup
 internal/history/          the run log (runs.jsonl) and its Record type
+internal/schedule/         scheduled tasks: schedule parsing, the on-disk store, the scheduler
 internal/live/             per-process live state files that status and watch read
 internal/slots/            machine-wide worker slots and session locks (flock)
 internal/proc/             worker process groups: signal, liveness, PID-reuse check

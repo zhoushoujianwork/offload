@@ -41,6 +41,8 @@ usage:
                                 run, token and cost totals for a period (default today)
   offload watch [-t dur]        one line per event (start, progress, STALLED, finish) until all workers end;
                                 with -t, stop after dur and exit 124 if workers are still active
+  offload schedule add|list|show|update|pause|resume|delete|results|start|status
+                                run tasks later or repeatedly (offload schedule help)
   offload profiles [--json]     list profiles (* = the one a run would use)
   offload profile save --json   create or edit a profile from a JSON request on stdin
   offload default [profile]     show or set the saved default profile
@@ -49,6 +51,7 @@ usage:
   offload install-agent [flags] install delegation instructions for a host agent
   offload agent status|enable|disable [--agent codex|claude|all] [--json]
                                 inspect or toggle the user-scope offload skill
+  offload feedback              open the project homepage in your browser (Issues are one click away)
   offload version
 
 flags:
@@ -89,6 +92,8 @@ func Run(version string, args []string, stdin io.Reader, stdout, stderr io.Write
 				defer cancel()
 			}
 			return cmdWatch(ctx, stdout, stderr)
+		case "schedule":
+			return cmdSchedule(args[1:], stdin, stdout, stderr)
 		case "stats":
 			return cmdStats(args[1:], stdout, stderr)
 		case "profiles":
@@ -105,6 +110,8 @@ func Run(version string, args []string, stdin io.Reader, stdout, stderr io.Write
 			return agentinstall.Run(args[1:], stdout, stderr)
 		case "agent":
 			return agentinstall.RunControl(args[1:], stdout, stderr)
+		case "feedback":
+			return cmdFeedback(args[1:], stdout, stderr)
 		case "version":
 			fmt.Fprintln(stdout, version)
 			return 0

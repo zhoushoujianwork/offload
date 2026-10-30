@@ -14,30 +14,55 @@ struct OffloadMonitorApp: App {
     }
 }
 
+/// Menu-bar identity: brand mark, a state symbol and a count. Both trailing slots have a fixed width, so a
+/// change of state or count (0, 9, 10, 99, 99+) never moves neighbouring menu-bar items. The update hint is a
+/// small badge on the mark instead of another item in the row.
 struct MenuBarLabel: View {
     @ObservedObject var model: MonitorModel
     @ObservedObject var updates: UpdateManager
 
-    var body: some View {
-        // The running count is shown only when known; "–" means unknown, never zero.
-        let count = model.runningCount.map(String.init) ?? "–"
-        let warn = model.hasProblem || model.needsAttention
-        HStack(spacing: 3) {
-            Image(nsImage: BrandMarkImage.menuBar)
-            if warn { Image(systemName: "exclamationmark.triangle.fill") }
-            Text(count).monospacedDigit()
-            NewTaskPulseBadge(pulse: model.pulse, fontSize: 11)
-            if case .available = updates.phase { Image(systemName: "arrow.down.circle") }
-        }
-        .help(helpText)
+    /// Slot sizes in points. The count slot fits "99+" in the menu-bar font with monospaced digits.
+    enum Metrics {
+        static let symbolSlot: CGFloat = 13
+        static let countSlot: CGFloat = 28
+        static let spacing: CGFloat = 3
+        static var totalWidth: CGFloat { 16 + spacing + symbolSlot + spacing + countSlot }
     }
 
-    private var helpText: String {
-        if model.hasProblem { return "Offload Monitor: \(model.lastError ?? "problem")" }
-        guard let s = model.snapshot else { return "Offload Monitor: loading" }
-        var t = "\(s.runningCount) running"
-        if s.stalledCount > 0 { t += ", \(s.stalledCount) stalled" }
-        if s.lostCount > 0 { t += ", \(s.lostCount) lost" }
-        return t
+    private var updateAvailable: Bool {
+        if case .available = updates.phase { return true }
+        return false
+    }
+
+    var body: some View {
+        // The model republishes on every poll, success or failure, so this re-evaluates with a fresh `now`.
+        let status = model.status(at: Date())
+        HStack(spacing: Metrics.spacing) {
+            Image(nsImage: BrandMarkImage.menuBar)
+                .overlay(alignment: .bottomTrailing) {
+                    if updateAvailable { Circle().frame(width: 5, height: 5).offset(x: 1, y: 1) }
+                }
+            Group {
+                if let symbol = status.symbol { Image(systemName: symbol) } else { Color.clear }
+            }
+            .frame(width: Metrics.symbolSlot)
+            Text(status.menuBarCountText)
+                .monospacedDigit()
+                .lineLimit(1)
+                .fixedSize()
+                .frame(width: Metrics.countSlot, alignment: .leading)
+        }
+        .frame(width: Metrics.totalWidth)
+        // The new-task pulse floats above the row, so it never changes the fixed width.
+        .overlay(alignment: .topTrailing) { NewTaskPulseBadge(pulse: model.pulse, fontSize: 9).offset(y: -2) }
+        .help(MenuBarLabel.helpText(status, updateAvailable: updateAvailable))
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Offload")
+        .accessibilityValue(MenuBarLabel.helpText(status, updateAvailable: updateAvailable))
+    }
+
+    static func helpText(_ status: OffloadStatus, updateAvailable: Bool) -> String {
+        let base = "Offload: " + status.accessibilityValue
+        return updateAvailable ? base + " An update is available." : base
     }
 }
