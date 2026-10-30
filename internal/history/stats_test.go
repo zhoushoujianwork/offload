@@ -442,3 +442,21 @@ func TestTrendDSTRepeatedHourAndDayBounds(t *testing.T) {
 		t.Errorf("month runs: %v total %d", pointRuns(mo.Trend), mo.Totals.Runs)
 	}
 }
+
+func TestModelsExcludePreflightConfigurationFailures(t *testing.T) {
+	now := time.Date(2026, 10, 30, 12, 0, 0, 0, time.UTC)
+	records := []Record{
+		{TS: "2026-10-30 10:00:00", Status: "error", ErrorKind: "configuration"},
+		{TS: "2026-10-30 10:01:00", Status: "ok", Backend: "codex", Model: "gpt-6.1-sol", Session: "session"},
+	}
+	stats, err := Aggregate(records, PeriodToday, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.Totals.Runs != 2 || stats.Totals.Error != 1 || len(stats.Models) != 1 || stats.Models[0].Name != "codex gpt-6.1-sol" {
+		t.Fatalf("%+v", stats)
+	}
+	if len(stats.Recent) != 2 {
+		t.Fatal("configuration failure disappeared from history")
+	}
+}
