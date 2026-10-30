@@ -14,22 +14,25 @@ import (
 
 // Events contain only correlation and allowlisted activity metadata, never worker payloads.
 type supervisorEvent struct {
-	StopReason    string  `json:"stop_reason,omitempty"`
-	IdleTimeout   string  `json:"idle_timeout,omitempty"`
-	SchemaVersion int     `json:"schema_version"`
-	Type          string  `json:"type"`
-	RunID         string  `json:"run_id"`
-	CallerRunID   string  `json:"caller_run_id"`
-	Seq           int     `json:"seq"`
-	Timestamp     string  `json:"timestamp"`
-	Session       string  `json:"session"`
-	Backend       string  `json:"backend"`
-	Model         string  `json:"model"`
-	NativeType    string  `json:"native_type,omitempty"`
-	ToolCategory  string  `json:"tool_category,omitempty"`
-	Status        string  `json:"status,omitempty"`
-	ExitCode      *int    `json:"exit_code,omitempty"`
-	ErrorKind     *string `json:"error_kind,omitempty"`
+	StopReason string `json:"stop_reason,omitempty"`
+	// TerminationClass is canceled, interrupted or killed on a final event of a worker that ended
+	// without a result.
+	TerminationClass string  `json:"termination_class,omitempty"`
+	IdleTimeout      string  `json:"idle_timeout,omitempty"`
+	SchemaVersion    int     `json:"schema_version"`
+	Type             string  `json:"type"`
+	RunID            string  `json:"run_id"`
+	CallerRunID      string  `json:"caller_run_id"`
+	Seq              int     `json:"seq"`
+	Timestamp        string  `json:"timestamp"`
+	Session          string  `json:"session"`
+	Backend          string  `json:"backend"`
+	Model            string  `json:"model"`
+	NativeType       string  `json:"native_type,omitempty"`
+	ToolCategory     string  `json:"tool_category,omitempty"`
+	Status           string  `json:"status,omitempty"`
+	ExitCode         *int    `json:"exit_code,omitempty"`
+	ErrorKind        *string `json:"error_kind,omitempty"`
 }
 type eventWriter struct {
 	mu   sync.Mutex
@@ -75,6 +78,7 @@ func (e *eventWriter) emit(kind, native, tool string, rec *history.Record) error
 
 		if kind == "final" {
 			v.StopReason = rec.StopReason
+			v.TerminationClass = rec.TerminationClass()
 			v.IdleTimeout = rec.IdleTimeout
 			v.Status = rec.Status
 			v.ExitCode = rec.ExitCode

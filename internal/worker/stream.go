@@ -119,7 +119,12 @@ func (s streamSummary) resumeHint() string {
 	if s.Session == "" {
 		return ""
 	}
-	return fmt.Sprintf(`; resume with: offload -r %s "stop exploring and report what you already found"`, s.Session)
+	return "; resume with: " + resumeCommand(s.Session)
+}
+
+// resumeCommand is the command that continues a stopped session with a request for its report.
+func resumeCommand(session string) string {
+	return fmt.Sprintf(`offload -r %s "stop exploring and report what you already found"`, session)
 }
 
 // progress describes what the worker did before it stopped, so an interrupted run is not a blank.

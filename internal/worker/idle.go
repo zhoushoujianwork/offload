@@ -10,12 +10,25 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+
+	"github.com/zhoushoujianwork/offload/internal/proc"
 )
 
 // 空闲间隔使用单调时钟，避免系统校时导致误判。
 var activityEpoch = time.Now()
 
 var ErrSignal = errors.New("worker interrupted by signal")
+
+// SignalError is the cancellation cause for a signal that offload itself received. It matches
+// ErrSignal, so the stop reason stays "signal", and keeps which signal arrived so the run can be
+// classified as a requested cancel (SIGINT) or a shutdown interruption (SIGTERM).
+type SignalError struct{ Signal os.Signal }
+
+func (e *SignalError) Error() string {
+	return "worker interrupted by signal " + proc.SignalName(e.Signal)
+}
+
+func (e *SignalError) Is(target error) bool { return target == ErrSignal }
 
 func stopReason(cause error) string {
 	switch {

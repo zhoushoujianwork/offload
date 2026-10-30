@@ -136,6 +136,7 @@ func printStats(w io.Writer, st history.Stats, active []statsActive, wl statsWor
 	t := st.Totals
 	fmt.Fprintf(w, "offload stats: %s (%s)\n", st.Period, now.Format("2006-01-02 15:04 MST"))
 	fmt.Fprintf(w, "runs: %d (ok %d, error %d, timeout %d, salvaged %d) | sessions: %d\n", t.Runs, t.OK, t.Error, t.Timeout, t.Salvaged, t.Sessions)
+	fmt.Fprintf(w, "ended without a result: canceled %d (requested), interrupted %d (shutdown, resumable), killed %d (unrequested)\n", t.Canceled, t.Interrupted, t.Killed)
 	if t.ElapsedRuns > 0 {
 		fmt.Fprintf(w, "elapsed: %s (%d of %d runs)\n", listElapsed(&t.ElapsedMs), t.ElapsedRuns, t.Runs)
 	} else {

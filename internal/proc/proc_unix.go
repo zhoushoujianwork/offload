@@ -78,3 +78,53 @@ func signal(g Group, sig syscall.Signal) {
 		_ = syscall.Kill(-g.PGID, sig)
 	}
 }
+
+// SignalName returns the conventional name of a signal such as SIGTERM, or "signal N" for one
+// without a name here.
+func SignalName(s os.Signal) string {
+	n, ok := s.(syscall.Signal)
+	if !ok {
+		return s.String()
+	}
+	switch n {
+	case syscall.SIGHUP:
+		return "SIGHUP"
+	case syscall.SIGINT:
+		return "SIGINT"
+	case syscall.SIGQUIT:
+		return "SIGQUIT"
+	case syscall.SIGILL:
+		return "SIGILL"
+	case syscall.SIGABRT:
+		return "SIGABRT"
+	case syscall.SIGFPE:
+		return "SIGFPE"
+	case syscall.SIGKILL:
+		return "SIGKILL"
+	case syscall.SIGBUS:
+		return "SIGBUS"
+	case syscall.SIGSEGV:
+		return "SIGSEGV"
+	case syscall.SIGPIPE:
+		return "SIGPIPE"
+	case syscall.SIGALRM:
+		return "SIGALRM"
+	case syscall.SIGTERM:
+		return "SIGTERM"
+	}
+	return "signal " + strconv.Itoa(int(n))
+}
+
+// ExitSignal reports the signal that ended a process, given the error from Wait. ok is false when
+// the process exited normally or the error says nothing about a signal.
+func ExitSignal(err error) (name string, ok bool) {
+	var exit *exec.ExitError
+	if !errors.As(err, &exit) {
+		return "", false
+	}
+	status, isWait := exit.Sys().(syscall.WaitStatus)
+	if !isWait || !status.Signaled() {
+		return "", false
+	}
+	return SignalName(status.Signal()), true
+}

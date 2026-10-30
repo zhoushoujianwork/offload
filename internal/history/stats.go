@@ -36,6 +36,9 @@ type StatsTotals struct {
 	Error                   int         `json:"error"`
 	Timeout                 int         `json:"timeout"`
 	Salvaged                int         `json:"salvaged"`
+	Canceled                int         `json:"canceled"`
+	Interrupted             int         `json:"interrupted"`
+	Killed                  int         `json:"killed"`
 	ElapsedMs               int64       `json:"elapsed_ms"`
 	ElapsedRuns             int         `json:"elapsed_runs"`
 	Usage                   *TokenUsage `json:"usage"`
@@ -66,6 +69,8 @@ type RecentRun struct {
 	Usage    *TokenUsage `json:"usage"`
 	Result   string      `json:"result"`
 	Salvaged bool        `json:"salvaged"`
+	// TerminationClass is canceled, interrupted or killed when the worker ended without a result.
+	TerminationClass string `json:"termination_class,omitempty"`
 }
 
 // Trend interval names.
@@ -168,6 +173,14 @@ func (a *statsAcc) add(r Record, elapsedOK bool) {
 		t.Error++
 	case "timeout":
 		t.Timeout++
+	}
+	switch r.TerminationClass() {
+	case ClassCanceled:
+		t.Canceled++
+	case ClassInterrupted:
+		t.Interrupted++
+	case ClassKilled:
+		t.Killed++
 	}
 	if elapsedOK {
 		t.ElapsedMs += *r.ElapsedMs
@@ -384,7 +397,7 @@ func Aggregate(rs []Record, period string, now time.Time) (Stats, error) {
 		r := in[i].r
 		st.Recent = append(st.Recent, RecentRun{TS: r.TS, Status: r.Status, Dir: r.Dir, Task: r.Task,
 			Session: r.Session, Model: r.Model, CostUSD: runCost(r), Usage: runUsage(r),
-			Result: boundResult(r.Result), Salvaged: r.Salvaged})
+			Result: boundResult(r.Result), Salvaged: r.Salvaged, TerminationClass: r.TerminationClass()})
 	}
 
 	t := st.Totals

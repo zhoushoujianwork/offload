@@ -14,6 +14,7 @@ import (
 type Record struct {
 	ProfileAlias     string           `json:"profile_alias,omitempty"`
 	StopReason       string           `json:"stop_reason,omitempty"`
+	Termination      *Termination     `json:"termination,omitempty"`
 	IdleTimeout      string           `json:"idle_timeout"`
 	RunID            string           `json:"run_id,omitempty"`
 	CallerRunID      string           `json:"caller_run_id,omitempty"`
@@ -60,6 +61,44 @@ type Record struct {
 	Result   string `json:"result"`
 	Error    string `json:"error,omitempty"`
 	Salvaged bool   `json:"salvaged,omitempty"` // Result is a report written after the worker was stopped
+}
+
+// Termination classes. They describe why a worker ended before producing a result, so automation
+// can decide whether to resume or give up.
+const (
+	// ClassCanceled: the stop was requested (Ctrl-C or a cancelled caller context).
+	ClassCanceled = "canceled"
+	// ClassInterrupted: a graceful shutdown signal (host or supervisor shutdown, service upgrade).
+	ClassInterrupted = "interrupted"
+	// ClassKilled: the worker was ended by a signal nobody asked offload to relay.
+	ClassKilled = "killed"
+)
+
+// Termination records why a worker ended without a result, where that can be known.
+type Termination struct {
+	Class string `json:"class"`
+	// Signal is the signal offload itself received that made it stop the worker.
+	Signal string `json:"signal,omitempty"`
+	// WorkerSignal is the signal that ended the worker process, from its wait status.
+	WorkerSignal string `json:"worker_signal,omitempty"`
+	// SupervisorRequested is true when offload, the worker's parent, asked the worker to stop.
+	SupervisorRequested bool `json:"supervisor_requested"`
+	// SystemKilled is true when the worker died of SIGKILL that offload did not send, which is
+	// what the kernel's out-of-memory killer and a forced host shutdown send.
+	SystemKilled bool `json:"system_killed"`
+	// GraceExpired is true when the worker ignored the stop request for the whole grace period
+	// and was force-killed, so it may not have flushed its own state.
+	GraceExpired bool `json:"grace_expired,omitempty"`
+	// ResumeCommand is set only when the session is known and can be resumed.
+	ResumeCommand string `json:"resume_command,omitempty"`
+}
+
+// TerminationClass returns the record's termination class, or "" when it has none.
+func (r Record) TerminationClass() string {
+	if r.Termination == nil {
+		return ""
+	}
+	return r.Termination.Class
 }
 
 // Path is the run log location.

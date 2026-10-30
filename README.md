@@ -623,6 +623,8 @@ in addition to start/final. Final adds `status`, `exit_code`, and `error_kind`
 in final stdout JSON; a failed event destination cannot guarantee a final event.
 The supervisor must parse the final record even when the process exits nonzero.
 
+**Why a worker ended.** A run that ends without a result because the worker was signalled carries a `termination` object in `-json` and in the run log: `class`, `signal` (the signal offload itself received), `worker_signal` (from the worker's wait status), `supervisor_requested` (offload, the worker's parent, asked it to stop), `system_killed` (SIGKILL that offload did not send, as the out-of-memory killer or a forced shutdown sends), `grace_expired` and `resume_command`. The class is `canceled` (a requested stop: Ctrl-C/SIGINT or a cancelled caller), `interrupted` (SIGTERM, a host or supervisor shutdown, resumable) or `killed` (an unrequested kill or crash signal). `resume_command` is present only when the session id is known. On a stop, the worker gets SIGTERM and a bounded grace period (5 seconds) to write a partial report and flush; everything it writes then reaches the event log and the record, and only a worker that ignores SIGTERM is force-killed (`grace_expired`). The final event carries `termination_class`. `offload stats` counts `canceled`, `interrupted` and `killed` separately (text and JSON `totals`), the recent list has `termination_class` per run, and `offload ls` shows the class next to the status. `error_kind` and exit codes are unchanged.
+
 停止原因通过最终事件、`-json` 和运行记录的 `stop_reason` 输出：`deadline`、`idle`、`signal` 或 `canceled`；正常完成时省略。三处同时输出 `idle_timeout`，记录按 `-t` 截断后的有效配置（禁用为 `0s`）。deadline 和 idle 保持 `error_kind: "timeout"` 及退出码 124。没有新增自动重试或跨调用计时机制。
 
 ### 全局暂停 offload
