@@ -23,11 +23,12 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-      - run: swift test --package-path macos
-      - name: Render monitor panel states
+      # PanelRenderTests writes one PNG per panel state to OFFLOAD_PANEL_RENDER_DIR before it asserts layout
+      # invariants, so the images exist even when this step fails.
+      - name: Swift tests (renders monitor panel states)
         env:
           OFFLOAD_PANEL_RENDER_DIR: ${{ github.workspace }}/panel-renders
-        run: swift test --package-path macos --filter PanelRenderTests
+        run: swift test --package-path macos
       - name: Upload panel renders
         if: always()
         uses: actions/upload-artifact@v4
