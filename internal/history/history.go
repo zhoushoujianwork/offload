@@ -72,6 +72,12 @@ type Record struct {
 
 	ResumeSettings *ResumeSettings `json:"resume_settings,omitempty"`
 	ResumedFrom    string          `json:"resumed_from,omitempty"`
+
+	// Thread is the caller's -thread key. ThreadStart is how the run began: "fresh" (no binding),
+	// "resumed" (continued the bound session), "reset" (-thread-reset) or "fallback" (the bound
+	// session no longer existed, so a new one began). Both are empty for runs without -thread.
+	Thread      string `json:"thread,omitempty"`
+	ThreadStart string `json:"thread_start,omitempty"`
 }
 
 // ResumeSettings stores non-secret execution flags, never credentials or event destinations.

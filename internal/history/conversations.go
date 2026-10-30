@@ -73,6 +73,8 @@ type ConversationRun struct {
 	RunID           string `json:"run_id,omitempty"`
 	ResumedFrom     string `json:"resumed_from,omitempty"`
 	ResumeAvailable bool   `json:"resume_available"`
+	Thread          string `json:"thread,omitempty"`
+	ThreadStart     string `json:"thread_start,omitempty"`
 }
 
 // Conversation is a summary plus its runs in chronological order.
@@ -222,6 +224,7 @@ func summarize(id string, runs []convRun, activeSessions map[string]bool) Conver
 		acc.add(r, r.ElapsedMs != nil && *r.ElapsedMs >= 0)
 		dtos[i] = ConversationRun{ID: runIDPrefix + recordHash(r, e.idx), TS: r.TS, Status: r.Status, ExitCode: r.ExitCode,
 			RunID: r.RunID, ResumedFrom: r.ResumedFrom, ResumeAvailable: r.HasResumeSettings() && !activeSessions[r.Session],
+			Thread: r.Thread, ThreadStart: r.ThreadStart,
 			Task: r.Task, Result: r.Result, Error: r.Error, Dir: r.Dir, AddDirs: slices.Clone(r.AddDirs), Profile: r.Profile, Backend: r.Backend,
 			Model: r.Model, Session: r.Session, Usage: runUsage(r), CostUSD: runCost(r), Salvaged: r.Salvaged,
 			Elapsed: r.ElapsedMs, Turns: r.Turns}
