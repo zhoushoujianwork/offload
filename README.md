@@ -734,7 +734,7 @@ home's skills, MCP configuration or other settings.
 
 ## Fast local development updates
 
-Run `make dev` to build and replace the entire development app bundle at
+Run `make dev` to build, replace and restart the entire development app bundle at
 `~/Applications/Offload Monitor.app`, including its bundled CLI. Both signatures
 and matching version labels are verified before replacement. Use `make dev-build`
 to build only, or `make dev OFFLOAD_DEV_INSTALL_DIR=/path/to/Applications` to
@@ -745,9 +745,12 @@ The app and bundled CLI share a label such as
 appears in the dashboard footer, App settings, and `offload version`. Set
 `OFFLOAD_DEV_BASE=0.4.3` to choose the numeric base explicitly.
 
-The running app detects replacement at its existing path. Use its local restart
-action, or enable its existing restart-when-idle preference for subsequent dev
-updates. Chat, draft and unsaved-edit safeguards still apply. The script does not
-launch or terminate the app. Local dev bundles retain signature verification;
+After installation, `make dev` requests a normal macOS quit for this exact app
+path, waits for it to exit, and reopens it in the background. It verifies a new
+process and never force-kills a process. If quit is cancelled or blocked, the
+command reports failure and leaves the installed build ready. Finish and save
+current work before running this explicit restart command. For installation
+without an explicit restart, use `bash scripts/dev-macos-app.sh --install`; the
+existing optional restart-when-idle behavior still applies. Local dev bundles retain signature verification;
 stable GitHub release validation continues to reject prerelease bundles. No tag,
 push or GitHub release is needed for this local workflow.

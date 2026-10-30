@@ -3,10 +3,12 @@
 set -euo pipefail
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 install_dev=false
+restart_dev=false
 case "${1:-}" in
   "") ;;
   --install) install_dev=true ;;
-  *) echo "usage: scripts/dev-macos-app.sh [--install]" >&2; exit 2 ;;
+  --install-restart) install_dev=true; restart_dev=true ;;
+  *) echo "usage: scripts/dev-macos-app.sh [--install|--install-restart]" >&2; exit 2 ;;
 esac
 base="${OFFLOAD_DEV_BASE:-$(git -C "$root" describe --tags --abbrev=0 2>/dev/null || echo v0.0.0)}"
 base="${base#v}"
@@ -37,4 +39,7 @@ if $install_dev; then
   fi
   echo "Installed $OFFLOAD_VERSION at $destination"
   echo "Use the App's local restart action, or its opted-in restart-when-idle setting."
+  if $restart_dev; then
+    python3 "$root/scripts/restart-dev-app.py" "$destination"
+  fi
 fi
