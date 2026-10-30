@@ -731,3 +731,19 @@ Resume keeps the recorded account and home even after profile edits. This
 version provides explicit account selection; automatic quota-based pooling is
 not included. Managed homes start with Codex defaults and do not copy the system
 home's skills, MCP configuration or other settings.
+
+## Fast local development updates
+
+Run `bash scripts/dev-macos-app.sh --install` to build and install a development
+bundle into `~/Applications/Offload Monitor.app`. Omit `--install` to build only.
+The app and bundled CLI share a label such as
+`0.4.3-dev.20261030180000.88aa20b`; uncommitted changes add `.dirty`. The label
+appears in the dashboard footer, App settings, and `offload version`. Set
+`OFFLOAD_DEV_BASE=0.4.3` to choose the numeric base explicitly.
+
+The running app detects replacement at its existing path. Use its local restart
+action, or enable its existing restart-when-idle preference for subsequent dev
+updates. Chat, draft and unsaved-edit safeguards still apply. The script does not
+launch or terminate the app. Local dev bundles retain signature verification;
+stable GitHub release validation continues to reject prerelease bundles. No tag,
+push or GitHub release is needed for this local workflow.

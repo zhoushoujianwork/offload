@@ -150,6 +150,17 @@ final class ArchiveAndSwapTests: XCTestCase {
         XCTAssertFalse(fm.fileExists(atPath: tmp.appendingPathComponent("evil.txt").path))
     }
 
+    func testDevelopmentBundleOnlyAcceptedForLocalUpdates() throws {
+        let label = "0.4.3-dev.20261030180000.88aa20b.dirty"
+        let app = try makeApp(at: tmp, version: label)
+        let version = try XCTUnwrap(SemanticVersion(label))
+        XCTAssertThrowsError(try ArchiveValidator.validateBundle(app, expectedVersion: version))
+        XCTAssertNoThrow(try ArchiveValidator.validateBundle(app, expectedVersion: version, allowLocalDevelopment: true))
+        let rcParent = tmp.appendingPathComponent("rc")
+        let rc = try makeApp(at: rcParent, version: "0.4.3-rc1")
+        XCTAssertThrowsError(try ArchiveValidator.validateBundle(rc, expectedVersion: SemanticVersion("0.4.3-rc1")!, allowLocalDevelopment: true))
+    }
+
     func testBundleValidation() async throws {
         func bundleCase(_ make: (URL) throws -> Void, expect: String) async throws {
             let src = tmp.appendingPathComponent("b-\(UUID().uuidString)"); try fm.createDirectory(at: src, withIntermediateDirectories: true)
