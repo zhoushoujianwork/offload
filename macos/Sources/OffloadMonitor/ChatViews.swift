@@ -183,7 +183,6 @@ struct ChatDetailView: View {
     @ObservedObject var chat: ChatModel
     @ObservedObject var profiles: ProfilesModel
     @ObservedObject var monitor: MonitorModel
-    @FocusState private var composerFocused: Bool
 
     var body: some View {
         VStack(spacing: 0) {
@@ -193,8 +192,6 @@ struct ChatDetailView: View {
             Divider()
             composer
         }
-        .onChange(of: chat.focusRequest) { _ in composerFocused = true }
-        .onAppear { composerFocused = true }
     }
 
     // MARK: header
@@ -205,7 +202,7 @@ struct ChatDetailView: View {
                 Text(chat.title).font(.system(size: 14, weight: .semibold)).lineLimit(1).truncationMode(.tail).help(chat.title)
                 Spacer()
                 if !chat.isNew, chat.session != nil {
-                    Button { composerFocused = true; chat.requestFocus() } label: { Label("Continue conversation", systemImage: "arrowshape.turn.up.left") }
+                    Button { chat.requestFocus() } label: { Label("Continue conversation", systemImage: "arrowshape.turn.up.left") }
                         .controlSize(.small)
                 }
             }
@@ -325,12 +322,9 @@ struct ChatDetailView: View {
                 if let reason = chat.blockReason, !chat.draft.isEmpty { Text(reason).font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(1) }
             }
             HStack(alignment: .bottom, spacing: 8) {
-                TextEditor(text: $chat.draft)
-                    .font(.system(size: 13))
-                    .focused($composerFocused)
+                ComposerTextView(text: $chat.draft, focusRequest: chat.focusRequest,
+                                 canSend: { chat.canSend }, onSend: { chat.send() })
                     .frame(height: 74)
-                    .scrollContentBackground(.hidden)
-                    .scrollIndicators(.hidden)
                     .padding(6)
                     .background(Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 8))
                 VStack(spacing: 6) {
@@ -342,9 +336,11 @@ struct ChatDetailView: View {
                             .buttonStyle(.borderedProminent)
                             .keyboardShortcut(.return, modifiers: .command)
                             .disabled(!chat.canSend)
-                            .help(chat.blockReason ?? "Send (⌘↩). Return adds a new line.")
+                            .help(chat.blockReason ?? "Send (Enter or ⌘↩). Shift+Enter adds a new line.")
+                            .accessibilityHint("Press Enter or Command+Enter to send. Shift+Enter adds a new line.")
                     }
-                    Text("⌘↩ to send").font(.system(size: 9)).foregroundStyle(.secondary)
+                    Text("Enter to send · Shift+Enter for new line").font(.system(size: 9)).foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center).frame(maxWidth: 90)
                 }
             }
         }
