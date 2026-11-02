@@ -699,6 +699,14 @@ struct ActiveRow: View {
         let t = task
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 4) {
+                Text("Caller: \(t.callerName)")
+                    .font(.system(size: 9, weight: .semibold))
+                    .lineLimit(1).truncationMode(.middle)
+                    .padding(.horizontal, 4).padding(.vertical, 1)
+                    .background(Color.omBlue.opacity(0.15), in: Capsule()).foregroundStyle(Color.omBlue)
+                    .frame(maxWidth: 124, alignment: .leading)
+                    .help(t.callerExplanation)
+                    .accessibilityLabel("Caller: \(t.callerName). \(t.callerExplanation)")
                 Text(t.projectName).font(.system(size: 11, weight: .medium)).lineLimit(1)
                 if t.isLost { tag("lost", .red) } else if t.stalled { tag("stalled", .orange) }
                 if t.phase == "salvaging" { tag("salvaging", .omBlue) }

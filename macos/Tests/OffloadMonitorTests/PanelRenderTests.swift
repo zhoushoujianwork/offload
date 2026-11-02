@@ -43,6 +43,7 @@ final class PanelRenderTests: XCTestCase {
     private func task(_ phase: String, pid: Int, stalled: Bool = false, text: String = "Synthetic fixture task") -> ActiveTask {
         var t = Self.template
         t.phase = phase; t.pid = pid; t.stalled = stalled; t.task = text
+        t.caller = pid == 500 ? String(repeating: "long-caller-", count: 8) : "agh"
         return t
     }
 

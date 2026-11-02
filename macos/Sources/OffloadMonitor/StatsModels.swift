@@ -56,6 +56,7 @@ struct StatsGroup: Codable, Equatable, Identifiable {
 }
 
 struct ActiveTask: Codable, Equatable, Identifiable {
+    var caller: String? = nil
     var pid: Int
     var phase: String
     var status: String?
@@ -78,6 +79,17 @@ struct ActiveTask: Codable, Equatable, Identifiable {
     var isRunning: Bool { phase == "running" || phase == "salvaging" }
     var isLost: Bool { phase == "lost" }
     var projectName: String { (dir as NSString).lastPathComponent.isEmpty ? dir : (dir as NSString).lastPathComponent }
+    var callerName: String {
+        let name = caller?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return name.isEmpty ? "unspecified" : name
+    }
+    var callerExplanation: String {
+        switch callerName {
+        case "agh": return "Submitted by Agent-Host (agh). Caller identifies the application that submitted this task."
+        case "unspecified": return "Caller was not supplied. The task source is unknown."
+        default: return "Submitted by \(callerName). Caller identifies the application that submitted this task."
+        }
+    }
 }
 
 struct RecentRun: Codable, Equatable {
