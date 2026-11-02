@@ -52,8 +52,24 @@ a unified tool schema. No credentials are deliberately added to event metadata.
 The CLI continues owning parsing, profile/account selection, session/thread
 locks, signal handling, capture files, saved resume settings and history writes.
 Both its normal invocation and its existing explicit thread fallback invoke the
-public client. The library does not append a CLI history record or invent task
-acceptance. Its shared worker still publishes advisory live/processing state;
+public client. Library requests default to no history writes. Setting
+`Request.RecordHistory` appends exactly one terminal record through the same
+`history.Append` implementation as the CLI, to the standard private state home.
+It includes the native outcome, caller/run correlation and private raw result,
+including admitted setup failures and cancellation. Invalid/duplicate active run
+IDs are rejected without appending another record. The CLI leaves this flag off
+and retains its one final write after adding CLI-only resume/thread metadata.
+Package records do not fabricate CLI resume settings or task acceptance.
+
+`Result.HistoryRecorded` confirms the append succeeded. `HistoryError` reports
+decode/write failure independently of the execution error, status and raw record.
+Consumers must expose it; never rerun native work to repair a missing history
+entry. This is append completion, not a durable fsync guarantee. Offload Monitor
+and `offload ls/history/stats` use the ordinary record without a new schema or
+reader migration. Existing consumers can opt out by leaving the flag false.
+No historical calls are backfilled or replayed.
+
+The shared worker still publishes advisory live/processing state;
 live filenames include PID and execution identity to avoid same-process clashes.
 Legacy PID-only live files remain readable and expire under the existing rules.
 
@@ -69,7 +85,8 @@ the native outcome and original raw record rather than relabelling execution.
 An external consumer module must compile using only the public import and run
 fake Claude/Codex fixture processes. Checks cover fresh execution, continuation,
 instructions/events, unsupported controls, original error causes, timeout and
-cancellation, concurrent isolation and unchanged CLI JSON/history/transcripts.
+cancellation, concurrent isolation, opt-in terminal history, independent write
+failure and unchanged CLI JSON/history/transcripts.
 Run formatting, `go vet ./...`, `go test -race ./...` and existing macOS checks.
 No real account/model invocation or desktop input is needed for these checks.
 Release delivery follows the repository's normal PR, CI and verified dual-arch

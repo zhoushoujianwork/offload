@@ -285,8 +285,10 @@ func TestScheduledExecutionEndToEnd(t *testing.T) {
 
 func TestScheduledRunsRespectGlobalDisable(t *testing.T) {
 	needUnix(t)
-	work, record := setup(t, okReply)
 	bin := offloadBin(t)
+	// disable also reconciles installed agent instructions, not only XDG state.
+	settingsEnv(t)
+	work, record := setup(t, okReply)
 	at := time.Now().Add(2 * time.Second).UTC().Format(time.RFC3339)
 	var task taskJSON
 	runJSON(t, &task, "schedule", "add", "--json", "--name", "off", "--at", at, "-d", work, "task")
