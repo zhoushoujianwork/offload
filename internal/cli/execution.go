@@ -14,16 +14,7 @@ import (
 // execution entry point as Go consumers. Only the compatibility record is
 // decoded; no native work or model/tool loop is repeated.
 func runExecution(ctx context.Context, o worker.Opts) history.Record {
-	p := o.Profile
-	limit := o.MaxWorkers
-	if limit <= 0 {
-		limit = -1
-	}
-	client, err := execution.New(execution.Config{ProfileName: o.ProfileName,
-		Profile: execution.Profile{Backend: p.Backend, BaseURL: p.BaseURL, Model: p.Model,
-			ReasoningEffort: p.ReasoningEffort, ServiceTier: p.ServiceTier, CodexAccount: p.CodexAccount,
-			IdleTimeout: p.IdleTimeout, Endpoint: p.Endpoint, TokenCmd: p.TokenCmd, Token: p.Token},
-		Limits: execution.Limits{MaxWorkers: limit, GoMaxProcs: o.Limits.GoMaxProcs, GoParallelism: o.Limits.GoParallelism}})
+	client, err := execution.New(publicExecutionConfig(o))
 	var result execution.Result
 	if err == nil {
 		req := execution.Request{RunID: o.RunID, CallerRunID: o.CallerRunID, Caller: o.Caller,
@@ -53,6 +44,19 @@ func runExecution(ctx context.Context, o worker.Opts) history.Record {
 	}
 	return history.Record{RunID: o.RunID, CallerRunID: o.CallerRunID, Caller: history.CallerOrUnspecified(o.Caller),
 		TS: o.StartedAt.Format("2006-01-02 15:04:05"), Status: "error", ExitCode: &code,
-		Profile: o.ProfileName, Model: o.Model, Backend: p.BackendName(), Task: o.Task, Dir: o.Dir,
+		Profile: o.ProfileName, Model: o.Model, Backend: o.Profile.BackendName(), Task: o.Task, Dir: o.Dir,
 		ExecutionPolicy: o.ExecutionPolicy, ErrorKind: kind, Error: err.Error(), Result: err.Error(), ElapsedMs: &elapsed, CostIsEstimate: true}
+}
+
+func publicExecutionConfig(o worker.Opts) execution.Config {
+	p := o.Profile
+	limit := o.MaxWorkers
+	if limit <= 0 {
+		limit = -1
+	}
+	return execution.Config{ProfileName: o.ProfileName,
+		Profile: execution.Profile{Backend: p.Backend, BaseURL: p.BaseURL, Model: p.Model,
+			ReasoningEffort: p.ReasoningEffort, ServiceTier: p.ServiceTier, CodexAccount: p.CodexAccount,
+			IdleTimeout: p.IdleTimeout, Endpoint: p.Endpoint, TokenCmd: p.TokenCmd, Token: p.Token},
+		Limits: execution.Limits{MaxWorkers: limit, GoMaxProcs: o.Limits.GoMaxProcs, GoParallelism: o.Limits.GoParallelism}}
 }

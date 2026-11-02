@@ -696,6 +696,12 @@ struct ActiveRow: View {
     let task: ActiveTask
 
     var body: some View {
+        Button { if let id = task.runId { AppState.shared.openTask(id) } } label: { row }
+            .buttonStyle(.plain).disabled(task.runId == nil)
+            .help(task.runId == nil ? "This task predates task controls." : "Open task output and controls")
+    }
+
+    @ViewBuilder private var row: some View {
         let t = task
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 4) {
@@ -760,7 +766,7 @@ struct RecentRow: View {
     let run: RecentRun
 
     var body: some View {
-        Button { AppState.shared.openChat(for: run) } label: {
+        Button { if let id = run.runId { AppState.shared.openTask(id) } else { AppState.shared.openChat(for: run) } } label: {
             HStack(spacing: 6) {
                 Image(systemName: icon.0).foregroundStyle(icon.1).font(.system(size: 11))
                 VStack(alignment: .leading, spacing: 0) {

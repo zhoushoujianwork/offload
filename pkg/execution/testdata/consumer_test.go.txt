@@ -427,3 +427,30 @@ func TestHostNativeExitAndOriginalCause(t *testing.T) {
  var exit *exec.ExitError
  if !errors.As(err,&exit) || exit.ExitCode()!=7 || r.NativeExitCode==nil || *r.NativeExitCode!=7 || !strings.Contains(r.NativeStderr,"private-diagnostic") { t.Fatalf("%+v %v",r,err) }
 }
+
+func TestMonitorStopKeepsHostAndSiblingAlive(t *testing.T) {
+ body := `printf '{"type":"thread.started","thread_id":"native-%s"}\n' "$$"
+sleep 2
+printf '%s\n' '{"type":"item.completed","item":{"id":"m","type":"agent_message","text":"done"}}'
+printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}'
+`
+ c,dir,_:=fixture(t,"codex",body)
+ t.Setenv("OFFLOAD_MAX_WORKERS","2")
+ type outcome struct { r execution.Result; err error }
+ first,second:=make(chan outcome,1),make(chan outcome,1)
+ started:=make(chan string,2)
+ observe:=func(e execution.RawEvent)error{ if strings.Contains(string(e.Data),"thread.started"){started<-e.RunID};return nil }
+ ids:=[]string{strings.Repeat("a",32),strings.Repeat("b",32)}
+ for i,ch:=range []chan outcome{first,second}{ go func(id string,out chan outcome){r,err:=c.Run(context.Background(),execution.Request{RunID:id,Caller:"agh",Task:"monitor fixture",Directory:dir,RecordHistory:true,Monitor:&execution.MonitorOptions{CaptureTranscript:true},OnEvent:observe});out<-outcome{r,err}}(ids[i],ch) }
+ for i:=0;i<2;i++{select{case <-started:case <-time.After(10*time.Second):t.Fatal("no native registration")}}
+ var manifest struct{Address,Token string}
+ raw:=read(t,filepath.Join(dir,"state","offload","controls",ids[0]+".json"))
+ if json.Unmarshal([]byte(raw),&manifest)!=nil{t.Fatal("invalid control manifest")}
+ q,_:=http.NewRequest("POST","http://"+manifest.Address+"/stop",nil);q.Header.Set("Authorization","Bearer "+manifest.Token)
+ response,err:=http.DefaultClient.Do(q);if err!=nil{t.Fatal(err)};response.Body.Close()
+ if response.StatusCode!=200{t.Fatal(response.StatusCode)}
+ select{case out:=<-first:if !errors.Is(out.err,context.Canceled)||out.r.MonitorError!=nil||!out.r.HistoryRecorded{t.Fatalf("%+v %v",out.r,out.err)};case <-time.After(10*time.Second):t.Fatal("stop did not clean up")}
+ select{case out:=<-second:if out.err!=nil||out.r.Status!="ok"{t.Fatalf("sibling affected %+v %v",out.r,out.err)};case <-time.After(10*time.Second):t.Fatal("sibling stopped")}
+ capture:=read(t,filepath.Join(dir,"state","offload","transcripts",ids[0]+".ndjson"))
+ if !strings.Contains(capture,"execution_end")||!strings.Contains(capture,"canceled"){t.Fatal("canceled evidence lost")}
+}

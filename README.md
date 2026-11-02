@@ -117,7 +117,8 @@ force-kills the app. [Development updates →](docs/guide.md#fast-local-developm
 ## Documentation and development
 
 - [User guide](docs/guide.md): configuration, scheduling, JSON interfaces, limits and troubleshooting.
-- [Execution transcript](docs/execution-transcript.md): opt-in live and replayable conversation for supervisors.
+- [Monitor task controls](docs/monitor-task-controls.md): live output, per-run Stop and explicit Resume.
+- [Execution transcript](docs/execution-transcript.md): live and replayable conversation for supervisors.
 - [Agent skill](skills/offload/SKILL.md): delegation workflow and account selection.
 - [Development and checks](docs/guide.md#development): repository layout and CI commands.
 - [Release packaging](docs/guide.md#release-downloads): assets, signatures and updater verification.

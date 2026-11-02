@@ -56,6 +56,7 @@ struct StatsGroup: Codable, Equatable, Identifiable {
 }
 
 struct ActiveTask: Codable, Equatable, Identifiable {
+    var runId: String? = nil
     var caller: String? = nil
     var pid: Int
     var phase: String
@@ -93,6 +94,7 @@ struct ActiveTask: Codable, Equatable, Identifiable {
 }
 
 struct RecentRun: Codable, Equatable {
+    var runId: String? = nil
     var ts: String
     var status: String
     var dir: String

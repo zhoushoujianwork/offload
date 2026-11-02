@@ -92,9 +92,9 @@ func TestCaptureTranscriptReplayAfterRunAndMetadataUnchanged(t *testing.T) {
 	}
 }
 
-func TestWithoutCaptureFlagNothingIsRecorded(t *testing.T) {
+func TestExplicitCaptureOptOutNothingIsRecorded(t *testing.T) {
 	work, _ := setupCodex(t, transcriptCodexReply)
-	code, out, _ := runCLI("-json", "-p", "codex", "-d", work, "inspect")
+	code, out, _ := runCLI("-json", "-p", "codex", "-d", work, "-capture-transcript=false", "inspect")
 	if code != 0 {
 		t.Fatal(out)
 	}
@@ -259,7 +259,7 @@ func TestTranscriptCommandValidationAndCapabilities(t *testing.T) {
 	if code != 0 || json.Unmarshal([]byte(out), &c) != nil {
 		t.Fatal(code, out)
 	}
-	if c.SchemaVersion != 1 || c.Interface != "offload.transcript" || c.Capture.Default != "off" || len(c.Backends) != 2 || c.Reading.StartsBackend || c.Reading.TakesSlot {
+	if c.SchemaVersion != 1 || c.Interface != "offload.transcript" || c.Capture.Default != "on (CLI); opt-in (pkg)" || len(c.Backends) != 2 || c.Reading.StartsBackend || c.Reading.TakesSlot {
 		t.Fatalf("%+v", c)
 	}
 	for _, b := range c.Backends {

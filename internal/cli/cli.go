@@ -22,11 +22,13 @@ import (
 	"github.com/zhoushoujianwork/offload/internal/config"
 	"github.com/zhoushoujianwork/offload/internal/history"
 	"github.com/zhoushoujianwork/offload/internal/live"
+	"github.com/zhoushoujianwork/offload/internal/runcontrol"
 	"github.com/zhoushoujianwork/offload/internal/slots"
 	"github.com/zhoushoujianwork/offload/internal/text"
 	"github.com/zhoushoujianwork/offload/internal/thread"
 	"github.com/zhoushoujianwork/offload/internal/transcript"
 	"github.com/zhoushoujianwork/offload/internal/worker"
+	"github.com/zhoushoujianwork/offload/pkg/execution"
 )
 
 const usage = `offload — hand a task to Claude Code or Codex; print only its final report.
@@ -44,6 +46,8 @@ usage:
                                 continue a saved run/session in a new invocation
   offload history list|show --json
                                 structured full conversation history for native clients
+  offload task show|stop|resume --id RUN_ID --json
+                                inspect, stop or explicitly resume a registered task
   offload transcript read|list|capabilities --json
                                 read-only access to transcripts recorded with -capture-transcript
   offload status                what each worker is doing right now
@@ -84,6 +88,8 @@ func Run(version string, args []string, stdin io.Reader, stdout, stderr io.Write
 			return cmdShow(args[1:], stdout, stderr)
 		case "history":
 			return cmdHistory(args[1:], stdin, stdout, stderr)
+		case "task":
+			return cmdTask(args[1:], stdout, stderr)
 		case "transcript":
 			return cmdTranscript(args[1:], stdout, stderr)
 		case "status":
@@ -193,7 +199,7 @@ func cmdRunSaved(args []string, stdin io.Reader, stdout, stderr io.Writer, paren
 	var caller callerFlag
 	fs.Var(&caller, "caller", "optional caller ID for attribution: lowercase [a-z0-9][a-z0-9._-]{0,63}, e.g. agh, clawflow (per invocation; default unspecified)")
 	eventsFile := fs.String("events-file", "", "absolute exclusive-create sanitized NDJSON events file")
-	captureTranscript := fs.Bool("capture-transcript", false, "opt in: record this run's messages and tool calls to a private transcript readable with `offload transcript read` (separate from -events-file)")
+	captureTranscript := fs.Bool("capture-transcript", true, "record this run's messages and tool calls to a private transcript readable with `offload transcript read` (separate from -events-file)")
 	toolsDisabled := fs.Bool("tools-disabled", false, "disable all worker tools (Claude only)")
 	allowedTools := fs.String("allowed-tools", "", "explicit comma-separated Claude tool allowlist")
 	disallowedTools := fs.String("disallowed-tools", "", "explicit comma-separated Claude tool denylist")
@@ -459,6 +465,21 @@ func cmdRunSaved(args []string, stdin io.Reader, stdout, stderr io.Writer, paren
 		case sig := <-signals:
 			cancel(&worker.SignalError{Signal: sig})
 		case <-ctx.Done():
+		}
+	}()
+	info := runcontrol.Info{RunID: o.RunID, Caller: o.Caller, CallerRunID: o.CallerRunID, Profile: o.ProfileName, Backend: o.Profile.BackendName(), Model: o.Model, Directory: o.Dir, CLIResume: true, ProfileFingerprint: execution.ProfileFingerprint(publicExecutionConfig(o))}
+	if parent != nil {
+		if source, err := runcontrol.Read(parent.RunID); err == nil && source.Phase == "done" && source.ResumedBy == "" {
+			info.ResumedFrom = parent.RunID
+		}
+	}
+	registration, err := runcontrol.Register(info, func() { cancel(context.Canceled) })
+	if err != nil {
+		return failRun(fmt.Errorf("register task controls: %w", err))
+	}
+	defer func() {
+		if err := registration.Finish(rec); err != nil {
+			fmt.Fprintln(stderr, "offload: task control finalization failed")
 		}
 	}()
 	profileAlias, transcriptState := rec.ProfileAlias, rec.Transcript

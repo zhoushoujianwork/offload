@@ -19,7 +19,7 @@ and Codex with `codex exec --json`. Their event shapes differ, and offload maps 
 
 ## Decision
 
-Capture is a separate opt-in channel: `-capture-transcript`. It writes one private NDJSON file per
+New CLI runs capture by default; use `-capture-transcript=false` to opt out. Package consumers opt in with `Request.Monitor.CaptureTranscript`. It writes one private NDJSON file per
 run. A new read-only command, `offload transcript read --json`, serves bounded pages with a cursor.
 
 Alternatives considered:

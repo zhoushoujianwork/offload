@@ -77,3 +77,16 @@ supported. This adds no Host policy, message routing or automatic session adopti
 
 The worker drains native output independently of callback latency and retains
 native exit/error evidence. See the [control contract](execution-pkg-detail.md#host-native-controls).
+
+## Monitor task controls
+
+Set `Request.Monitor = &execution.MonitorOptions{CaptureTranscript: true}`
+and `RecordHistory: true` for per-run Stop and bounded live/replayable output.
+Stop cancels only that execution context, including concurrent calls in one Host
+process. Check `Result.MonitorError` separately from execution and history.
+To offer Resume, supply `ResumeCommand` (exact argv beginning with an absolute
+executable) and `ResumeDirectory` (absolute directory). The command must re-enter
+the owning Host's validated session; omit it when that cannot be reconstructed.
+A dedicated continuation may pass `MonitorResumeSource()` as `ResumedFrom` to
+link the new run. This metadata grants no execution permissions.
+See [task controls](monitor-task-controls.md).

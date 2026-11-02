@@ -42,7 +42,7 @@ conversion preserves the wire/history format without exposing internal types.
 It receives native content, including arguments/results when emitted, not a
 sanitized metadata stream. It must return promptly; an error stops the owned
 execution and is reported. Missing/oversized/unterminated lines are not presented
-as complete transcript content. Existing opt-in transcript capture retains its
+as complete transcript content. Transcript capture retains its
 separate completeness/redaction contract through the public `Capture` interface;
 the capture owner still creates/finalizes it. `RawEvent` is not a token delta or
 a unified tool schema. No credentials are deliberately added to event metadata.

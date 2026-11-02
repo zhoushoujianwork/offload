@@ -1,7 +1,7 @@
 // Package transcript captures and serves the presentable content of one offload invocation:
 // user and assistant messages, tool calls and their results, and the invocation boundaries.
 //
-// Capture is opt-in per invocation (-capture-transcript). Each invocation writes its own private
+// CLI capture defaults on; package consumers opt in per invocation. Each invocation writes its own private
 // NDJSON file keyed by its run ID under the offload state directory. Reading is a separate,
 // read-only operation on that file: it never starts a provider session or takes a worker slot, and
 // it never looks at the private session files of Claude Code or Codex.
