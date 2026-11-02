@@ -302,7 +302,7 @@ func SetResumedBy(source, id string) error {
 	if m.Phase != "done" || m.ResumedBy != "" {
 		return errors.New("source is active or already resumed")
 	}
-	if m.ResumePID != 0 && (m.ResumePID != os.Getpid() || m.ResumePIDStart != proc.StartToken(os.Getpid())) {
+	if m.ResumePending() && (m.ResumePID != os.Getpid() || m.ResumePIDStart != proc.StartToken(os.Getpid())) {
 		return errors.New("another caller owns this resume")
 	}
 	m.ResumedBy = id

@@ -106,3 +106,27 @@ func TestRejectUnsafeControlStorageAndResume(t *testing.T) {
 		t.Fatal("symlink storage accepted")
 	}
 }
+
+func TestDeadResumeReservationDoesNotBlockExplicitContinuation(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	id, next := strings.Repeat("1", 32), strings.Repeat("2", 32)
+	r, err := Register(Info{RunID: id}, func() {})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.Finish(history.Record{Status: "error", ErrorKind: "canceled", Session: "native"})
+	r.m.ResumePID = os.Getpid()
+	r.m.ResumePIDStart = "stale-process-identity"
+	if err := r.save(); err != nil {
+		t.Fatal(err)
+	}
+	child, err := Register(Info{RunID: next, ResumedFrom: id}, func() {})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer child.Finish(history.Record{Status: "ok"})
+	source, _ := Read(id)
+	if source.ResumedBy != next {
+		t.Fatal("explicit continuation did not replace a dead reservation")
+	}
+}
