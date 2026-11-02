@@ -1,0 +1,273 @@
+package consumer_test
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/zhoushoujianwork/offload/pkg/execution"
+)
+
+const codexReply = `printf '%s\n' '{"type":"thread.started","thread_id":"native-1"}'
+printf '%s\n' '{"type":"item.completed","item":{"id":"m","type":"agent_message","text":"library answer"}}'
+printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":12,"output_tokens":3}}'
+`
+
+func fixture(t *testing.T, backend, body string) (*execution.Client, string, string) {
+	t.Helper()
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(dir, "config"))
+	t.Setenv("XDG_STATE_HOME", filepath.Join(dir, "state"))
+	t.Setenv("CODEX_HOME", filepath.Join(dir, "codex"))
+	t.Setenv("OFFLOAD_MAX_WORKERS", "-1")
+	args := filepath.Join(dir, "args")
+	bin := filepath.Join(dir, "native")
+	script := "#!/bin/sh\nprintf x >> '" + args + ".calls'\nprintf '%s\\n' \"$@\" > '" + args + "'\n"
+	if backend == "codex" {
+		script += "cat > '" + args + ".stdin'\n"
+	} else {
+		script += "(while [ $# -gt 0 ]; do case \"$1\" in --append-system-prompt-file) cp \"$2\" '" + args + ".instructions';; esac; shift; done)\n"
+	}
+	if err := os.WriteFile(bin, []byte(script+body), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("OFFLOAD_CODEX", bin)
+	t.Setenv("OFFLOAD_CLAUDE", bin)
+	p := execution.Profile{Backend: backend, Model: "fixture-model"}
+	if backend == "claude" {
+		srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+		t.Cleanup(srv.Close)
+		p.BaseURL, p.Token = srv.URL, "fixture-token"
+	}
+	client, err := execution.New(execution.Config{ProfileName: "fixture", Profile: p})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return client, dir, args
+}
+
+func read(t *testing.T, name string) string {
+	t.Helper()
+	b, err := os.ReadFile(name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
+}
+
+func TestCodexFreshResumeAndPrivateEvidence(t *testing.T) {
+	c, dir, args := fixture(t, "codex", codexReply)
+	extra := t.TempDir()
+	var events []execution.RawEvent
+	req := execution.Request{Task: "visible task", Directory: dir, Caller: "agh", CallerRunID: "agh:task-1",
+		Instructions: []byte("internal context"), AdditionalDirectories: []string{extra},
+		OnEvent: func(e execution.RawEvent) error { events = append(events, e); return nil }}
+	r, err := c.Run(context.Background(), req)
+	if err != nil || r.Status != "ok" || r.Report != "library answer" || r.NativeSessionID != "native-1" || r.RunID == "" || r.ExitCode != 0 {
+		t.Fatalf("%+v %v", r, err)
+	}
+	if len(events) != 3 || events[0].RunID != r.RunID || events[0].CallerRunID != req.CallerRunID || events[0].Backend != "codex" {
+		t.Fatalf("events %+v", events)
+	}
+	var record map[string]any
+	if json.Unmarshal(r.RawRecord, &record) != nil || record["task"] != req.Task || record["caller"] != "agh" || record["caller_run_id"] != req.CallerRunID {
+		t.Fatalf("record %s", r.RawRecord)
+	}
+	if !strings.Contains(read(t, args+".stdin"), "internal context") || strings.Contains(read(t, args), "internal context") || !strings.Contains(read(t, args), extra) {
+		t.Fatal("instructions/directory transport changed")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "state", "offload", "runs.jsonl")); !os.IsNotExist(err) {
+		t.Fatal("library wrote CLI history")
+	}
+	req.NativeSessionID, req.Task = r.NativeSessionID, "continue"
+	second, err := c.Run(context.Background(), req)
+	if err != nil || second.RunID == r.RunID || second.NativeSessionID != r.NativeSessionID || !strings.Contains(read(t, args), "resume\n") {
+		t.Fatalf("resume %+v %v", second, err)
+	}
+}
+
+func TestClaudeToolControlsAndInstructions(t *testing.T) {
+	body := `printf '%s\n' '{"type":"result","is_error":false,"result":"claude answer","session_id":"claude-1","num_turns":1}'` + "\n"
+	c, dir, args := fixture(t, "claude", body)
+	r, err := c.Run(context.Background(), execution.Request{Task: "inspect", Directory: dir, AllowedTools: "Read,Grep", DisallowedTools: "Bash", Instructions: []byte("host context")})
+	if err != nil || r.Report != "claude answer" || r.NativeSessionID != "claude-1" {
+		t.Fatalf("%+v %v", r, err)
+	}
+	flags := read(t, args)
+	if !strings.Contains(flags, "--allowedTools\nRead Grep\n") || !strings.Contains(flags, "--disallowedTools\nBash\n") || strings.Contains(flags, "--dangerously-skip-permissions") || !strings.Contains(read(t, args+".instructions"), "host context") {
+		t.Fatal(flags)
+	}
+}
+
+func TestUnsupportedControlsAndPreCanceledDoNotLaunch(t *testing.T) {
+	c, dir, args := fixture(t, "codex", codexReply)
+	r, err := c.Run(context.Background(), execution.Request{Task: "inspect", Directory: dir, ToolsDisabled: true})
+	var re *execution.RunError
+	if !errors.As(err, &re) || re.Kind != "unsupported_tools" || r.Status != "error" {
+		t.Fatalf("%+v %v", r, err)
+	}
+	if _, err := os.Stat(args); !os.IsNotExist(err) {
+		t.Fatal("unsupported policy started native backend")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err = c.Run(ctx, execution.Request{Task: "inspect", Directory: dir})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(args); !os.IsNotExist(err) {
+		t.Fatal("canceled request started native backend")
+	}
+	ctx2, stop := context.WithCancelCause(context.Background())
+	cause := errors.New("host stopped")
+	stop(cause)
+	_, err = c.Run(ctx2, execution.Request{Task: "inspect", Directory: dir})
+	if !errors.Is(err, context.Canceled) || !errors.Is(err, cause) {
+		t.Fatal(err)
+	}
+}
+
+func TestCancellationAndConcurrentRunIsolation(t *testing.T) {
+	body := `printf '{"type":"thread.started","thread_id":"native-%s"}\n' "$$"
+sleep 1
+printf '%s\n' '{"type":"item.completed","item":{"id":"m","type":"agent_message","text":"done"}}'
+printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}'
+`
+	c, dir, _ := fixture(t, "codex", body)
+	t.Setenv("OFFLOAD_MAX_WORKERS", "2")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	started := make(chan struct{}, 2)
+	release := make(chan struct{})
+	defer func() {
+		select {
+		case <-release:
+		default:
+			close(release)
+		}
+	}()
+	observe := func(e execution.RawEvent) error {
+		if strings.Contains(string(e.Data), "thread.started") {
+			started <- struct{}{}
+			<-release
+		}
+		return nil
+	}
+	type outcome struct {
+		result execution.Result
+		err    error
+	}
+	first, second := make(chan outcome, 1), make(chan outcome, 1)
+	go func() {
+		r, e := c.Run(ctx, execution.Request{RunID: "concurrent-a", Task: "a", Directory: dir, OnEvent: observe})
+		first <- outcome{r, e}
+	}()
+	go func() {
+		r, e := c.Run(context.Background(), execution.Request{RunID: "concurrent-b", Task: "b", Directory: dir, OnEvent: observe})
+		second <- outcome{r, e}
+	}()
+	for i := 0; i < 2; i++ {
+		select {
+		case <-started:
+		case <-time.After(10 * time.Second):
+			t.Fatal("independent calls did not both start")
+		}
+	}
+	files, err := filepath.Glob(filepath.Join(dir, "state", "offload", "live", "*.json"))
+	if err != nil || len(files) != 2 {
+		t.Fatalf("live records %v %v", files, err)
+	}
+	ids := map[string]bool{}
+	for _, f := range files {
+		var s struct {
+			RunID string `json:"run_id"`
+		}
+		if json.Unmarshal([]byte(read(t, f)), &s) != nil {
+			t.Fatal(f)
+		}
+		ids[s.RunID] = true
+	}
+	if !ids["concurrent-a"] || !ids["concurrent-b"] {
+		t.Fatal(ids)
+	}
+	if _, err := c.Run(context.Background(), execution.Request{RunID: "concurrent-a", Task: "duplicate", Directory: dir}); err == nil {
+		t.Fatal("duplicate active execution ID was allowed to overwrite evidence")
+	}
+	cancel()
+	close(release)
+	select {
+	case a := <-first:
+		if !errors.Is(a.err, context.Canceled) || a.result.ErrorKind != "canceled" {
+			t.Fatalf("canceled %+v %v", a.result, a.err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("cancellation cleanup timed out")
+	}
+	select {
+	case b := <-second:
+		if b.err != nil || b.result.Status != "ok" {
+			t.Fatalf("other call affected %+v %v", b.result, b.err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("other call did not complete")
+	}
+}
+
+func TestDeadlineAndObserverFailureRetainCauses(t *testing.T) {
+	c, dir, args := fixture(t, "codex", `printf '%s\n' '{"type":"thread.started","thread_id":"native-1"}'; exec sleep 60`+"\n")
+	launches := func() int { b, _ := os.ReadFile(args + ".calls"); return len(b) }
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	r, err := c.Run(ctx, execution.Request{Task: "inspect", Directory: dir})
+	if !errors.Is(err, context.DeadlineExceeded) || r.Status != "timeout" {
+		t.Fatalf("%+v %v", r, err)
+	}
+	firstCalls := launches()
+	if firstCalls > 1 {
+		t.Fatal("deadline invocation repeated native execution")
+	}
+	limit := time.Second
+	r, err = c.Run(context.Background(), execution.Request{Task: "inspect", Directory: dir, Timeout: &limit})
+	if !errors.Is(err, context.DeadlineExceeded) || r.Status != "timeout" {
+		t.Fatalf("native timeout %+v %v", r, err)
+	}
+	secondCalls := launches()
+	if secondCalls-firstCalls > 1 {
+		t.Fatal("native timeout repeated native execution")
+	}
+	boom := errors.New("observer unavailable")
+	r, err = c.Run(context.Background(), execution.Request{Task: "inspect", Directory: dir, OnEvent: func(execution.RawEvent) error { return boom }})
+	if !errors.Is(err, boom) || r.Status == "ok" || r.ErrorKind != "events_io" {
+		t.Fatalf("%+v %v", r, err)
+	}
+	if calls := launches(); calls-secondCalls != 1 {
+		t.Fatalf("observer failure did not run exactly one native invocation: %d", calls-secondCalls)
+	}
+}
+
+func TestLoadConfigExplicitSelectionAndValidation(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	os.WriteFile(path, []byte(`{"default":"other","profiles":{"chosen":{"backend":"codex","aliases":["alias"],"model":"fixture"}}}`), 0600)
+	t.Setenv("OFFLOAD_PROFILE", "other")
+	cfg, err := execution.LoadConfig(path, "alias")
+	if err != nil || cfg.ProfileName != "chosen" || cfg.Profile.Model != "fixture" {
+		t.Fatalf("%+v %v", cfg, err)
+	}
+	if _, err := execution.LoadConfig(path, ""); err == nil {
+		t.Fatal("implicit profile accepted")
+	}
+	if _, err := execution.LoadConfig("relative", "chosen"); err == nil {
+		t.Fatal("relative config accepted")
+	}
+	if _, err := execution.New(execution.Config{}); err == nil {
+		t.Fatal("implicit client config accepted")
+	}
+}

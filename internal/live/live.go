@@ -1,10 +1,12 @@
 // Package live publishes the state of a running worker, so a supervisor can see it work, or
-// notice it stuck, long before the run ends. One small file per offload process, rewritten
+// notice it stuck, long before the run ends. One small file per execution, rewritten
 // every couple of seconds. It is advisory: nothing depends on it to run or to report.
 package live
 
 import (
+	"crypto/sha256"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -94,7 +96,13 @@ func Publish(s State) error {
 	if err != nil {
 		return err
 	}
-	final := filepath.Join(Dir(), strconv.Itoa(s.PID)+".json")
+	name := strconv.Itoa(s.PID)
+	if s.RunID != "" {
+		// A library host may execute independent runs in the same process. Hash
+		// untrusted IDs so neither path traversal nor filename size can escape.
+		name += fmt.Sprintf("-%x", sha256.Sum256([]byte(s.RunID)))
+	}
+	final := filepath.Join(Dir(), name+".json")
 	tmp := final + ".tmp"
 	if err := os.WriteFile(tmp, b, 0o600); err != nil {
 		return err
