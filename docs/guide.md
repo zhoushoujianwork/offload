@@ -654,7 +654,7 @@ worker failure/cancellation, 2 for setup or event-file errors, and 124 for timeo
 
 ### Execution transcript
 
-`-capture-transcript` (off by default) records the messages, tool calls and tool results of one run to a
+`-capture-transcript` (on by default for CLI runs) records the messages, tool calls and tool results of one run to a
 private file, separate from `-events-file`. Read it with `offload transcript read --json
 --caller-run-id <id> [--cursor C]` while the run is active or after it ends; reading never starts a model
 or takes a worker slot. `offload transcript capabilities --json` lists backend support, limits and

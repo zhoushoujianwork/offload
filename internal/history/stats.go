@@ -66,6 +66,7 @@ type StatsGroup struct {
 // nil here: its recorded accounting is incomplete and may hold session totals, so it is not a
 // reliable full-run figure.
 type RecentRun struct {
+	RunID    string      `json:"run_id,omitempty"`
 	Caller   string      `json:"caller"`
 	TS       string      `json:"ts"`
 	Status   string      `json:"status"`
@@ -428,7 +429,7 @@ func Aggregate(rs []Record, period string, now time.Time) (Stats, error) {
 	})
 	for i := 0; i < len(in) && i < RecentLimit; i++ {
 		r := in[i].r
-		st.Recent = append(st.Recent, RecentRun{Caller: CallerOrUnspecified(r.Caller), TS: r.TS, Status: r.Status, Dir: r.Dir, Task: r.Task,
+		st.Recent = append(st.Recent, RecentRun{RunID: r.RunID, Caller: CallerOrUnspecified(r.Caller), TS: r.TS, Status: r.Status, Dir: r.Dir, Task: r.Task,
 			Session: r.Session, Model: r.Model, CostUSD: runCost(r), Usage: runUsage(r),
 			Result: boundResult(r.Result), Salvaged: r.Salvaged, TerminationClass: r.TerminationClass(), ToolRestriction: r.ToolRestriction})
 	}

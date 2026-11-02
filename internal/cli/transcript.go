@@ -63,7 +63,7 @@ func capabilities() capabilitiesOutput {
 	return capabilitiesOutput{
 		SchemaVersion: transcript.SchemaVersion,
 		Interface:     transcript.InterfaceName,
-		Capture: capabilityCapture{Default: "off", EnableWith: "-capture-transcript",
+		Capture: capabilityCapture{Default: "on (CLI); opt-in (pkg)", EnableWith: "-capture-transcript",
 			Storage: "<state dir>/offload/transcripts/<run_id>.ndjson", Permissions: "directory 0700, file 0600, exclusive create, symlinks rejected"},
 		Backends: []capabilityBackend{
 			{Backend: "claude", Source: "claude -p --output-format stream-json --verbose (not ACP)", Supported: true, TextDeltas: false,

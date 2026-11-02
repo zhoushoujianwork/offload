@@ -61,6 +61,7 @@ type RawEvent struct {
 }
 
 type Request struct {
+	Monitor                    *MonitorOptions
 	Native                     *NativeControls
 	RunID, CallerRunID, Caller string
 	// RecordHistory opts into the standard private Offload run log. The caller
@@ -91,6 +92,7 @@ type Request struct {
 // Result is execution evidence, never task acceptance. Missing usage/cost stays
 // nil. RawRecord preserves the complete private CLI/history-compatible record.
 type Result struct {
+	MonitorError                                error
 	NativeStderr                                string
 	NativeExitCode                              *int
 	StructuredOutput                            json.RawMessage
@@ -209,17 +211,21 @@ func (c *Client) Run(ctx context.Context, req Request) (result Result, resultErr
 		return setupError("configuration", errors.New("run ID is already active in this process"))
 	}
 	defer activeRuns.Delete(id)
-	if req.RecordHistory {
-		defer func() {
+	var monitor *monitoring
+	defer func() {
+		if req.RecordHistory {
 			var record history.Record
 			if err := json.Unmarshal(result.RawRecord, &record); err != nil {
 				result.HistoryError = fmt.Errorf("decode execution history: %w", err)
-				return
+			} else {
+				result.HistoryError = history.Append(history.Path(), record)
+				result.HistoryRecorded = result.HistoryError == nil
 			}
-			result.HistoryError = history.Append(history.Path(), record)
-			result.HistoryRecorded = result.HistoryError == nil
-		}()
-	}
+		}
+		if monitor != nil {
+			monitor.finishResult(&result)
+		}
+	}()
 	if err := ctx.Err(); err != nil {
 		kind := "canceled"
 		if errors.Is(err, context.DeadlineExceeded) {
@@ -275,6 +281,18 @@ func (c *Client) Run(ctx context.Context, req Request) (result Result, resultErr
 			return setupError("configuration", errors.New("additional directory must exist"))
 		}
 	}
+	if req.Monitor != nil {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithCancel(ctx)
+		defer cancel()
+		monitor, err = c.startMonitoring(req, id, o.Model, cancel)
+		if err != nil {
+			return setupError("monitor", err)
+		}
+		if monitor.capture != nil {
+			o.Transcript = monitor.capture
+		}
+	}
 	var observerErr error
 	if req.OnEvent != nil {
 		o.OnLine = func(line []byte) error {
@@ -284,6 +302,12 @@ func (c *Client) Run(ctx context.Context, req Request) (result Result, resultErr
 		}
 	}
 	record, runErr := worker.Run(ctx, o)
+	if monitor != nil {
+		record.ResumedFrom = req.Monitor.ResumedFrom
+		if monitor.capture != nil {
+			record.Transcript = "captured"
+		}
+	}
 	raw, encodeErr := json.Marshal(record)
 	usage, _ := json.Marshal(record.Usage)
 	if record.Usage == nil {

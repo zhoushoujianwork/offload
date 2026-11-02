@@ -136,6 +136,12 @@ extension AppState {
     func showDetails() { showAux("details", title: "Token and cost detail", size: NSSize(width: 340, height: 300)) { DetailsView(model: self.model) } }
     func showNotes() { showAux("notes", title: "Data coverage and notes", size: NSSize(width: 380, height: 260)) { NotesView(model: self.model) } }
     func showNotices() { showAux("notices", title: "Status and updates", size: NSSize(width: 380, height: 260)) { NoticesView(model: self.model, updates: self.updates) } }
+    func openTask(_ id: String) {
+        showAux("task-" + id, title: "Task output", size: NSSize(width: 680, height: 560)) {
+            TaskDetailView(runID: id)
+        }
+    }
+
     func showReport(_ run: RecentRun) { showAux("report", title: "Run report", size: NSSize(width: 460, height: 420)) { ReportView(run: run) } }
 }
 
