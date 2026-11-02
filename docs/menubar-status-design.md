@@ -34,18 +34,24 @@ The update hint is a 5 pt dot on the mark, not an extra item, so it cannot move 
 Everything is monochrome template content, so the highlighted state needs no separate asset.
 Tooltip and VoiceOver value carry the full sentence (counts and data freshness).
 
-## Panel header (400 pt wide)
+## Panel header (448 pt wide)
 
 ```
-[mark 17]  <symbol> Working              [Profile v] [New Chat] [Refresh] [Settings]
+[mark 22]  <symbol> Working          [New Chat] [Refresh] [Update] [Settings]
            2 running · 3 queued
-[ Today | Week | Month | All ]
+[ Today | Week | Month | All ]               [Profile v]
 ```
 
-1. Brand mark, 17 pt, `.primary`.
+1. Brand mark, 22 pt, `.primary`.
 2. Status: 13 pt semibold title with state symbol, 10 pt secondary detail line (counts, "refresh failed", or
-   "Last known ... as of N ago"). Fixed 150 pt column.
-3. Actions: profile menu, New Chat, Refresh, Settings. Borderless, each with a tooltip and an accessibility label.
+   "Last known ... as of N ago"). Fixed 136 pt column.
+3. Actions: New Chat, Refresh, Update and Settings use consistent 28 pt targets and 13 pt hierarchical symbols.
+   The profile menu shares the second row with the period selector, leaving the primary status clear.
+
+The panel keeps its 448 × 720 pt frame, with room for notices and the full trend detail. The task region
+shows two 52 pt rows per page, with a state symbol, caller/project identity,
+prompt, tool/model metadata and a detail chevron. State symbols distinguish
+queued, active, cleaning, salvaging and attention states independently of color.
 
 Light and dark use only system colors (`.primary`, `.secondary`) plus orange/teal/blue tints on the symbol. The
 symbol shape and the title text carry the state, so the tint is redundant.

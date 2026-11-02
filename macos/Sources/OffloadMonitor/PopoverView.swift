@@ -54,11 +54,10 @@ struct PopoverView: View {
     private var header: some View {
         VStack(spacing: 6) {
             HStack(spacing: 6) {
-                BrandMark(size: 17)
+                BrandMark(size: 22)
                 StatusSummary(model: model, motion: motion.header)
                 NewTaskPulseBadge(pulse: model.pulse)
                 Spacer(minLength: 2)
-                ProfileMenu(profiles: profiles)
                 PanelAction(symbol: "square.and.pencil", title: "New Chat (⌘N)") { AppState.shared.newChat() }
                 PanelAction(symbol: "arrow.clockwise", title: "Refresh (⌘R)", busy: model.isLoading) { model.refreshNow() }
                     .disabled(!model.hasCLI || model.isLoading)
@@ -67,7 +66,10 @@ struct PopoverView: View {
                     .disabled(updates.isBusy)
                 PanelAction(symbol: "gearshape", title: "Settings (⌘,)") { AppState.shared.showSettings() }
             }
-            PanelSegments("Period", values: StatsPeriod.allCases, selection: $model.period) { $0.label }
+            HStack(spacing: 12) {
+                PanelSegments("Period", values: StatsPeriod.allCases, selection: $model.period) { $0.label }
+                ProfileMenu(profiles: profiles)
+            }
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
@@ -124,10 +126,10 @@ struct PanelAction: View {
     var body: some View {
         Button(action: action) {
             ZStack {
-                Image(systemName: symbol).font(.system(size: 12, weight: .medium)).opacity(busy ? 0 : 1)
+                Image(systemName: symbol).font(.system(size: 13, weight: .medium)).symbolRenderingMode(.hierarchical).opacity(busy ? 0 : 1)
                 if busy { ProgressView().controlSize(.mini) }
             }
-            .frame(width: 22, height: 24)
+            .frame(width: 28, height: 28)
             .foregroundStyle(.secondary)
             .background(.primary.opacity(hovering ? 0.08 : 0), in: RoundedRectangle(cornerRadius: 5))
             .overlay(alignment: .topTrailing) {
@@ -166,7 +168,7 @@ struct PanelSegments<Selection: Hashable>: View {
                     Text(label(value)).font(.system(size: 10, weight: selection == value ? .semibold : .regular))
                         .lineLimit(1).minimumScaleFactor(0.85)
                         .frame(maxWidth: .infinity)
-                        .padding(.vertical, 3)
+                        .padding(.vertical, 4)
                         .foregroundStyle(selection == value ? Color.white : .primary)
                         .background(selection == value ? Color.omBlue : .clear, in: RoundedRectangle(cornerRadius: 5))
                         .contentShape(Rectangle())
@@ -188,7 +190,7 @@ struct StatusSummary: View {
     @ObservedObject var model: MonitorModel
     @ObservedObject var motion: MotionModel
     /// Width of the text column. The header row has about this much room next to the actions.
-    static let textWidth: CGFloat = 100
+    static let textWidth: CGFloat = 136
 
     var body: some View {
         // Re-evaluated on every poll result; the clock only matters once a refresh has failed.
@@ -259,13 +261,13 @@ struct ProfileMenu: View {
             }
         } label: {
             HStack(spacing: 3) {
-                Image(systemName: "person.crop.circle").font(.system(size: 10))
+                Image(systemName: "slider.horizontal.3").font(.system(size: 11))
                 Text(title).font(.system(size: 10.5)).lineLimit(1).truncationMode(.middle)
             }
         }
         .menuStyle(.borderlessButton)
         .menuIndicator(.visible)
-        .frame(width: 90, alignment: .trailing)
+        .frame(width: 150, alignment: .trailing)
         .disabled(profiles.busy)
         .help(help)
         .onAppear { profiles.refreshIfStale() }
@@ -703,33 +705,64 @@ struct ActiveRow: View {
 
     @ViewBuilder private var row: some View {
         let t = task
-        VStack(alignment: .leading, spacing: 0) {
-            HStack(spacing: 4) {
-                Text("Caller: \(t.callerName)")
-                    .font(.system(size: 9, weight: .semibold))
-                    .lineLimit(1).truncationMode(.middle)
-                    .padding(.horizontal, 4).padding(.vertical, 1)
-                    .background(Color.omBlue.opacity(0.15), in: Capsule()).foregroundStyle(Color.omBlue)
-                    .frame(maxWidth: 124, alignment: .leading)
-                    .help(t.callerExplanation)
-                    .accessibilityLabel("Caller: \(t.callerName). \(t.callerExplanation)")
-                Text(t.projectName).font(.system(size: 11, weight: .medium)).lineLimit(1)
-                if t.isLost { tag("lost", .red) } else if t.stalled { tag("stalled", .orange) }
-                if t.phase == "salvaging" { tag("salvaging", .omBlue) }
-                Spacer()
-                if t.isRunning, let start = Format.parseTimestamp(t.startedAt) {
-                    TimelineView(.periodic(from: .now, by: 1)) { ctx in
-                        Text(Format.duration(ctx.date.timeIntervalSince(start))).font(.system(size: 10).monospacedDigit()).foregroundStyle(.secondary)
+        HStack(spacing: 9) {
+            Image(systemName: stateSymbol)
+                .font(.system(size: 15, weight: .medium)).symbolRenderingMode(.hierarchical)
+                .foregroundStyle(stateTint)
+                .frame(width: 28, height: 28)
+                .background(stateTint.opacity(0.10), in: RoundedRectangle(cornerRadius: 8))
+                .help(task.stalled ? "No recent progress reported" : "Task state: \(task.phase)")
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 4) {
+                    Text("Caller: \(t.callerName)")
+                        .font(.system(size: 9, weight: .semibold))
+                        .lineLimit(1).truncationMode(.middle)
+                        .padding(.horizontal, 4).padding(.vertical, 1)
+                        .background(Color.omBlue.opacity(0.15), in: Capsule()).foregroundStyle(Color.omBlue)
+                        .frame(maxWidth: 124, alignment: .leading)
+                        .help(t.callerExplanation)
+                        .accessibilityLabel("Caller: \(t.callerName). \(t.callerExplanation)")
+                    Text(t.projectName).font(.system(size: 10, weight: .medium)).foregroundStyle(.secondary).lineLimit(1)
+                    if t.isLost { tag("lost", .red) } else if t.stalled { tag("stalled", .orange) }
+                    if t.phase == "salvaging" { tag("salvaging", .omBlue) }
+                    Spacer()
+                    if t.isRunning, let start = Format.parseTimestamp(t.startedAt) {
+                        TimelineView(.periodic(from: .now, by: 1)) { ctx in
+                            Text(Format.duration(ctx.date.timeIntervalSince(start))).font(.system(size: 10).monospacedDigit()).foregroundStyle(.secondary)
+                        }
                     }
                 }
+                Text(t.task).font(.system(size: 11, weight: .medium)).lineLimit(1).truncationMode(.tail)
+                HStack(spacing: 4) {
+                    Image(systemName: "terminal").font(.system(size: 8))
+                    Text(footnote).font(.system(size: 9)).lineLimit(1)
+                }.foregroundStyle(.secondary)
             }
-            Text(t.task).font(.system(size: 10)).lineLimit(1).truncationMode(.tail)
-            Text(footnote).font(.system(size: 9)).foregroundStyle(.secondary).lineLimit(1)
+            if t.runId != nil {
+                Image(systemName: "chevron.right").font(.system(size: 9, weight: .semibold)).foregroundStyle(.tertiary)
+            }
         }
         .padding(.horizontal, 8)
         .frame(maxWidth: .infinity, minHeight: Layout.taskRow, maxHeight: Layout.taskRow, alignment: .leading)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 7))
-        .overlay(RoundedRectangle(cornerRadius: 7).strokeBorder((t.isLost || t.stalled ? Color.orange : Color.omTeal).opacity(0.3)))
+        .overlay(RoundedRectangle(cornerRadius: 7).strokeBorder(stateTint.opacity(0.22)))
+    }
+
+    private var stateSymbol: String {
+        if task.isLost { return "questionmark.circle" }
+        if task.stalled { return "exclamationmark.triangle" }
+        switch task.phase {
+        case "queued": return "clock"
+        case "cleaning": return "sparkles"
+        case "unresolved": return "exclamationmark.shield"
+        case "salvaging": return "doc.text.magnifyingglass"
+        default: return "arrow.triangle.2.circlepath"
+        }
+    }
+
+    private var stateTint: Color {
+        if task.isLost || task.stalled || task.phase == "unresolved" { return .orange }
+        return task.phase == "queued" ? .omBlue : .omTeal
     }
 
     private var footnote: String {
@@ -768,7 +801,7 @@ struct RecentRow: View {
     var body: some View {
         Button { if let id = run.runId { AppState.shared.openTask(id) } else { AppState.shared.openChat(for: run) } } label: {
             HStack(spacing: 6) {
-                Image(systemName: icon.0).foregroundStyle(icon.1).font(.system(size: 11))
+                Image(systemName: icon.0).foregroundStyle(icon.1).font(.system(size: 13)).symbolRenderingMode(.hierarchical).frame(width: 24)
                 VStack(alignment: .leading, spacing: 0) {
                     Text(run.task).font(.system(size: 10.5)).lineLimit(1)
                     Text("\(run.projectName) · \(run.ts)\(run.salvaged ? " · salvaged" : "")")
