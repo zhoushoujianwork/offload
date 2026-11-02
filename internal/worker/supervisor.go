@@ -104,6 +104,9 @@ func CheckToolRestrictions(o *Opts) (notEnforced bool, err error) {
 
 // Validate checks supervisor constraints before any provider is started.
 func Validate(o *Opts) error {
+	if err := o.Native.Validate(o.Profile.BackendName(), o.Resume, o.ToolsDisabled); err != nil {
+		return err
+	}
 	o.ExecutionPolicy = policyName(o.ExecutionPolicy)
 	if o.ExecutionPolicy != "default" && o.ExecutionPolicy != "managed-development" {
 		return errors.New("invalid execution-policy")
