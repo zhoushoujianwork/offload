@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -172,6 +173,70 @@ func TestClaudeToolControlsAndInstructions(t *testing.T) {
 	flags := read(t, args)
 	if !strings.Contains(flags, "--allowedTools\nRead Grep\n") || !strings.Contains(flags, "--disallowedTools\nBash\n") || strings.Contains(flags, "--dangerously-skip-permissions") || !strings.Contains(read(t, args+".instructions"), "host context") {
 		t.Fatal(flags)
+	}
+}
+
+func TestHostNativeControlsUseSharedWorkerAndCallerHistory(t *testing.T) {
+	body := `d="$(dirname "$0")"
+cat > "$d/args.stdin"
+printf '%s\n' '{"type":"result","is_error":false,"result":"host answer","session_id":"claude-host","structured_output":{"ok":true}}'
+`
+	c, dir, args := fixture(t, "claude", body)
+	os.WriteFile(filepath.Join(dir, "AGENTS.md"), []byte("ambient project instructions must not be added"), 0600)
+	req := execution.Request{Caller: "agh", CallerRunID: "agh:business-1", Task: "visible user task", Directory: dir,
+		Instructions: []byte("Host instructions only"), RecordHistory: true,
+		Native: &execution.NativeControls{CallerContext: true, Executable: filepath.Join(dir, "native"),
+			ProfileDirectory: filepath.Join(dir, "native-profile"), FreshSessionID: "claude-host",
+			PermissionMode: "bypassPermissions", AllowedTools: []string{"Read", "mcp__history__read"},
+			MCPServers: []execution.MCPServer{{Name: "history", Command: "/bin/echo", Args: []string{"capability"}}},
+			JSONSchema: `{"type":"object"}`, SkillDirectory: filepath.Join(dir, "skills")}}
+	t.Setenv("OFFLOAD_CLAUDE", filepath.Join(dir, "must-not-run"))
+	r, err := c.Run(context.Background(), req)
+	if err != nil || r.Status != "ok" || !r.HistoryRecorded || r.NativeSessionID != "claude-host" || string(r.StructuredOutput) != `{"ok":true}` {
+		t.Fatalf("%+v %v", r, err)
+	}
+	flags := read(t, args)
+	for _, value := range []string{"--session-id\nclaude-host\n", "--permission-mode\nbypassPermissions\n", "--plugin-dir\n", "--json-schema\n", "--strict-mcp-config\n", `"history"`, `"command":"/bin/echo"`} {
+		if !strings.Contains(flags, value) {
+			t.Fatalf("missing %s: %s", value, flags)
+		}
+	}
+	if strings.Contains(flags, req.Task) || strings.Contains(flags, string(req.Instructions)) || read(t, args+".instructions") != string(req.Instructions) || read(t, args+".stdin") != req.Task {
+		t.Fatal("Host task/context transport changed")
+	}
+	var record map[string]any
+	if json.Unmarshal(r.RawRecord, &record) != nil || record["caller"] != "agh" || record["caller_run_id"] != req.CallerRunID || record["task"] != req.Task {
+		t.Fatalf("caller correlation lost: %s", r.RawRecord)
+	}
+}
+
+func TestHostNativeControlsRejectUnsupportedBackendBeforeLaunch(t *testing.T) {
+	c, dir, args := fixture(t, "codex", codexReply)
+	r, err := c.Run(context.Background(), execution.Request{Task: "inspect", Directory: dir, Native: &execution.NativeControls{CallerContext: true}})
+	var re *execution.RunError
+	if !errors.As(err, &re) || re.Kind != "unsupported_controls" || r.Status != "error" {
+		t.Fatalf("%+v %v", r, err)
+	}
+	if _, err := os.Stat(args + ".calls"); !os.IsNotExist(err) {
+		t.Fatal("unsupported control launched a backend")
+	}
+}
+
+func TestHostExtractionIsFreshToolFreeAndNonpersistent(t *testing.T) {
+	c, dir, args := fixture(t, "claude", `printf '%s\n' '{"type":"result","is_error":false,"result":"","session_id":"extract-1","structured_output":{"items":[]}}'`+"\n")
+	r, err := c.Run(context.Background(), execution.Request{Caller: "agh", CallerRunID: "agh:extract:1", Task: "extract fixture", Directory: dir, ToolsDisabled: true,
+		Native: &execution.NativeControls{CallerContext: true, Extraction: true, FreshSessionID: "extract-1", JSONSchema: `{"type":"object"}`}})
+	if err != nil || string(r.StructuredOutput) != `{"items":[]}` {
+		t.Fatalf("%+v %v", r, err)
+	}
+	flags := read(t, args)
+	for _, value := range []string{"--tools\n\n", "--safe-mode\n", "--no-session-persistence\n", "--system-prompt\n", "disableAllHooks"} {
+		if !strings.Contains(flags, value) {
+			t.Fatal(flags)
+		}
+	}
+	if strings.Contains(flags, "--dangerously-skip-permissions") {
+		t.Fatal("extraction inherited business approval bypass")
 	}
 }
 
@@ -354,4 +419,11 @@ func TestLoadConfigExplicitSelectionAndValidation(t *testing.T) {
 	if _, err := execution.New(execution.Config{}); err == nil {
 		t.Fatal("implicit client config accepted")
 	}
+}
+
+func TestHostNativeExitAndOriginalCause(t *testing.T) {
+ c,dir,_ := fixture(t,"claude","echo private-diagnostic >&2\nexit 7\n")
+ r,err := c.Run(context.Background(),execution.Request{Caller:"agh",Task:"inspect",Directory:dir,Native:&execution.NativeControls{CallerContext:true}})
+ var exit *exec.ExitError
+ if !errors.As(err,&exit) || exit.ExitCode()!=7 || r.NativeExitCode==nil || *r.NativeExitCode!=7 || !strings.Contains(r.NativeStderr,"private-diagnostic") { t.Fatalf("%+v %v",r,err) }
 }

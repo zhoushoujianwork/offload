@@ -3,6 +3,7 @@ package worker
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -47,22 +48,27 @@ func parseAll(p eventParser, out []byte) streamSummary {
 // stays bounded however much the worker prints: events are folded into the summary and
 // discarded, and only a capped amount of raw text is kept.
 type activityWriter struct {
-	mu        sync.Mutex
-	lineMu    sync.Mutex // keeps onLine calls in stream order without holding mu during the callback
-	parser    eventParser
-	onLine    func([]byte) error // optional; sees each complete line of at most maxCallbackLine bytes
-	tap       lineTap            // optional; sees every complete line kept, and notes of what was not kept
-	lines     [][]byte           // lines completed by the current Write, delivered after mu is released
-	pending   []byte             // bytes of the current, unfinished line
-	skipping  bool               // inside a line longer than maxLineKept; discard up to its newline
-	skippedN  int                // bytes of that line seen so far
-	raw       []byte
-	rawCapped bool
-	last      atomic.Int64 // 相对 activityEpoch 的单调时钟纳秒数
+	strictCallbacks bool
+	callbackErr     error
+	lineLimit       int
+	callbackLimit   int
+	callbackTail    bool
+	mu              sync.Mutex
+	lineMu          sync.Mutex // keeps onLine calls in stream order without holding mu during the callback
+	parser          eventParser
+	onLine          func([]byte) error // optional; sees each complete line of at most maxCallbackLine bytes
+	tap             lineTap            // optional; sees every complete line kept, and notes of what was not kept
+	lines           [][]byte           // lines completed by the current Write, delivered after mu is released
+	pending         []byte             // bytes of the current, unfinished line
+	skipping        bool               // inside a line longer than maxLineKept; discard up to its newline
+	skippedN        int                // bytes of that line seen so far
+	raw             []byte
+	rawCapped       bool
+	last            atomic.Int64 // 相对 activityEpoch 的单调时钟纳秒数
 }
 
 func newActivityWriter(p eventParser) *activityWriter {
-	w := &activityWriter{parser: p}
+	w := &activityWriter{parser: p, callbackLimit: maxCallbackLine, lineLimit: maxLineKept}
 	w.last.Store(time.Since(activityEpoch).Nanoseconds())
 	return w
 }
@@ -76,6 +82,7 @@ func (w *activityWriter) Write(p []byte) (int, error) {
 	w.mu.Lock()
 	w.write(p)
 	lines := w.lines
+	callbackErr := w.callbackErr
 	w.lines = nil
 	w.mu.Unlock()
 	// A callback error is returned to the writer's caller, which stops the worker's output copy.
@@ -84,7 +91,7 @@ func (w *activityWriter) Write(p []byte) (int, error) {
 			return len(p), err
 		}
 	}
-	return len(p), nil
+	return len(p), callbackErr
 }
 
 func (w *activityWriter) write(p []byte) {
@@ -111,7 +118,14 @@ func (w *activityWriter) addPending(b []byte) {
 		w.skippedN += len(b)
 		return
 	}
-	if len(w.pending)+len(b) > maxLineKept {
+	limit := w.lineLimit
+	if limit == 0 {
+		limit = maxLineKept
+	}
+	if len(w.pending)+len(b) > limit {
+		if w.strictCallbacks {
+			w.callbackErr = errors.New("native event exceeds the bounded callback limit")
+		}
 		w.skippedN = len(w.pending) + len(b)
 		w.pending, w.skipping = nil, true
 		return
@@ -135,7 +149,11 @@ func (w *activityWriter) endLine(emit bool) {
 					w.tap.Skipped("unterminated_final_line", len(line))
 				}
 			}
-			if emit && w.onLine != nil && len(line) <= maxCallbackLine {
+			limit := w.callbackLimit
+			if limit == 0 {
+				limit = maxCallbackLine
+			}
+			if emit && w.onLine != nil && len(line) <= limit {
 				w.lines = append(w.lines, bytes.Clone(line))
 			}
 		}
@@ -149,12 +167,22 @@ func (w *activityWriter) endLine(emit bool) {
 }
 
 // finish parses a final line that had no trailing newline. Call it once the worker has exited.
-func (w *activityWriter) finish() {
+func (w *activityWriter) finish() error {
+	w.lineMu.Lock()
+	defer w.lineMu.Unlock()
 	w.mu.Lock()
-	defer w.mu.Unlock()
 	if len(w.pending) > 0 {
-		w.endLine(false) // an unterminated final line is parsed but not streamed to onLine
+		w.endLine(w.callbackTail)
 	}
+	lines := w.lines
+	w.lines = nil
+	w.mu.Unlock()
+	for _, line := range lines {
+		if err := w.onLine(line); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (w *activityWriter) summary() streamSummary {

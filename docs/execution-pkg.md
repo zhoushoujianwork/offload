@@ -64,3 +64,16 @@ require a separate contract. Native events are backend records, not a promise of
 a normalized or complete UI transcript.
 
 [API, compatibility and validation details](execution-pkg-detail.md).
+
+## Embedding a full Host
+
+Optional `Request.Native` controls let an embedding Host preserve Claude session
+IDs/forks, exact MCP and Skills mounts, permissions, structured extraction and
+image input through the same worker. `CallerContext` keeps caller-supplied
+instructions and task separate from Offload's delegation role. Set `Caller` and
+`CallerRunID` on business and internal requests so history keeps attribution.
+Unsupported backend controls fail before launch; ordinary Codex requests remain
+supported. This adds no Host policy, message routing or automatic session adoption.
+
+The worker drains native output independently of callback latency and retains
+native exit/error evidence. See the [control contract](execution-pkg-detail.md#host-native-controls).

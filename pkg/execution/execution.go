@@ -61,6 +61,7 @@ type RawEvent struct {
 }
 
 type Request struct {
+	Native                     *NativeControls
 	RunID, CallerRunID, Caller string
 	// RecordHistory opts into the standard private Offload run log. The caller
 	// must not also append this result. CLI callers leave it false.
@@ -90,6 +91,9 @@ type Request struct {
 // Result is execution evidence, never task acceptance. Missing usage/cost stays
 // nil. RawRecord preserves the complete private CLI/history-compatible record.
 type Result struct {
+	NativeStderr                                string
+	NativeExitCode                              *int
+	StructuredOutput                            json.RawMessage
 	RunID, CallerRunID, Profile, Backend, Model string
 	NativeSessionID, Status, ErrorKind          string
 	Report, Error, Cleanup                      string
@@ -240,7 +244,15 @@ func (c *Client) Run(ctx context.Context, req Request) (result Result, resultErr
 	if err != nil {
 		return setupError("configuration", err)
 	}
+	native := nativeSnapshot(req.Native)
+	if native != nil && (req.AllowSalvage || (native.Extraction || native.RestrictedReadOnly) && len(req.AdditionalDirectories) > 0) {
+		return setupError("unsupported_controls", errors.New("host native controls cannot salvage or widen isolated execution directories"))
+	}
+	if err := native.Validate(c.profile.BackendName(), req.NativeSessionID, req.ToolsDisabled); err != nil {
+		return setupError("unsupported_controls", err)
+	}
 	o := worker.Opts{ProfileName: c.cfg.ProfileName, Profile: c.profile, Model: req.Model,
+		Native:    native,
 		CodexHome: req.CodexHome, RunID: id, CallerRunID: req.CallerRunID, Caller: req.Caller,
 		Task: req.Task, Dir: req.Directory, AddDirs: slices.Clone(req.AdditionalDirectories), Resume: req.NativeSessionID,
 		Instructions: bytes.Clone(req.Instructions), InstructionsFile: req.InstructionsFile,
@@ -281,7 +293,7 @@ func (c *Client) Run(ctx context.Context, req Request) (result Result, resultErr
 	if record.ExitCode != nil {
 		exit = *record.ExitCode
 	}
-	result = Result{RunID: record.RunID, CallerRunID: record.CallerRunID, Profile: record.Profile,
+	result = Result{NativeStderr: record.NativeStderr, NativeExitCode: record.NativeExitCode, StructuredOutput: record.StructuredOutput, RunID: record.RunID, CallerRunID: record.CallerRunID, Profile: record.Profile,
 		Backend: record.Backend, Model: record.Model, NativeSessionID: record.Session,
 		Status: record.Status, ErrorKind: record.ErrorKind, ExitCode: exit, Report: record.Result,
 		Error: record.Error, Cleanup: record.Cleanup, Usage: usage, CostUSD: record.CostUSD,
@@ -299,7 +311,7 @@ func (c *Client) Run(ctx context.Context, req Request) (result Result, resultErr
 		result.ErrorKind = "cleanup"
 		runErr = errors.Join(runErr, errors.New("native process cleanup remains unresolved"))
 	}
-	cause := errors.Join(runErr, encodeErr, observerErr)
+	cause := errors.Join(runErr, record.NativeCause, encodeErr, observerErr)
 	if cause == nil {
 		cause = errors.New("native execution did not complete successfully")
 	}

@@ -50,6 +50,7 @@ var errIdle = errors.New("worker idle")
 
 // Opts is one worker run.
 type Opts struct {
+	Native           *NativeControls
 	CodexHome        string
 	RunID            string
 	CallerRunID      string
@@ -102,6 +103,7 @@ type Capture interface {
 
 // claudeResult is the subset of `claude -p --output-format json` we use.
 type claudeResult struct {
+	StructuredOutput json.RawMessage     `json:"structured_output,omitempty"`
 	ErrorKind        string              `json:"-"`
 	CumulativeUsage  *history.TokenUsage `json:"-"`
 	UsageUnavailable string              `json:"-"`
@@ -126,6 +128,9 @@ const salvageTask = "You were stopped before finishing. You have no tools now. D
 var SalvageTimeout = 4 * time.Minute
 
 func buildArgs(o Opts, promptPath string) []string {
+	if o.Native != nil {
+		return hostClaudeArgs(o, promptPath)
+	}
 	// Gateway, token and model reach the worker only through env (see childEnv), never argv.
 	// --bare still loads settings; disable user/project/local sources so their env cannot
 	// override the selected profile's gateway, credentials or model.
@@ -170,6 +175,24 @@ func buildArgs(o Opts, promptPath string) []string {
 // Claude accepts only one append prompt mechanism; a private file keeps its contents out of argv.
 func writeWorkerPrompt(o Opts) (string, error) {
 	var prompt strings.Builder
+	if o.Native != nil && o.Native.CallerContext {
+		// The embedding Host owns its instructions, source selection and role.
+		// Do not turn a business conversation into an Offload delegation prompt.
+		f, err := os.CreateTemp("", "offload-host-prompt-*.md")
+		if err != nil {
+			return "", err
+		}
+		if _, err = f.Write(o.Instructions); err != nil {
+			f.Close()
+			os.Remove(f.Name())
+			return "", err
+		}
+		if err = f.Close(); err != nil {
+			os.Remove(f.Name())
+			return "", err
+		}
+		return f.Name(), nil
+	}
 	// --bare skips project instruction discovery, so read the files explicitly.
 	for _, name := range []string{"CLAUDE.md", "AGENTS.md"} {
 		path := filepath.Join(o.Dir, name)
@@ -223,8 +246,20 @@ func writeWorkerPrompt(o Opts) (string, error) {
 func childEnv(base []string, o Opts, token string) []string {
 	env := make([]string, 0, len(base)+3)
 	for _, kv := range base {
-		if !strings.HasPrefix(kv, "ANTHROPIC_") {
+		if !strings.HasPrefix(kv, "ANTHROPIC_") && !(o.Native != nil && (strings.HasPrefix(kv, "CLAUDE_CONFIG_DIR=") || strings.HasPrefix(kv, "CLAUDE_CODE_DISABLE_AUTO_MEMORY=") || strings.HasPrefix(kv, "CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD=") || strings.HasPrefix(kv, "CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK=") || strings.HasPrefix(kv, "CLAUDE_CODE_MAX_OUTPUT_TOKENS="))) {
 			env = append(env, kv)
+		}
+	}
+	if o.Native != nil {
+		if o.Native.ProfileDirectory != "" {
+			env = append(env, "CLAUDE_CONFIG_DIR="+o.Native.ProfileDirectory)
+		}
+		env = append(env, "CLAUDE_CODE_DISABLE_AUTO_MEMORY=1")
+		if !o.Native.Extraction && !o.Native.RestrictedReadOnly && len(o.AddDirs) > 0 {
+			env = append(env, "CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD=1")
+		}
+		for k, v := range o.Native.StreamEnvironment {
+			env = append(env, k+"="+v)
 		}
 	}
 	return append(env, "ANTHROPIC_BASE_URL="+o.Profile.BaseURL, "ANTHROPIC_AUTH_TOKEN="+token, "ANTHROPIC_MODEL="+o.Model)
@@ -373,7 +408,11 @@ func Run(ctx context.Context, o Opts) (rec history.Record, err error) {
 			o.Transcript.AddSecrets(token, o.Profile.Token)
 		}
 		rec.ErrorKind = "launch"
-		bin, err = claudeBin()
+		if o.Native != nil && o.Native.Executable != "" {
+			bin = o.Native.Executable
+		} else {
+			bin, err = claudeBin()
+		}
 		if err != nil {
 			return rec, fmt.Errorf("claude CLI not found: %w", err)
 		}
@@ -408,6 +447,11 @@ func Run(ctx context.Context, o Opts) (rec history.Record, err error) {
 		return rec, a.gateErr
 	}
 	pub.phase(live.Running)
+	if o.Native != nil {
+		rec.NativeExitCode = a.nativeExitCode
+		rec.NativeCause = errors.Join(a.runErr, a.cause)
+		rec.NativeStderr = a.stderr
+	}
 	if a.leftover != nil {
 		leftover = a.leftover
 	}
@@ -508,6 +552,7 @@ func Run(ctx context.Context, o Opts) (rec history.Record, err error) {
 	res := *s.Result
 	rec.Session, rec.Turns, rec.DurationMs, rec.Result =
 		firstNonEmpty(res.SessionID, s.Session), res.NumTurns, res.DurationMs, res.Result
+	rec.StructuredOutput = res.StructuredOutput
 	applyClaudeAccounting(&rec, &res, o, a.claudeBase)
 	if !res.IsError && a.runErr == nil && a.cause == nil {
 		rec.Status = "ok"
@@ -557,7 +602,8 @@ type attempt struct {
 	// leftover is the worker's process group when processes in it could not be stopped.
 	leftover *proc.Group
 	// forceKilled is true when a requested stop outlasted the grace period and needed SIGKILL.
-	forceKilled bool
+	forceKilled    bool
+	nativeExitCode *int
 }
 
 // hooks lets the caller record the worker's process group while it is the slot's responsibility.
@@ -610,12 +656,20 @@ func runAttempt(ctx context.Context, bin string, o Opts, promptPath, token strin
 		cmd = exec.Command(bin, buildArgs(o, promptPath)...)
 		cmd.Dir = o.Dir
 		cmd.Env = o.Limits.ApplyEnv(childEnv(os.Environ(), o, token))
-		if o.ExecutionPolicy == "managed-development" {
+		if o.Native != nil {
+			cmd.Stdin = bytes.NewReader(hostClaudeInput(o))
+		} else if o.ExecutionPolicy == "managed-development" {
 			cmd.Stdin = strings.NewReader(o.Task)
 		}
 	}
 	proc.Prepare(cmd)
 	out := newActivityWriter(parser)
+	if o.Native != nil {
+		out.callbackLimit = 32 << 20
+		out.lineLimit = 32 << 20
+		out.strictCallbacks = true
+		out.callbackTail = true
+	}
 	if o.Transcript != nil {
 		out.tap = o.Transcript
 	}
@@ -629,7 +683,17 @@ func runAttempt(ctx context.Context, bin string, o Opts, promptPath, token strin
 		}
 	}
 	var workerErr cappedBuffer
-	cmd.Stdout, cmd.Stderr = out, &livenessWriter{w: &workerErr, last: &out.last}
+	cmd.Stderr = &livenessWriter{w: &workerErr, last: &out.last}
+	var stdout *ownedStdout
+	if o.Native != nil {
+		stdout, err = newOwnedStdout(cmd, out, 2*time.Second, func() { cancelCause(errEventsIO) })
+		if err != nil {
+			return attempt{runErr: err}
+		}
+		defer stdout.close()
+	} else {
+		cmd.Stdout = out
+	}
 	// Do not wait indefinitely for a worker descendant to close inherited pipes.
 	cmd.WaitDelay = 100 * time.Millisecond
 	files := newSessionActivity(o)
@@ -652,7 +716,14 @@ func runAttempt(ctx context.Context, bin string, o Opts, promptPath, token strin
 		h.started(group)
 	}
 	waited := make(chan error, 1)
-	go func() { waited <- cmd.Wait() }()
+	go func() {
+		err := cmd.Wait()
+		if stdout != nil {
+			stdout.processExited()
+			err = errors.Join(err, <-stdout.copied)
+		}
+		waited <- err
+	}()
 
 	if limit > 0 {
 		go watchIdle(ctx, cancelCause, &out.last, limit, func() bool { return files.grew(firstNonEmpty(out.summary().Session, o.Resume)) })
@@ -672,13 +743,20 @@ func runAttempt(ctx context.Context, bin string, o Opts, promptPath, token strin
 		}()
 	}
 
-	var runErr error
+	var runErr, stopErr error
 	forceKilled := false
 	select {
 	case runErr = <-waited:
 	case <-ctx.Done():
 		// Timeout, idle limit or interrupt: stop the group, then collect the worker's exit.
-		group.Term()
+		if o.Native != nil && o.Native.CallerContext {
+			stopErr = stopOwnedTree(cmd.Process.Pid)
+			if errors.Is(stopErr, os.ErrProcessDone) {
+				stopErr = nil
+			}
+		} else {
+			group.Term()
+		}
 		select {
 		case runErr = <-waited:
 		case <-time.After(StopGrace):
@@ -690,13 +768,21 @@ func runAttempt(ctx context.Context, bin string, o Opts, promptPath, token strin
 			}
 		}
 	}
+	runErr = errors.Join(runErr, stopErr)
 	cause := context.Cause(ctx)
 	if h.cleaning != nil && group.Alive() {
 		h.cleaning()
 	}
-	out.finish()
+	if err := out.finish(); err != nil {
+		runErr = errors.Join(runErr, err)
+	}
+	var nativeExitCode *int
+	if cmd.ProcessState != nil {
+		code := cmd.ProcessState.ExitCode()
+		nativeExitCode = &code
+	}
 	a := attempt{s: out.summary(), cause: cause, runErr: runErr, baseline: baseline, baselineError: baselineError, claudeBase: claudeBase,
-		stdout: out.String(), stderr: workerErr.String(), forceKilled: forceKilled}
+		stdout: out.String(), stderr: workerErr.String(), forceKilled: forceKilled, nativeExitCode: nativeExitCode}
 	if !stopGroup(group) {
 		g := group
 		a.leftover = &g

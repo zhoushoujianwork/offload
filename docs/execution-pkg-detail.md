@@ -90,4 +90,33 @@ failure and unchanged CLI JSON/history/transcripts.
 Run formatting, `go vet ./...`, `go test -race ./...` and existing macOS checks.
 No real account/model invocation or desktop input is needed for these checks.
 Release delivery follows the repository's normal PR, CI and verified dual-arch
-App/CLI release process. Agent-Host integration remains a later consumer change.
+App/CLI release process. Agent-Host consumes these controls behind its own execution adapter.
+
+## Host native controls
+
+`NativeControls` is optional and currently supports Claude only. It snapshots
+executable/profile paths, fresh/fork session IDs, permission mode, tool rules,
+MCP server commands, skill directory, JSON schema and at most four 5 MiB images.
+Unsupported combinations return `unsupported_controls` before native dispatch.
+Restricted reads only mount Read/Glob/Grep and an explicit approval MCP server;
+extraction requires a fresh tool-free run with safe mode and no session persistence.
+The caller must also validate observed native tool inventories and completion.
+
+`CallerContext` disables Offload's automatic project-file and delegation-prompt
+assembly. Caller instructions use a private temporary file, the task uses stdin,
+and images use native stream-JSON blocks. Normal native project discovery remains
+owned by Claude; extraction and restricted reads exclude ambient instructions.
+Credentials always come from the selected Offload profile, never an ambient
+native profile's settings or caller ANTHROPIC variables. The optional stream
+environment accepts only the validated streaming-recovery switch and positive
+output-token limit; it is applied consistently to child environment and settings.
+
+For Native calls, callbacks retain complete events up to 32 MiB (bounded image
+envelopes included), including a final unterminated line. Larger events fail
+explicitly. The default 256 KiB callback contract is unchanged for other callers.
+After process exit, idle pipe reads are bounded independently of callback time.
+Native caller-context cancellation freezes and stops the owned descendant tree,
+including native Bash children in separate sessions; it never selects by command
+name. NativeExitCode is optional actual process exit evidence, distinct from the
+wrapper ExitCode. NativeStderr and original process errors remain private evidence;
+`errors.As` can inspect the original `exec.ExitError`. None proves task acceptance.

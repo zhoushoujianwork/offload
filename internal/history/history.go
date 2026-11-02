@@ -12,16 +12,20 @@ import (
 
 // Record is one line of the run log.
 type Record struct {
-	CodexAccount    string       `json:"codex_account,omitempty"`
-	CodexHome       string       `json:"codex_home,omitempty"`
-	ProfileAlias    string       `json:"profile_alias,omitempty"`
-	StopReason      string       `json:"stop_reason,omitempty"`
-	Termination     *Termination `json:"termination,omitempty"`
-	IdleTimeout     string       `json:"idle_timeout"`
-	RunID           string       `json:"run_id,omitempty"`
-	CallerRunID     string       `json:"caller_run_id,omitempty"`
-	ExecutionPolicy string       `json:"execution_policy,omitempty"`
-	ErrorKind       string       `json:"error_kind,omitempty"`
+	NativeStderr     string          `json:"native_stderr,omitempty"`
+	NativeCause      error           `json:"-"`
+	NativeExitCode   *int            `json:"native_exit_code,omitempty"`
+	StructuredOutput json.RawMessage `json:"structured_output,omitempty"`
+	CodexAccount     string          `json:"codex_account,omitempty"`
+	CodexHome        string          `json:"codex_home,omitempty"`
+	ProfileAlias     string          `json:"profile_alias,omitempty"`
+	StopReason       string          `json:"stop_reason,omitempty"`
+	Termination      *Termination    `json:"termination,omitempty"`
+	IdleTimeout      string          `json:"idle_timeout"`
+	RunID            string          `json:"run_id,omitempty"`
+	CallerRunID      string          `json:"caller_run_id,omitempty"`
+	ExecutionPolicy  string          `json:"execution_policy,omitempty"`
+	ErrorKind        string          `json:"error_kind,omitempty"`
 	// ToolRestriction marks requested restrictions that the backend did not enforce.
 	ToolRestriction string `json:"tool_restriction,omitempty"`
 	// Transcript is set only when -capture-transcript was given: captured, not_created (the run
