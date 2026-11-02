@@ -58,7 +58,7 @@ final class PanelFitTests: XCTestCase {
     func snapshot(active: Int, recent: Int, groups: Int, warnings: Int, trendPoints: Int = 24) throws -> StatsSnapshot {
         var s = try StatsDecoder.decode(Data(StatsDecodeTests.full.utf8))
         let a = s.active[0]
-        s.active = (0..<active).map { var x = a; x.pid = 100 + $0; x.task = String(repeating: "long task text ", count: 10); return x }
+        s.active = (0..<active).map { var x = a; x.pid = 100 + $0; x.runId = String(format: "%032x", 100 + $0); x.task = String(repeating: "long task text ", count: 10); return x }
         let r = RecentRun(ts: "2026-10-29 18:19:51", status: "ok", dir: "/w/a", task: String(repeating: "task ", count: 40), session: "s", model: "m",
                           costUsd: 0.01, usage: nil, result: String(repeating: "result ", count: 400), salvaged: false)
         s.recent = Array(repeating: r, count: recent)

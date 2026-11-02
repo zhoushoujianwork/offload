@@ -1020,9 +1020,9 @@ final class MarkdownTests: XCTestCase {
 final class ChatLayoutTests: XCTestCase {
     /// Natural height of the empty populated panel. It was 633 before the workload section was added to the body
     /// (and the trend chart shortened to pay for it); the header-growth checks measure against this value.
-    static let populatedBaseline: CGFloat = 641
+    static let populatedBaseline: CGFloat = 671
 
-    func testMainPanelStaysWithin680WithNewChatButtonAndLongNames() throws {
+    func testMainPanelStaysWithinFrameWithNewChatButtonAndLongNames() throws {
         let fit = PanelFitTests()
         let long = String(repeating: "very-long-profile-name-", count: 6)
         let profiles = ProfilesModel(testingSnapshot: try ProfilesSnapshot.decode(Data(Fixtures.profiles(

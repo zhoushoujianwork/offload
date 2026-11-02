@@ -639,15 +639,15 @@ final class ControlsLayoutTests: XCTestCase {
         XCTAssertLessThanOrEqual(fit.fitHeight(MonitorModel(testingSnapshot: snap), fit.updates(), profiles: broken), Layout.height)
     }
 
-    func testHeaderRowIsAsTallAsBefore() throws {
-        // The header gained a mark, a profile menu and a gear but must not grow taller than the old one.
+    func testHeaderHeightDoesNotDependOnProfileAvailability() throws {
+        // Profile loading and selection must keep the same header height.
         let fit = PanelFitTests()
         let snap = try fit.snapshot(active: 0, recent: 0, groups: 0, warnings: 0)
         let withProfile = ProfilesModel(testingSnapshot: try ProfilesSnapshot.decode(Data(Fixtures.profiles([Fixtures.profile(name: "w")], active: "w").utf8)))
         let a = fit.fitHeight(MonitorModel(testingSnapshot: snap), fit.updates(), profiles: withProfile)
         let b = fit.fitHeight(MonitorModel(testingSnapshot: snap), fit.updates(), profiles: ProfilesModel(testingSnapshot: nil))
         XCTAssertEqual(a, b, accuracy: 1)
-        // The two-line status summary (title + counts) makes the row taller than the old pill; the 680pt panel has room.
+        // Keep the rebalanced panel close to its measured populated baseline.
         XCTAssertLessThanOrEqual(a, ChatLayoutTests.populatedBaseline + 16, "populated height baseline is \(ChatLayoutTests.populatedBaseline)")
     }
 

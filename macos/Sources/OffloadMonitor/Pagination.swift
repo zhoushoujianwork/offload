@@ -29,15 +29,15 @@ enum Pagination {
 
 /// Fixed panel geometry. The main panel never scrolls, so every region has a set height.
 enum Layout {
-    static let width: CGFloat = 400
-    static let height: CGFloat = 680
+    static let width: CGFloat = 448
+    static let height: CGFloat = 720
     static let notice: CGFloat = 36
     static let chart: CGFloat = 48
-    static let list: CGFloat = 112
-    static let pager: CGFloat = 16
+    static let list: CGFloat = 132
+    static let pager: CGFloat = 20
     static let taskPageSize = 2
     static let rowPageSize = 3
-    static let taskRow: CGFloat = 40
-    static let historyRow: CGFloat = 28
-    static let groupRow: CGFloat = 26
+    static let taskRow: CGFloat = 52
+    static let historyRow: CGFloat = 36
+    static let groupRow: CGFloat = 30
 }
