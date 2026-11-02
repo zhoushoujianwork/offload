@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 )
 
 // NativeMCPServer carries caller-selected stdio capabilities, never credentials.
@@ -119,6 +120,9 @@ func (n *NativeControls) Validate(backend, resume string, toolsDisabled bool) er
 		return errors.New("native input supports at most four images")
 	}
 	for _, image := range n.Images {
+		if len(image.Name) > 512 || !utf8.ValidString(image.Name) {
+			return errors.New("invalid native image name")
+		}
 		if len(image.Data) == 0 || len(image.Data) > 5<<20 {
 			return errors.New("native image size is outside the supported bounds")
 		}
@@ -172,7 +176,10 @@ func hostClaudeArgs(o Opts, promptPath string) []string {
 	if n.JSONSchema != "" {
 		args = append(args, "--json-schema", n.JSONSchema)
 	}
-	settings := map[string]any{"autoMemoryEnabled": false, "env": n.StreamEnvironment}
+	settings := map[string]any{"autoMemoryEnabled": false}
+	if len(n.StreamEnvironment) > 0 {
+		settings["env"] = n.StreamEnvironment
+	}
 	if n.Extraction || o.ToolsDisabled || n.RestrictedReadOnly {
 		settings["disableAllHooks"] = true
 	}
