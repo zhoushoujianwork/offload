@@ -462,11 +462,11 @@ func cmdRunSaved(args []string, stdin io.Reader, stdout, stderr io.Writer, paren
 		}
 	}()
 	profileAlias, transcriptState := rec.ProfileAlias, rec.Transcript
-	rec, _ = worker.Run(ctx, o)
+	rec = runExecution(ctx, o)
 	if th != nil && th.start == "resumed" && rec.Status != "ok" && thread.SessionMissing(rec.Backend, rec.Error+"\n"+rec.Result) {
 		fmt.Fprintf(stderr, "[offload] thread %s: saved session %s no longer exists; starting a new session without the earlier conversation\n", th.key, th.session)
 		th.start, o.Resume = "fallback", ""
-		rec, _ = worker.Run(ctx, o)
+		rec = runExecution(ctx, o)
 	}
 	rec.ProfileAlias, rec.Transcript = profileAlias, transcriptState
 	if th != nil {

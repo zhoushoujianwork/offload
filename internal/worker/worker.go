@@ -69,7 +69,7 @@ type Opts struct {
 	OnLine             func([]byte) error
 	// Transcript, when set, receives the presentable content of every backend attempt. It never
 	// affects the run: capture failures are recorded in the transcript itself.
-	Transcript *transcript.Recorder
+	Transcript Capture
 
 	ProfileName string
 	Profile     config.Profile
@@ -89,6 +89,15 @@ type Opts struct {
 	// build defaults to the worker's environment.
 	MaxWorkers int
 	Limits     config.Limits
+}
+
+// Capture is structurally shared with the public execution package, keeping
+// recorder ownership outside the native worker without creating an import cycle.
+type Capture interface {
+	AddSecrets(...string)
+	BeginAttempt(string, string)
+	Line([]byte)
+	Skipped(string, int)
 }
 
 // claudeResult is the subset of `claude -p --output-format json` we use.
@@ -270,7 +279,7 @@ func Run(ctx context.Context, o Opts) (rec history.Record, err error) {
 		o.CodexHome = codexHome()
 	}
 	rec.CodexHome = o.CodexHome
-	if o.Profile.BackendName() == "codex" {
+	if o.Profile.BackendName() == "codex" && o.Transcript != nil {
 		o.Transcript.AddSecrets(codexAuthSecrets(o.CodexHome)...)
 	}
 	var pub *publisher
@@ -360,7 +369,9 @@ func Run(ctx context.Context, o Opts) (rec history.Record, err error) {
 		if err != nil {
 			return rec, err
 		}
-		o.Transcript.AddSecrets(token, o.Profile.Token)
+		if o.Transcript != nil {
+			o.Transcript.AddSecrets(token, o.Profile.Token)
+		}
 		rec.ErrorKind = "launch"
 		bin, err = claudeBin()
 		if err != nil {
@@ -630,7 +641,9 @@ func runAttempt(ctx context.Context, bin string, o Opts, promptPath, token strin
 	if o.Salvage {
 		kind = transcript.AttemptKindReport
 	}
-	o.Transcript.BeginAttempt(kind, o.Task)
+	if o.Transcript != nil {
+		o.Transcript.BeginAttempt(kind, o.Task)
+	}
 	if err := cmd.Start(); err != nil {
 		return attempt{runErr: err}
 	}

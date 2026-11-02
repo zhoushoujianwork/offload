@@ -80,6 +80,12 @@ agent; a CLI call without `-p` still uses the configured default.
 
 ## Agent integration
 
+Go hosts can import [`pkg/execution`](pkg/execution) to run the same worker in
+process, without launching the Offload CLI. See the [package goals and usage
+boundary](docs/execution-pkg.md) and [API details](docs/execution-pkg-detail.md).
+Host task policy, session serialization, delivery and memory remain with the
+calling application.
+
 ```sh
 offload install-agent
 ```
