@@ -27,10 +27,12 @@ client, err := execution.New(cfg)
 if err != nil { return err }
 result, err := client.Run(ctx, execution.Request{
     Caller: "agh", CallerRunID: "agh:task-123",
+    RecordHistory: true, // Optional: include this run in Offload Monitor/history.
     Directory: "/absolute/project", Task: "Inspect the retry behavior.",
     Instructions: []byte("Report evidence and any unresolved conditions."),
 })
 // Inspect err and result independently; persist private evidence under Host policy.
+// Also inspect result.HistoryError; a log failure does not undo execution.
 ```
 
 ## First delivery
@@ -40,6 +42,8 @@ result, err := client.Run(ctx, execution.Request{
 - Fresh execution and explicit continuation on Claude/Codex, additional
   directories, existing supported tool controls and per-request deadlines.
 - Private result evidence and ordered, bounded native output callbacks.
+- Optional shared history writes let Monitor retain completed, failed and
+  canceled package calls; recording is off by default for existing consumers.
 - One execution implementation for the library and existing CLI; preserve CLI
   flags, JSON, history, transcript, scheduling and thread behavior.
 - Concurrent independent calls in one process have distinct execution records.

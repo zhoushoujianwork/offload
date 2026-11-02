@@ -93,6 +93,75 @@ func TestCodexFreshResumeAndPrivateEvidence(t *testing.T) {
 	}
 }
 
+func TestOptInHistoryTerminalOutcomes(t *testing.T) {
+	for _, scenario := range []string{"success", "failure", "canceled", "timeout", "setup-canceled"} {
+		t.Run(scenario, func(t *testing.T) {
+			body := codexReply
+			if scenario == "failure" {
+				body = "exit 7\n"
+			} else if scenario == "canceled" || scenario == "timeout" {
+				body = `printf '%s\n' '{"type":"thread.started","thread_id":"native-1"}'; exec sleep 60` + "\n"
+			}
+			c, dir, _ := fixture(t, "codex", body)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			req := execution.Request{Task: "history fixture", Directory: dir, Caller: "agh", CallerRunID: "agh:history", RecordHistory: true}
+			if scenario == "canceled" {
+				req.OnEvent = func(execution.RawEvent) error { cancel(); return nil }
+			} else if scenario == "timeout" {
+				limit := time.Second
+				req.Timeout = &limit
+			} else if scenario == "setup-canceled" {
+				cancel()
+			}
+			r, err := c.Run(ctx, req)
+			if (scenario == "success") != (err == nil) || !r.HistoryRecorded || r.HistoryError != nil {
+				t.Fatalf("%+v %v", r, err)
+			}
+			if strings.Contains(scenario, "canceled") && !errors.Is(err, context.Canceled) {
+				t.Fatal(err)
+			}
+			if scenario == "timeout" && !errors.Is(err, context.DeadlineExceeded) {
+				t.Fatal(err)
+			}
+			lines := strings.Split(strings.TrimSpace(read(t, filepath.Join(dir, "state", "offload", "runs.jsonl"))), "\n")
+			if len(lines) != 1 || lines[0] != string(r.RawRecord) {
+				t.Fatalf("history must contain exactly the returned native record: %v %s", lines, r.RawRecord)
+			}
+			var record map[string]any
+			if json.Unmarshal([]byte(lines[0]), &record) != nil || record["run_id"] != r.RunID || record["caller_run_id"] != req.CallerRunID || record["status"] != r.Status {
+				t.Fatalf("correlation/outcome lost: %s", lines[0])
+			}
+		})
+	}
+}
+
+func TestHistoryFailurePreservesExecutionAndDoesNotRetry(t *testing.T) {
+	for _, failure := range []bool{false, true} {
+		t.Run(map[bool]string{false: "success", true: "failure"}[failure], func(t *testing.T) {
+			body := codexReply
+			if failure {
+				body = "exit 7\n"
+			}
+			c, dir, args := fixture(t, "codex", body)
+			// A directory at the log path fails even when tests run as root.
+			if err := os.MkdirAll(filepath.Join(dir, "state", "offload", "runs.jsonl"), 0700); err != nil {
+				t.Fatal(err)
+			}
+			r, err := c.Run(context.Background(), execution.Request{Task: "inspect", Directory: dir, RecordHistory: true})
+			if r.HistoryRecorded || r.HistoryError == nil || len(r.RawRecord) == 0 || (err != nil) != failure {
+				t.Fatalf("history failure changed execution: %+v %v", r, err)
+			}
+			if !failure && (r.Status != "ok" || r.Report != "library answer" || r.ExitCode != 0) {
+				t.Fatalf("%+v", r)
+			}
+			if calls := read(t, args+".calls"); calls != "x" {
+				t.Fatalf("native invocation repeated: %q", calls)
+			}
+		})
+	}
+}
+
 func TestClaudeToolControlsAndInstructions(t *testing.T) {
 	body := `printf '%s\n' '{"type":"result","is_error":false,"result":"claude answer","session_id":"claude-1","num_turns":1}'` + "\n"
 	c, dir, args := fixture(t, "claude", body)
@@ -166,11 +235,11 @@ printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens
 	}
 	first, second := make(chan outcome, 1), make(chan outcome, 1)
 	go func() {
-		r, e := c.Run(ctx, execution.Request{RunID: "concurrent-a", Task: "a", Directory: dir, OnEvent: observe})
+		r, e := c.Run(ctx, execution.Request{RunID: "concurrent-a", Task: "a", Directory: dir, OnEvent: observe, RecordHistory: true})
 		first <- outcome{r, e}
 	}()
 	go func() {
-		r, e := c.Run(context.Background(), execution.Request{RunID: "concurrent-b", Task: "b", Directory: dir, OnEvent: observe})
+		r, e := c.Run(context.Background(), execution.Request{RunID: "concurrent-b", Task: "b", Directory: dir, OnEvent: observe, RecordHistory: true})
 		second <- outcome{r, e}
 	}()
 	for i := 0; i < 2; i++ {
@@ -217,6 +286,21 @@ printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("other call did not complete")
+	}
+	lines := strings.Split(strings.TrimSpace(read(t, filepath.Join(dir, "state", "offload", "runs.jsonl"))), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("concurrent history count: %d", len(lines))
+	}
+	ids = map[string]bool{}
+	for _, line := range lines {
+		var record map[string]any
+		if err := json.Unmarshal([]byte(line), &record); err != nil {
+			t.Fatal(err)
+		}
+		ids[record["run_id"].(string)] = true
+	}
+	if !ids["concurrent-a"] || !ids["concurrent-b"] {
+		t.Fatal(ids)
 	}
 }
 

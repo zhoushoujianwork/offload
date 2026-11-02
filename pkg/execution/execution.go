@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/zhoushoujianwork/offload/internal/config"
+	"github.com/zhoushoujianwork/offload/internal/history"
 	"github.com/zhoushoujianwork/offload/internal/worker"
 )
 
@@ -61,8 +62,11 @@ type RawEvent struct {
 
 type Request struct {
 	RunID, CallerRunID, Caller string
-	Task, Directory, Model     string
-	NativeSessionID            string
+	// RecordHistory opts into the standard private Offload run log. The caller
+	// must not also append this result. CLI callers leave it false.
+	RecordHistory          bool
+	Task, Directory, Model string
+	NativeSessionID        string
 	// CodexHome pins the account home recorded by the prior native invocation.
 	CodexHome             string
 	AdditionalDirectories []string
@@ -94,6 +98,10 @@ type Result struct {
 	CostUSD                                     *float64
 	ElapsedMS                                   *int64
 	RawRecord                                   json.RawMessage
+	// History failure is independent of execution: never retry native work to
+	// repair it. These fields are populated only when RecordHistory is true.
+	HistoryRecorded bool
+	HistoryError    error
 }
 
 // RunError distinguishes execution failure from a successful report. Cause
@@ -163,9 +171,9 @@ func LoadConfig(path, name string) (Config, error) {
 }
 
 // Run owns one native invocation until cleanup completes. No Offload CLI is
-// launched and no CLI history record is appended. Raw native events are ordered;
+// launched. History is appended only when explicitly requested. Raw events are ordered;
 // observer errors stop this invocation. There are no retries/profile fallbacks.
-func (c *Client) Run(ctx context.Context, req Request) (Result, error) {
+func (c *Client) Run(ctx context.Context, req Request) (result Result, resultErr error) {
 	started := req.StartedAt
 	if started.IsZero() {
 		started = time.Now()
@@ -179,6 +187,15 @@ func (c *Client) Run(ctx context.Context, req Request) (Result, error) {
 		r := Result{RunID: id, CallerRunID: req.CallerRunID, Profile: c.cfg.ProfileName,
 			Backend: c.profile.BackendName(), Model: c.profile.Model, Status: "error",
 			ErrorKind: kind, ExitCode: 2, Error: cause.Error(), ElapsedMS: &elapsed}
+		model := req.Model
+		if model == "" {
+			model = c.profile.Model
+		}
+		r.Model = model
+		r.RawRecord, _ = json.Marshal(history.Record{RunID: id, CallerRunID: req.CallerRunID,
+			Caller: history.CallerOrUnspecified(req.Caller), TS: started.Format("2006-01-02 15:04:05"),
+			Profile: r.Profile, Backend: r.Backend, Model: model, Task: req.Task, Dir: req.Directory,
+			Status: r.Status, ErrorKind: kind, Error: r.Error, Result: r.Error, ExitCode: &r.ExitCode, ElapsedMs: &elapsed})
 		return r, &RunError{Kind: kind, Status: r.Status, ExitCode: r.ExitCode, Cause: cause}
 	}
 	if !runIDPattern.MatchString(id) {
@@ -188,6 +205,17 @@ func (c *Client) Run(ctx context.Context, req Request) (Result, error) {
 		return setupError("configuration", errors.New("run ID is already active in this process"))
 	}
 	defer activeRuns.Delete(id)
+	if req.RecordHistory {
+		defer func() {
+			var record history.Record
+			if err := json.Unmarshal(result.RawRecord, &record); err != nil {
+				result.HistoryError = fmt.Errorf("decode execution history: %w", err)
+				return
+			}
+			result.HistoryError = history.Append(history.Path(), record)
+			result.HistoryRecorded = result.HistoryError == nil
+		}()
+	}
 	if err := ctx.Err(); err != nil {
 		kind := "canceled"
 		if errors.Is(err, context.DeadlineExceeded) {
@@ -253,7 +281,7 @@ func (c *Client) Run(ctx context.Context, req Request) (Result, error) {
 	if record.ExitCode != nil {
 		exit = *record.ExitCode
 	}
-	result := Result{RunID: record.RunID, CallerRunID: record.CallerRunID, Profile: record.Profile,
+	result = Result{RunID: record.RunID, CallerRunID: record.CallerRunID, Profile: record.Profile,
 		Backend: record.Backend, Model: record.Model, NativeSessionID: record.Session,
 		Status: record.Status, ErrorKind: record.ErrorKind, ExitCode: exit, Report: record.Result,
 		Error: record.Error, Cleanup: record.Cleanup, Usage: usage, CostUSD: record.CostUSD,
