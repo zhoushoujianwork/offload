@@ -691,6 +691,10 @@ Rules:
   for example `offload -h 2>&1 | grep -- -caller`. An older binary fails with
   `flag provided but not defined: -caller`; offload does not silently ignore the flag.
 
+The Monitor Tasks cards show a `Caller: ID` badge above the task text. Hover
+over it for a source explanation (`agh` means Agent-Host). Missing caller metadata
+shows `Caller: unspecified`; the App does not infer a source from the task or profile.
+
 `-events-file` must be absolute and nonexistent; exclusive creation rejects existing
 files and symlinks before provider launch and uses mode 0600. It contains bounded
 NDJSON with common fields `schema_version: 1`, `type` (`start`, `progress`, `final`),
