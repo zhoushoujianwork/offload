@@ -147,6 +147,9 @@ func Register(info Info, cancel context.CancelFunc) (*Registration, error) {
 	}
 	if err != nil {
 		listener.Close()
+		// This invocation exclusively created the file. A failed initial write
+		// must not leave a live-looking registration for work never admitted.
+		_ = os.Remove(Path(info.RunID))
 		return nil, err
 	}
 	r.server = &http.Server{Handler: http.HandlerFunc(r.handle), ReadHeaderTimeout: 2 * time.Second, ReadTimeout: 2 * time.Second, WriteTimeout: 2 * time.Second, MaxHeaderBytes: 4096}
