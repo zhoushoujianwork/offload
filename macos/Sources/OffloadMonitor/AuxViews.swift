@@ -11,7 +11,7 @@ struct DetailsView: View {
                 Text("Tokens").font(.headline)
                 Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 4) {
                     if let u = t.usage {
-                        row("Input", Format.count(u.inputTokens), exact: u.inputTokens)
+                        row("Input (includes cache)", Format.count(u.inputTokens), exact: u.inputTokens)
                         row("Cache read", Format.count(u.cachedInputTokens), exact: u.cachedInputTokens)
                         row("Cache write", Format.count(u.cacheWriteInputTokens), exact: u.cacheWriteInputTokens)
                         row("Output", Format.count(u.outputTokens), exact: u.outputTokens)
@@ -20,6 +20,8 @@ struct DetailsView: View {
                     }
                     GridRow { Text("Coverage").foregroundStyle(.secondary); Text(Format.coverage(t.usageRuns, of: t.runs)); Text("") }
                 }
+                Text("Total tokens = input + output. Cache read and write are already included in input; do not add them again.")
+                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 Divider()
                 Text("Estimated cost").font(.headline)
                 Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 4) {
@@ -33,6 +35,8 @@ struct DetailsView: View {
                         }
                     }
                 }
+                Text("Recorded runs only, not a bill. Codex uses reference API rates; Claude uses the worker’s reported estimate. Subscription charges, gateway discounts and the supervising agent’s usage are not reconciled here. Missing or interrupted runs may be excluded.")
+                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 if t.timeout > 0 || t.salvaged > 0 {
                     Divider()
                     Text("\(t.error) errors, \(t.timeout) timed out, \(t.salvaged) salvaged").font(.caption).foregroundStyle(.secondary)

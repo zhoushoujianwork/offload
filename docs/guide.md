@@ -429,6 +429,18 @@ Periods use the local time zone. An invalid flag, period, or extra argument exit
 
 `trend` (added to schema 1 without changing existing fields) is `{interval, label, points}` for charting. Each point is `{start, label, totals}` where `start` is RFC3339 in the local zone, `label` reads like `14:00` or `Oct 29`, and `totals` has the same fields as the overall `totals`. `today` uses hourly points from local midnight through the current hour. `week` (from Monday) and `month` use daily points through today. `all` charts only the last 30 calendar days (label `Last 30 days`) while the overall `totals` still cover the entire history. Hourly points advance by real hours, so on the day clocks go back the repeated hour appears twice with the zone offset added to its label (`01:00 -0400`, `01:00 -0500`); daily points start at local midnight. A point counts the runs that started in its window, with the same per-run usage, cost, salvage, and legacy rules as the overall totals, so run, token and cost sums reconcile with the overall totals except for `all`. A point with no runs has `runs` 0 and `null` usage and cost, and a point whose runs lack usage or cost shows it in `usage_runs` and `cost_runs`. Charts should show missing coverage as a gap, not as zero. `sessions` counts distinct sessions within that point, so a session resumed in several points counts once in each.
 
+#### 看板里的 token 和费用是否准确
+
+看板统计的是当前本机 Offload 已完成运行中**有可靠记录的部分**，不是账号总用量或支付账单。请同时看 token 和费用各自的 `x of y runs` 覆盖率；两者覆盖范围可以不同，运行中的任务尚未入账。
+
+- Token 总量是 `input + output`。`input` 已包含缓存读取和缓存写入，不能把缓存数量再加一次。续聊使用本次运行的增量，不重复累加整个会话的历史用量。
+- Codex 的金额按记录的模型、服务层级和参考 API 单价估算，不是订阅实际扣费；无法确定的模型或层级不会硬套价格。长上下文、工具费用和区域附加费用等也可能与基准不同。
+- Claude 的金额来自 worker 报告，续聊在可验证时使用会话费用差值；第三方网关折扣、充值扣款和套餐并未对账。
+- 缺失数据不等于零。旧版 Claude 记录可能保存了会话累计费用，为避免重复计费，不纳入合计；中断和补救报告也可能无法提供完整费用。
+- 主代理自身、其他机器、其他状态目录中的使用不包含在这里。实际消费应以对应服务商或网关的账单为准。
+
+本机核查（2026-11-03）：当时 1,572 次运行中，810 次有 token，797 次计入费用，约 $423.04；这是部分运行的估算值。95 条能够在原生 Codex 日志中找到的会话累计 token 快照全部匹配，另有 7 个会话未找到原生日志，不能据此宣称全量对账通过。参考价格核对来源：[OpenAI GPT-6.1 Sol](https://developers.openai.com/api/docs/models/gpt-6.1-sol)。这些数字仅是核查时快照，不是固定的当前值。
+
 #### Concurrency and daily volume
 
 `stats` also reports how many tasks are processing and how many calls were recorded. Two goals are shown as progress, for one person on one computer: **100 tasks processing at once** and **10,000 recorded calls per day on average**. They are observability targets. They do not limit execution (the worker admission limit does, and it is shown separately), they are not a load-test result, and they do not show that 100 workers can run sustainably.

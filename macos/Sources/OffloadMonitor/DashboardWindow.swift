@@ -133,7 +133,7 @@ extension AppState {
         w.makeKeyAndOrderFront(nil)
     }
 
-    func showDetails() { showAux("details", title: "Token and cost detail", size: NSSize(width: 340, height: 300)) { DetailsView(model: self.model) } }
+    func showDetails() { showAux("details", title: "Token and cost detail", size: NSSize(width: 480, height: 460)) { DetailsView(model: self.model) } }
     func showNotes() { showAux("notes", title: "Data coverage and notes", size: NSSize(width: 380, height: 260)) { NotesView(model: self.model) } }
     func showNotices() { showAux("notices", title: "Status and updates", size: NSSize(width: 380, height: 260)) { NoticesView(model: self.model, updates: self.updates) } }
     func openTask(_ id: String) {

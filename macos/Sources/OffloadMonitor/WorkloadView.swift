@@ -87,8 +87,12 @@ struct SummaryStrip: View {
         Card(tint: .omBlue) {
             HStack(alignment: .top, spacing: 8) {
                 cell("Runs", "\(totals.runs)", "\(totals.ok) ok · \(totals.error + totals.timeout) failed")
-                cell("Tokens", totals.usage.map { Format.count($0.inputTokens + $0.outputTokens) } ?? "—", Format.coverage(totals.usageRuns, of: totals.runs))
-                cell("Est. cost", totals.costUsd.map(Format.cost) ?? "—", Format.coverage(totals.costRuns, of: totals.runs))
+                cell("Tokens", totals.usage.map { Format.count($0.inputTokens + $0.outputTokens) } ?? "—",
+                     totals.usage == nil ? "Not recorded" : "\(totals.usageRuns < totals.runs ? "Partial" : "Recorded") · \(totals.usageRuns)/\(totals.runs)")
+                    .help("Input + output; cache is included in input. " + Format.coverage(totals.usageRuns, of: totals.runs))
+                cell("Est. cost", totals.costUsd.map(Format.cost) ?? "—",
+                     totals.costUsd == nil ? "Not recorded" : "\(totals.costRuns)/\(totals.runs) · not a bill")
+                    .help("Worker or reference API estimates, not actual charges. " + Format.coverage(totals.costRuns, of: totals.runs))
                 cell("Sessions", "\(totals.sessions)", "distinct")
             }
         }
