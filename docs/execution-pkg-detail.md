@@ -38,6 +38,10 @@ The CLI decodes this compatibility record back into its private history type,
 then adds its existing thread, resume and transcript fields. This small in-process
 conversion preserves the wire/history format without exposing internal types.
 
+Native-log recovery retains incomplete observations separately: `Result.Usage`
+stays nil for them, while `Result.PartialUsage` carries the observed lower bound.
+`RawRecord.usage_scope` and `accounting_evidence` retain its scope and provenance.
+
 `OnEvent` receives copied backend output lines in order, at most 256 KiB each.
 It receives native content, including arguments/results when emitted, not a
 sanitized metadata stream. It must return promptly; an error stops the owned

@@ -22,6 +22,10 @@ struct DetailsView: View {
                 }
                 Text("Total tokens = input + output. Cache read and write are already included in input; do not add them again.")
                     .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                if let partial = t.partialUsage {
+                    Text("Observed partial usage: \(Format.count(partial.inputTokens + partial.outputTokens)) tokens in \(t.partialUsageRuns ?? 0) runs. These lower bounds are excluded from the total above.")
+                        .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                }
                 Divider()
                 Text("Estimated cost").font(.headline)
                 Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 4) {

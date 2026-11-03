@@ -20,6 +20,7 @@ import (
 	"github.com/zhoushoujianwork/offload/internal/config"
 	"github.com/zhoushoujianwork/offload/internal/history"
 	"github.com/zhoushoujianwork/offload/internal/live"
+	"github.com/zhoushoujianwork/offload/internal/nativeusage"
 	"github.com/zhoushoujianwork/offload/internal/proc"
 	"github.com/zhoushoujianwork/offload/internal/slots"
 	"github.com/zhoushoujianwork/offload/internal/text"
@@ -301,6 +302,12 @@ func Run(ctx context.Context, o Opts) (rec history.Record, err error) {
 	}
 	rec = history.Record{TS: started.Format("2006-01-02 15:04:05"), CodexAccount: o.Profile.CodexAccount, CodexHome: o.CodexHome, Profile: o.ProfileName, Model: o.Model,
 		RunID: o.RunID, CallerRunID: o.CallerRunID, Caller: history.CallerOrUnspecified(o.Caller), ExecutionPolicy: policyName(o.ExecutionPolicy), Backend: o.Profile.BackendName(), Dir: o.Dir, AddDirs: slices.Clone(o.AddDirs), Task: o.Task, Status: "error", CostIsEstimate: true}
+	if rec.Backend == "claude" {
+		rec.ClaudeHome = os.Getenv("CLAUDE_CONFIG_DIR")
+		if o.Native != nil && o.Native.ProfileDirectory != "" {
+			rec.ClaudeHome = o.Native.ProfileDirectory
+		}
+	}
 	if o.Profile.CodexAccount != "" {
 		accountHome, accountErr := config.ManagedAccountHome(o.Profile.CodexAccount)
 		if accountErr != nil {
@@ -321,6 +328,7 @@ func Run(ctx context.Context, o Opts) (rec history.Record, err error) {
 	var slot *slots.Slot
 	var admitted time.Time
 	var leftover *proc.Group // worker processes that survived cleanup
+	nativeSessionObserved := false
 	defer func() {
 		if rec.Backend == "codex" {
 			resolveCodexModel(&rec, o.Model, o.CodexHome)
@@ -365,6 +373,11 @@ func Run(ctx context.Context, o Opts) (rec history.Record, err error) {
 			rec.Cleanup += "; their worker slot stays unavailable until they exit"
 		}
 		// Publish only after the exit code is final, or watch/status would show 0 for a failure.
+		if nativeSessionObserved && nativeusage.Needed(rec) && rec.Session != "" && leftover == nil {
+			if recovered, ok, _ := nativeusage.NewReader().Recover(rec); ok {
+				rec = recovered
+			}
+		}
 		if pub != nil {
 			pub.finish(rec, leftover)
 		}
@@ -456,6 +469,7 @@ func Run(ctx context.Context, o Opts) (rec history.Record, err error) {
 		leftover = a.leftover
 	}
 	s := a.s
+	nativeSessionObserved = s.Session != ""
 	// A resumed provider may fail before emitting its init/session event. Keep the
 	// known session so the failed attempt remains resumable and grouped correctly.
 	s.Session = firstNonEmpty(s.Session, o.Resume)

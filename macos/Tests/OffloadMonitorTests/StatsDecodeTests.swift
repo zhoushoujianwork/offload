@@ -54,6 +54,14 @@ final class StatsDecodeTests: XCTestCase {
         XCTAssertTrue(s.active.isEmpty && s.recent.isEmpty && s.warnings.isEmpty)
     }
 
+    func testPartialUsageIsSeparateFromCompleteTotals() throws {
+        let data = Self.full.replacingOccurrences(of: "\"usage_runs\":1,", with: "\"usage_runs\":1,\"partial_usage\":{\"input_tokens\":40,\"cached_input_tokens\":10,\"cache_write_input_tokens\":0,\"output_tokens\":2},\"partial_usage_runs\":1,")
+        let s = try StatsDecoder.decode(Data(data.utf8))
+        XCTAssertEqual(s.totals.usage?.inputTokens, 100)
+        XCTAssertEqual(s.totals.partialUsage?.inputTokens, 40)
+        XCTAssertEqual(s.totals.partialUsageRuns, 1)
+    }
+
     func testRejectsUnknownSchema() {
         let doc = Self.empty.replacingOccurrences(of: "\"schema_version\":1", with: "\"schema_version\":2")
         XCTAssertThrowsError(try StatsDecoder.decode(Data(doc.utf8))) {

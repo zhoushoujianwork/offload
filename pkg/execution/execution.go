@@ -101,9 +101,11 @@ type Result struct {
 	Report, Error, Cleanup                      string
 	ExitCode                                    int
 	Usage                                       json.RawMessage
-	CostUSD                                     *float64
-	ElapsedMS                                   *int64
-	RawRecord                                   json.RawMessage
+	// PartialUsage is an observed lower bound, never a complete invocation total.
+	PartialUsage json.RawMessage
+	CostUSD      *float64
+	ElapsedMS    *int64
+	RawRecord    json.RawMessage
 	// History failure is independent of execution: never retry native work to
 	// repair it. These fields are populated only when RecordHistory is true.
 	HistoryRecorded bool
@@ -313,6 +315,10 @@ func (c *Client) Run(ctx context.Context, req Request) (result Result, resultErr
 	if record.Usage == nil {
 		usage = nil
 	}
+	var partialUsage json.RawMessage
+	if record.UsageScope == "partial_run" {
+		partialUsage, usage = usage, nil
+	}
 	exit := -1
 	if record.ExitCode != nil {
 		exit = *record.ExitCode
@@ -320,7 +326,7 @@ func (c *Client) Run(ctx context.Context, req Request) (result Result, resultErr
 	result = Result{NativeStderr: record.NativeStderr, NativeExitCode: record.NativeExitCode, StructuredOutput: record.StructuredOutput, RunID: record.RunID, CallerRunID: record.CallerRunID, Profile: record.Profile,
 		Backend: record.Backend, Model: record.Model, NativeSessionID: record.Session,
 		Status: record.Status, ErrorKind: record.ErrorKind, ExitCode: exit, Report: record.Result,
-		Error: record.Error, Cleanup: record.Cleanup, Usage: usage, CostUSD: record.CostUSD,
+		Error: record.Error, Cleanup: record.Cleanup, Usage: usage, PartialUsage: partialUsage, CostUSD: record.CostUSD,
 		ElapsedMS: record.ElapsedMs, RawRecord: raw}
 	if record.Status == "ok" && runErr == nil && encodeErr == nil && observerErr == nil && record.Cleanup == "" {
 		return result, nil

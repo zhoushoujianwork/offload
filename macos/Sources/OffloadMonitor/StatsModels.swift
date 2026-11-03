@@ -43,6 +43,8 @@ struct StatsTotals: Codable, Equatable {
     var elapsedRuns: Int
     var usage: TokenUsage?
     var usageRuns: Int
+    var partialUsage: TokenUsage? = nil
+    var partialUsageRuns: Int? = nil
     var costUsd: Double?
     var costRuns: Int
     var excludedSalvageCostRuns: Int
