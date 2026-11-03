@@ -32,6 +32,27 @@ import XCTest
         XCTAssertEqual(events[2].exitCode, 1)
     }
 
+    func testToolRowsPairOnlyAdjacentMatchingEventsAndKeepEmptyResults() throws {
+        let data = Data("""
+        {"schema_version":1,"availability":"available","has_more":false,"events":[
+          {"seq":1,"type":"tool_call","tool_call_id":"a","tool_name":"shell","arguments":"ls"},
+          {"seq":2,"type":"tool_result","tool_call_id":"a","output":"","exit_code":0},
+          {"seq":3,"type":"tool_call","tool_call_id":"b","tool_name":"shell"},
+          {"seq":4,"type":"message","role":"assistant","text":"Working"},
+          {"seq":5,"type":"tool_result","tool_call_id":"b","output":"error","is_error":true}
+        ]}
+        """.utf8)
+        let page = try OffloadCLI.taskDecode(TaskTranscript.self, data)
+        let model = TaskDetailModel(runID: id, cli: nil)
+        model.ingest(page)
+        let rows = TaskOutputRow.make(model.events)
+        XCTAssertEqual(rows.map(\.id), [1, 3, 4, 5])
+        XCTAssertEqual(rows[0].result?.seq, 2)
+        XCTAssertEqual(rows[0].summary, "ls")
+        XCTAssertNil(rows[1].result)
+        XCTAssertTrue(rows[3].failed)
+    }
+
     func testCursorDedupBoundsAndFollowReset() throws {
         let m = TaskDetailModel(runID: id, cli: nil)
         let p = try page(seq: 1, text: "first", cursor: "opaque")
