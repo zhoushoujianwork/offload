@@ -18,6 +18,20 @@ import XCTest
         return try OffloadCLI.taskDecode(TaskTranscript.self, JSONSerialization.data(withJSONObject: object))
     }
 
+    func testStructuredEventsDistinguishMessagesAndToolFailures() throws {
+        let data = Data("""
+        {"schema_version":1,"availability":"available","has_more":false,"events":[
+          {"seq":1,"type":"message","role":"user","text":"Inspect"},
+          {"seq":2,"type":"tool_call","tool_name":"Bash","arguments":"ls"},
+          {"seq":3,"type":"tool_result","output":"failed","is_error":true,"exit_code":1}
+        ]}
+        """.utf8)
+        let events = try OffloadCLI.taskDecode(TaskTranscript.self, data).events
+        XCTAssertEqual(events.map(\.title), ["You", "Running · Bash", "Tool failed"])
+        XCTAssertEqual(events[2].content, "failed")
+        XCTAssertEqual(events[2].exitCode, 1)
+    }
+
     func testCursorDedupBoundsAndFollowReset() throws {
         let m = TaskDetailModel(runID: id, cli: nil)
         let p = try page(seq: 1, text: "first", cursor: "opaque")
