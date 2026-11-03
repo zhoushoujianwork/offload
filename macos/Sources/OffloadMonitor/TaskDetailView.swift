@@ -23,6 +23,7 @@ struct TaskOutputEvent: Decodable, Identifiable, Equatable {
     var role: String?
     var text: String?
     var toolName: String?
+    var toolCallId: String?
     var arguments: String?
     var output: String?
     var reason: String?
@@ -147,7 +148,7 @@ extension OffloadCLI {
         } else {
             for event in page.events where event.seq > lastSeq {
                 lastSeq = event.seq
-                if !event.content.isEmpty {
+                if !event.content.isEmpty || event.type == "tool_call" || event.type == "tool_result" {
                     events.append(event); retainedBytes += event.content.utf8.count
                 }
             }
@@ -182,8 +183,84 @@ extension OffloadCLI {
     }
 }
 
+/// Pair adjacent calls and results only; interleaved events remain in their original order.
+struct TaskOutputRow: Identifiable {
+    let event: TaskOutputEvent
+    let result: TaskOutputEvent?
+    var id: Int { event.seq }
+    var isTool: Bool { event.type == "tool_call" || event.type == "tool_result" }
+    var failed: Bool { event.isError == true || result?.isError == true || (result?.exitCode ?? event.exitCode ?? 0) != 0 }
+    var summary: String {
+        let value = event.arguments ?? (event.type == "tool_result" ? event.output : nil) ?? ""
+        return value.split(whereSeparator: \.isNewline).first.map(String.init) ?? ""
+    }
+
+    static func make(_ events: [TaskOutputEvent]) -> [TaskOutputRow] {
+        var rows: [TaskOutputRow] = []
+        var i = 0
+        while i < events.count {
+            let event = events[i]
+            var result: TaskOutputEvent?
+            if event.type == "tool_call", let id = event.toolCallId, !id.isEmpty,
+               i + 1 < events.count, events[i + 1].type == "tool_result", events[i + 1].toolCallId == id {
+                result = events[i + 1]
+                i += 1
+            }
+            rows.append(TaskOutputRow(event: event, result: result))
+            i += 1
+        }
+        return rows
+    }
+}
+
+struct TaskToolRow: View {
+    let row: TaskOutputRow
+    @Binding var expanded: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Button { expanded.toggle() } label: {
+                HStack(alignment: .firstTextBaseline, spacing: 7) {
+                    Image(systemName: expanded ? "chevron.down" : "chevron.right").font(.caption2)
+                    Image(systemName: row.failed ? "exclamationmark.circle" : "terminal")
+                    Text(row.event.toolName ?? "Tool").fontWeight(.semibold)
+                    if !row.summary.isEmpty { Text(row.summary).lineLimit(1).foregroundStyle(.secondary) }
+                    Spacer(minLength: 4)
+                    if row.failed { Text("Failed").foregroundStyle(.red) }
+                    else if row.result != nil || row.event.type == "tool_result" { Text("Done").foregroundStyle(.secondary) }
+                    else { Text("Started").foregroundStyle(.secondary) }
+                    if let code = row.result?.exitCode ?? row.event.exitCode { Text("exit \(code)").foregroundStyle(.secondary) }
+                }
+                .font(.system(size: 11))
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("\(row.event.toolName ?? "Tool"), \(expanded ? "collapse" : "expand")")
+            if expanded {
+                if let args = row.event.arguments, !args.isEmpty { detail("Input", args) }
+                if let output = row.result?.output ?? row.event.output, !output.isEmpty { detail("Output", output) }
+                if row.event.truncated?.isEmpty == false || row.result?.truncated?.isEmpty == false {
+                    Text("Content truncated by capture limits.").font(.caption).foregroundStyle(.orange)
+                }
+            }
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 7))
+    }
+
+    private func detail(_ title: String, _ content: String) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title).font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
+            Text(content).font(.system(size: 12, design: .monospaced)).textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+}
+
 struct TaskDetailView: View {
     @StateObject private var model: TaskDetailModel
+    @State private var expandedTools: Set<Int> = []
     init(runID: String) { _model = StateObject(wrappedValue: TaskDetailModel(runID: runID)) }
     init(model: TaskDetailModel) { _model = StateObject(wrappedValue: model) }
 
@@ -205,31 +282,31 @@ struct TaskDetailView: View {
             if let next = model.snapshot?.resumedBy {
                 Button("Open resumed task") { model.follow(next) }.disabled(model.busy)
             }
+            HStack {
+                Text("Activity").font(.subheadline.weight(.semibold))
+                Spacer()
+                Button("Expand all") { expandedTools = Set(TaskOutputRow.make(model.events).filter(\.isTool).map(\.id)) }
+                Button("Collapse all") { expandedTools.removeAll() }
+            }.font(.caption)
             Divider()
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 12) {
                     if model.trimmed { Text("Earlier output was trimmed from this view. The stored transcript is unchanged.").foregroundStyle(.orange) }
-                    ForEach(model.events) { event in
-                        VStack(alignment: .leading, spacing: 3) {
-                            HStack(spacing: 6) {
-                                Image(systemName: event.type == "message" ? (event.role == "user" ? "person.circle" : "sparkle") : (event.isError == true || event.type == "backend_error" ? "exclamationmark.circle" : "terminal"))
-                                Text(event.title)
-                                if let code = event.exitCode { Text("exit \(code)") }
-                            }
-                            .font(.caption.bold())
-                            .foregroundStyle(event.isError == true || event.type == "backend_error" ? Color.red : Color.secondary)
-                            if event.type == "message" {
-                                MarkdownView(event.content)
-                            } else {
-                                Text(event.content).font(.system(size: 12, design: .monospaced))
-                                    .textSelection(.enabled)
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                                    .padding(8)
-                                    .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 6))
-                            }
-                            if event.truncated?.isEmpty == false { Text("Content truncated by capture limits.").font(.caption).foregroundStyle(.orange) }
+                    ForEach(TaskOutputRow.make(model.events)) { row in
+                        if row.isTool {
+                            TaskToolRow(row: row, expanded: Binding(
+                                get: { expandedTools.contains(row.id) },
+                                set: { if $0 { expandedTools.insert(row.id) } else { expandedTools.remove(row.id) } }
+                            ))
+                        } else {
+                            VStack(alignment: .leading, spacing: 5) {
+                                Label(row.event.title, systemImage: row.event.type == "message" ? (row.event.role == "user" ? "person.circle" : "sparkle") : "info.circle")
+                                    .font(.caption.bold()).foregroundStyle(row.event.type == "backend_error" ? Color.red : Color.secondary)
+                                if row.event.type == "message" { MarkdownView(row.event.content) }
+                                else { Text(row.event.content).textSelection(.enabled) }
+                                if row.event.truncated?.isEmpty == false { Text("Content truncated by capture limits.").font(.caption).foregroundStyle(.orange) }
+                            }.frame(maxWidth: .infinity, alignment: .leading)
                         }
-                        .frame(maxWidth: .infinity, alignment: .leading)
                     }
                     if model.events.isEmpty { Text("No captured output is available yet.").foregroundStyle(.secondary) }
                 }.padding(4)
@@ -238,6 +315,7 @@ struct TaskDetailView: View {
             if let error = model.error { Text(error).font(.caption).foregroundStyle(.red) }
         }
         .padding(16).frame(minWidth: 500, minHeight: 350)
+        .onChange(of: model.runID) { _ in expandedTools.removeAll() }
         .task(id: model.runID) { await model.observe() }
     }
 }
