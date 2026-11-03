@@ -51,6 +51,7 @@ import XCTest
         XCTAssertEqual(rows[0].summary, "ls")
         XCTAssertNil(rows[1].result)
         XCTAssertTrue(rows[3].failed)
+        XCTAssertEqual(rows[3].preview, "error")
     }
 
     func testCursorDedupBoundsAndFollowReset() throws {
