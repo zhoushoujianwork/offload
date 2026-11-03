@@ -53,6 +53,8 @@ usage:
   offload status                what each worker is doing right now
   offload stats [--json] [--period today|week|month|all]
                                 run, token and cost totals for a period (default today)
+  offload accounting repair [--apply] [--json]
+                                recover verified accounting from native session logs (dry run by default)
   offload watch [-t dur]        one line per event (start, progress, STALLED, finish) until all workers end;
                                 with -t, stop after dur and exit 124 if workers are still active
   offload schedule add|list|show|update|pause|resume|delete|results|start|status
@@ -116,6 +118,8 @@ func Run(version string, args []string, stdin io.Reader, stdout, stderr io.Write
 			return cmdSchedule(args[1:], stdin, stdout, stderr)
 		case "stats":
 			return cmdStats(args[1:], stdout, stderr)
+		case "accounting":
+			return cmdAccounting(args[1:], stdout, stderr)
 		case "accounts":
 			return cmdAccounts(args[1:], stdin, stdout, stderr)
 		case "profiles":

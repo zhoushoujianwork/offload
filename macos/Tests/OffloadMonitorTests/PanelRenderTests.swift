@@ -149,6 +149,24 @@ final class PanelRenderTests: XCTestCase {
         XCTAssertTrue(violations.isEmpty, "layout invariants broken:\n" + violations.joined(separator: "\n"))
     }
 
+    func testAccountingDetailsFitWithObservedPartialUsage() throws {
+        var s = try snapshot(active: [])
+        s.totals.partialUsage = TokenUsage(inputTokens: 56_729_539, cachedInputTokens: 10_176_093, cacheWriteInputTokens: 0, outputTokens: 579_930)
+        s.totals.partialUsageRuns = 148
+        let host = NSHostingView(rootView: DetailsView(model: MonitorModel(testingSnapshot: s)).frame(width: 480)
+            .background(Color(nsColor: .windowBackgroundColor)))
+        host.appearance = NSAppearance(named: .aqua)
+        XCTAssertLessThanOrEqual(host.fittingSize.height, 460, "Accounting explanations must fit the detail window")
+        host.frame = NSRect(x: 0, y: 0, width: 480, height: 460)
+        let data = try png(host)
+        XCTAssertGreaterThan(data.count, 1000)
+        if let dir = ProcessInfo.processInfo.environment["OFFLOAD_PANEL_RENDER_DIR"] {
+            let output = URL(fileURLWithPath: dir)
+            try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
+            try data.write(to: output.appendingPathComponent("accounting-details.png"))
+        }
+    }
+
     /// The menu-bar label keeps its width for every status and count, including the cap (99+).
     func testMenuBarLabelWidthIsFixedForEveryStatusAndCount() throws {
         var violations: [String] = []

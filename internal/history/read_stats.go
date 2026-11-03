@@ -44,6 +44,10 @@ func newLineScanner(f *os.File) *bufio.Scanner {
 // readable timestamp that is not in the future). A missing log is empty.
 func ReadStats(path string, now time.Time, caller ...string) (StatsLog, error) {
 	var out StatsLog
+	patches, err := accountingPatches(path)
+	if err != nil {
+		return out, err
+	}
 	f, err := os.Open(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return out, nil
@@ -70,6 +74,7 @@ func ReadStats(path string, now time.Time, caller ...string) (StatsLog, error) {
 			continue
 		}
 		r := m.Record
+		applyAccountingPatch(&r, raw, line, patches)
 		normalizeCost(&r)
 		idx := len(out.Records)
 		out.Records = append(out.Records, r)

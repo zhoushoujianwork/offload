@@ -43,6 +43,8 @@ type StatsTotals struct {
 	ElapsedRuns             int         `json:"elapsed_runs"`
 	Usage                   *TokenUsage `json:"usage"`
 	UsageRuns               int         `json:"usage_runs"`
+	PartialUsage            *TokenUsage `json:"partial_usage,omitempty"`
+	PartialUsageRuns        int         `json:"partial_usage_runs,omitempty"`
 	CostUSD                 *float64    `json:"cost_usd"`
 	CostRuns                int         `json:"cost_runs"`
 	ExcludedSalvageCostRuns int         `json:"excluded_salvage_cost_runs"`
@@ -229,6 +231,16 @@ func (a *statsAcc) add(r Record, elapsedOK bool) {
 		t.Usage.Output += u.Output
 		t.UsageRuns++
 	}
+	if r.UsageScope == "partial_run" && r.Usage != nil && r.Usage.Valid() {
+		if t.PartialUsage == nil {
+			t.PartialUsage = &TokenUsage{}
+		}
+		t.PartialUsage.Input += r.Usage.Input
+		t.PartialUsage.Cached += r.Usage.Cached
+		t.PartialUsage.CacheWrite += r.Usage.CacheWrite
+		t.PartialUsage.Output += r.Usage.Output
+		t.PartialUsageRuns++
+	}
 	if c := runCost(r); c != nil {
 		if t.CostUSD == nil {
 			t.CostUSD = new(float64)
@@ -245,7 +257,7 @@ func (a *statsAcc) add(r Record, elapsedOK bool) {
 // total. A cost is accepted only for Codex runs, or when the record carries a
 // CumulativeCostUSD snapshot (the run cost was then derived and validated against it).
 func runCost(r Record) *float64 {
-	if r.Salvaged || r.CostUSD == nil || !ValidCost(*r.CostUSD) {
+	if r.Salvaged || r.UsageScope == "partial_run" || r.CostUSD == nil || !ValidCost(*r.CostUSD) {
 		return nil
 	}
 	if r.Backend != "codex" && r.CumulativeCostUSD == nil {
@@ -437,6 +449,9 @@ func Aggregate(rs []Record, period string, now time.Time) (Stats, error) {
 	t := st.Totals
 	if t.Runs > t.UsageRuns {
 		st.Warnings = append(st.Warnings, fmt.Sprintf("token usage is recorded for %d of %d runs; token totals cover only those runs", t.UsageRuns, t.Runs))
+	}
+	if t.PartialUsageRuns > 0 {
+		st.Warnings = append(st.Warnings, fmt.Sprintf("%d run(s) have only observed native token usage; these lower bounds are reported separately as partial_usage and are excluded from full-run token and cost totals", t.PartialUsageRuns))
 	}
 	if t.Runs > t.CostRuns {
 		st.Warnings = append(st.Warnings, fmt.Sprintf("cost is recorded for %d of %d runs; the cost total covers only those runs", t.CostRuns, t.Runs))

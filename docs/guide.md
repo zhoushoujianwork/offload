@@ -441,6 +441,23 @@ Periods use the local time zone. An invalid flag, period, or extra argument exit
 
 本机核查（2026-11-03）：当时 1,572 次运行中，810 次有 token，797 次计入费用，约 $423.04；这是部分运行的估算值。95 条能够在原生 Codex 日志中找到的会话累计 token 快照全部匹配，另有 7 个会话未找到原生日志，不能据此宣称全量对账通过。参考价格核对来源：[OpenAI GPT-6.1 Sol](https://developers.openai.com/api/docs/models/gpt-6.1-sol)。这些数字仅是核查时快照，不是固定的当前值。
 
+#### 原生用量反读与历史回补
+
+运行结束时，如果终态事件缺少 token 或可验证的费用，Offload 会只读检查该运行对应的原生会话日志。Codex 使用原生 turn 的用量快照；Claude 对 message ID 去重，并核对请求用量与前后会话快照的差值。只有会话、任务内容、工作目录和运行时间窗口唯一匹配时才接受；冲突、损坏或来源不明确的数据不会覆盖已有记录。原生会话目录也会随新运行保存，避免不同账号或 profile 之间串数据。
+
+旧版 Claude 日志没有费用快照时，还会校验已保存的成功终态报告与原生最终回复是否完全一致。这个证据可以确认完整 token，但不能补出缺失的费用。
+
+历史数据可以先试算，再应用：
+
+```sh
+offload accounting repair --json
+offload accounting repair --apply --json
+```
+
+命令不会发起模型调用，也不会修改原生会话日志或 `runs.jsonl`。验证通过的修正追加到同目录 `runs.jsonl.accounting.jsonl`，按原始行号与 SHA-256 绑定；`stats`、`ls` 和历史会话读取时统一应用。同会话同任务的重叠记录会拒绝自动回补，避免重复认领原生 turn。重复执行不会重复计数，原始任务和报告保持不变；需要撤销回补时，可先备份再将这个修正文件移出原目录。
+
+中断且无法验证结束的日志只恢复“已观察到的部分用量”。`stats --json` 的 `partial_usage`、`partial_usage_runs` 单独报告这些下界，详情窗口也会显示；它们不计入完整运行的 token 或 cost 总额。原生日志已删除、窗口缺失、来源冲突及跨多个尝试的 salvage 记录仍可能无法补齐。恢复出来的费用仍是原生 worker 估算或参考 API 估算，不是服务商实际扣款。
+
 #### Concurrency and daily volume
 
 `stats` also reports how many tasks are processing and how many calls were recorded. Two goals are shown as progress, for one person on one computer: **100 tasks processing at once** and **10,000 recorded calls per day on average**. They are observability targets. They do not limit execution (the worker admission limit does, and it is shown separately), they are not a load-test result, and they do not show that 100 workers can run sustainably.
