@@ -24,6 +24,7 @@ struct TaskOutputEvent: Decodable, Identifiable, Equatable {
     var text: String?
     var toolName: String?
     var toolCallId: String?
+    var origin: String?
     var arguments: String?
     var output: String?
     var reason: String?
@@ -190,6 +191,11 @@ struct TaskOutputRow: Identifiable {
     var id: Int { event.seq }
     var isTool: Bool { event.type == "tool_call" || event.type == "tool_result" }
     var failed: Bool { event.isError == true || result?.isError == true || (result?.exitCode ?? event.exitCode ?? 0) != 0 }
+    var preview: String {
+        let text = result?.output ?? (event.type == "tool_result" ? event.output : nil) ?? ""
+        let lines = text.split(separator: "\n", omittingEmptySubsequences: false)
+        return lines.prefix(3).joined(separator: "\n").prefix(400).description
+    }
     var summary: String {
         let value = event.arguments ?? (event.type == "tool_result" ? event.output : nil) ?? ""
         return value.split(whereSeparator: \.isNewline).first.map(String.init) ?? ""
@@ -236,6 +242,11 @@ struct TaskToolRow: View {
             }
             .buttonStyle(.plain)
             .accessibilityLabel("\(row.event.toolName ?? "Tool"), \(expanded ? "collapse" : "expand")")
+            if !expanded && !row.preview.isEmpty {
+                Text(row.preview).font(.system(size: 11, design: .monospaced))
+                    .foregroundStyle(.secondary).lineLimit(3).textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
             if expanded {
                 if let args = row.event.arguments, !args.isEmpty { detail("Input", args) }
                 if let output = row.result?.output ?? row.event.output, !output.isEmpty { detail("Output", output) }
@@ -266,22 +277,24 @@ struct TaskDetailView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                Text("Caller: \(model.snapshot?.caller ?? "unknown")").font(.headline)
+            HStack(spacing: 10) {
+                Label("Execution", systemImage: "sparkle").font(.headline)
                 Spacer()
-                Text(model.snapshot?.status ?? model.snapshot?.phase ?? "Loading…").foregroundStyle(.secondary)
-                Button("Stop", role: .destructive) { Task { await model.control("stop") } }
-                    .disabled(model.busy || model.snapshot?.canStop != true)
-                Button(model.snapshot?.resumePending == true ? "Resuming…" : "Resume") { Task { await model.control("resume") } }
-                    .disabled(model.busy || model.snapshot?.canResume != true)
-            }
-            Text(model.runID).font(.caption.monospaced()).textSelection(.enabled)
-            if let from = model.snapshot?.resumedFrom { Text("Resumed from \(from)").font(.caption).textSelection(.enabled) }
-            if let task = model.snapshot?.task { Text(task).lineLimit(3) }
-            Text(model.snapshot?.resumeReason ?? "Loading task state…").font(.caption).foregroundStyle(.secondary)
-            if let next = model.snapshot?.resumedBy {
-                Button("Open resumed task") { model.follow(next) }.disabled(model.busy)
-            }
+                Image(systemName: model.snapshot?.active == true ? "circle.dotted" : (model.snapshot?.status == "ok" ? "checkmark.circle" : "circle"))
+                    .foregroundStyle(.secondary)
+                    .help("Status: \(model.snapshot?.status ?? model.snapshot?.phase ?? "Loading")")
+                Button { Task { await model.control("stop") } } label: { Image(systemName: "stop.circle") }
+                    .help("Stop task").disabled(model.busy || model.snapshot?.canStop != true)
+                Button { Task { await model.control("resume") } } label: { Image(systemName: "arrow.clockwise") }
+                    .help(model.snapshot?.resumeReason ?? "Resume task").disabled(model.busy || model.snapshot?.canResume != true)
+                Menu {
+                    Text("Caller: \(model.snapshot?.caller ?? "unknown")")
+                    Text("Run: \(model.runID)")
+                    Text(model.snapshot?.resumeReason ?? "Loading task state…")
+                    if let from = model.snapshot?.resumedFrom { Text("Resumed from \(from)") }
+                    if let next = model.snapshot?.resumedBy { Button("Open resumed task") { model.follow(next) } }
+                } label: { Image(systemName: "ellipsis.circle") }.help("Task details")
+            }.buttonStyle(.borderless)
             HStack {
                 Text("Activity").font(.subheadline.weight(.semibold))
                 Spacer()
@@ -292,6 +305,12 @@ struct TaskDetailView: View {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 12) {
                     if model.trimmed { Text("Earlier output was trimmed from this view. The stored transcript is unchanged.").foregroundStyle(.orange) }
+                    if !model.events.contains(where: { $0.type == "message" && $0.origin == "task" }), let task = model.snapshot?.task, !task.isEmpty {
+                        VStack(alignment: .leading, spacing: 5) {
+                            Label("You", systemImage: "person.circle").font(.caption.bold()).foregroundStyle(.secondary)
+                            Text(task).textSelection(.enabled)
+                        }.frame(maxWidth: .infinity, alignment: .leading)
+                    }
                     ForEach(TaskOutputRow.make(model.events)) { row in
                         if row.isTool {
                             TaskToolRow(row: row, expanded: Binding(
@@ -311,7 +330,9 @@ struct TaskDetailView: View {
                     if model.events.isEmpty { Text("No captured output is available yet.").foregroundStyle(.secondary) }
                 }.padding(4)
             }
-            Text(model.coverage).font(.caption).foregroundStyle(.secondary)
+            if model.coverage != "complete" && model.coverage != "in_progress" {
+                Label(model.coverage, systemImage: "info.circle").font(.caption).foregroundStyle(.secondary)
+            }
             if let error = model.error { Text(error).font(.caption).foregroundStyle(.red) }
         }
         .padding(16).frame(minWidth: 500, minHeight: 350)
