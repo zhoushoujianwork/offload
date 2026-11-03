@@ -28,8 +28,20 @@ struct TaskOutputEvent: Decodable, Identifiable, Equatable {
     var reason: String?
     var status: String?
     var truncated: [String: Int]?
+    var isError: Bool?
+    var exitCode: Int?
     var id: Int { seq }
-    var title: String { role ?? toolName ?? type.replacingOccurrences(of: "_", with: " ") }
+    var title: String {
+        switch type {
+        case "message": return role == "user" ? "You" : "Assistant"
+        case "tool_call": return toolName.map { "Running · \($0)" } ?? "Tool call"
+        case "tool_result": return isError == true ? "Tool failed" : "Tool output"
+        case "backend_error": return "Error"
+        case "gap": return "Output unavailable"
+        case "execution_end": return "Task finished"
+        default: return type.replacingOccurrences(of: "_", with: " ").capitalized
+        }
+    }
     var content: String { text ?? output ?? arguments ?? reason ?? status ?? "" }
 }
 
@@ -199,9 +211,22 @@ struct TaskDetailView: View {
                     if model.trimmed { Text("Earlier output was trimmed from this view. The stored transcript is unchanged.").foregroundStyle(.orange) }
                     ForEach(model.events) { event in
                         VStack(alignment: .leading, spacing: 3) {
-                            Text(event.title).font(.caption.bold()).foregroundStyle(.secondary)
-                            if event.type == "message" { MarkdownView(event.content) }
-                            else { Text(event.content).font(.system(size: 12, design: .monospaced)).textSelection(.enabled) }
+                            HStack(spacing: 6) {
+                                Image(systemName: event.type == "message" ? (event.role == "user" ? "person.circle" : "sparkle") : (event.isError == true || event.type == "backend_error" ? "exclamationmark.circle" : "terminal"))
+                                Text(event.title)
+                                if let code = event.exitCode { Text("exit \(code)") }
+                            }
+                            .font(.caption.bold())
+                            .foregroundStyle(event.isError == true || event.type == "backend_error" ? Color.red : Color.secondary)
+                            if event.type == "message" {
+                                MarkdownView(event.content)
+                            } else {
+                                Text(event.content).font(.system(size: 12, design: .monospaced))
+                                    .textSelection(.enabled)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .padding(8)
+                                    .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 6))
+                            }
                             if event.truncated?.isEmpty == false { Text("Content truncated by capture limits.").font(.caption).foregroundStyle(.orange) }
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
