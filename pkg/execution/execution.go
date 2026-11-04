@@ -97,10 +97,13 @@ type Result struct {
 	NativeExitCode                              *int
 	StructuredOutput                            json.RawMessage
 	RunID, CallerRunID, Profile, Backend, Model string
-	NativeSessionID, Status, ErrorKind          string
-	Report, Error, Cleanup                      string
-	ExitCode                                    int
-	Usage                                       json.RawMessage
+	// RequestedModel is configuration intent; ObservedModel is native evidence.
+	// Empty ObservedModel means unavailable, never an inferred profile fallback.
+	RequestedModel, ObservedModel      string
+	NativeSessionID, Status, ErrorKind string
+	Report, Error, Cleanup             string
+	ExitCode                           int
+	Usage                              json.RawMessage
 	// PartialUsage is an observed lower bound, never a complete invocation total.
 	PartialUsage json.RawMessage
 	CostUSD      *float64
@@ -324,7 +327,7 @@ func (c *Client) Run(ctx context.Context, req Request) (result Result, resultErr
 		exit = *record.ExitCode
 	}
 	result = Result{NativeStderr: record.NativeStderr, NativeExitCode: record.NativeExitCode, StructuredOutput: record.StructuredOutput, RunID: record.RunID, CallerRunID: record.CallerRunID, Profile: record.Profile,
-		Backend: record.Backend, Model: record.Model, NativeSessionID: record.Session,
+		Backend: record.Backend, Model: record.Model, RequestedModel: record.RequestedModel, ObservedModel: record.ObservedModel, NativeSessionID: record.Session,
 		Status: record.Status, ErrorKind: record.ErrorKind, ExitCode: exit, Report: record.Result,
 		Error: record.Error, Cleanup: record.Cleanup, Usage: usage, PartialUsage: partialUsage, CostUSD: record.CostUSD,
 		ElapsedMS: record.ElapsedMs, RawRecord: raw}

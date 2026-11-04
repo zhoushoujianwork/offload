@@ -321,6 +321,7 @@ func Run(ctx context.Context, o Opts) (rec history.Record, err error) {
 		o.CodexHome = codexHome()
 	}
 	rec.CodexHome = o.CodexHome
+	rec.RequestedModel = o.Model
 	if o.Profile.BackendName() == "codex" && o.Transcript != nil {
 		o.Transcript.AddSecrets(codexAuthSecrets(o.CodexHome)...)
 	}
@@ -332,6 +333,7 @@ func Run(ctx context.Context, o Opts) (rec history.Record, err error) {
 	defer func() {
 		if rec.Backend == "codex" {
 			resolveCodexModel(&rec, o.Model, o.CodexHome)
+			rec.ObservedModel = codexSessionModel(rec.Session, o.CodexHome)
 		}
 		elapsed := time.Since(started).Milliseconds()
 		rec.ElapsedMs = &elapsed
@@ -469,6 +471,12 @@ func Run(ctx context.Context, o Opts) (rec history.Record, err error) {
 		leftover = a.leftover
 	}
 	s := a.s
+	if rec.Backend == "claude" {
+		rec.ObservedModel = s.ObservedModel
+		if strings.Contains(a.stderr, "unrecognized_model") {
+			rec.ObservedModel = ""
+		}
+	}
 	nativeSessionObserved = s.Session != ""
 	// A resumed provider may fail before emitting its init/session event. Keep the
 	// known session so the failed attempt remains resumable and grouped correctly.

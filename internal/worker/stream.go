@@ -12,13 +12,14 @@ import (
 // "result" event only exists when the worker finishes by itself; a worker killed by the timeout
 // leaves just the events below, which is still enough to resume its session.
 type streamSummary struct {
-	Session   string
-	Events    int
-	ToolCalls int
-	Denials   int
-	LastText  string
-	LastTools []string
-	Result    *claudeResult
+	ObservedModel string
+	Session       string
+	Events        int
+	ToolCalls     int
+	Denials       int
+	LastText      string
+	LastTools     []string
+	Result        *claudeResult
 }
 
 const lastToolsKept = 5
@@ -88,6 +89,7 @@ func parseStream(out []byte) streamSummary { return parseAll(&claudeParser{}, ou
 
 func (s *streamSummary) addAssistant(message json.RawMessage) {
 	var m struct {
+		Model   string `json:"model"`
 		Content []struct {
 			Type  string          `json:"type"`
 			Text  string          `json:"text"`
@@ -97,6 +99,9 @@ func (s *streamSummary) addAssistant(message json.RawMessage) {
 	}
 	if json.Unmarshal(message, &m) != nil {
 		return
+	}
+	if m.Model != "" && !strings.HasPrefix(m.Model, "<") {
+		s.ObservedModel = m.Model
 	}
 	for _, b := range m.Content {
 		switch b.Type {
