@@ -61,6 +61,8 @@ type RawEvent struct {
 }
 
 type Request struct {
+	// PresetDocuments are caller-reviewed instructions, never ambient files.
+	PresetDocuments []PresetDocument
 	// EnvironmentDirectory opts into an environment returned by NewEnvironment.
 	// Directory must be its Workspace; task directories are explicit add-dirs.
 	EnvironmentDirectory       string
@@ -248,6 +250,16 @@ func (c *Client) Run(ctx context.Context, req Request) (result Result, resultErr
 	if info, err := os.Stat(req.Directory); err != nil || !info.IsDir() {
 		return setupError("configuration", errors.New("working directory must exist"))
 	}
+	if len(req.PresetDocuments) > 0 {
+		if req.Native == nil || !req.Native.CallerContext || req.Native.Extraction || req.InstructionsFile != "" {
+			return setupError("configuration", errors.New("preset documents require native caller context without extraction or an instructions file"))
+		}
+		compiled, err := compilePresetDocuments(req.Instructions, req.PresetDocuments)
+		if err != nil {
+			return setupError("configuration", err)
+		}
+		req.Instructions = compiled
+	}
 	if len(req.Instructions) > 256<<10 || len(req.Instructions) > 0 && req.InstructionsFile != "" {
 		return setupError("configuration", errors.New("instructions must fit 256KiB and cannot combine bytes with a file"))
 	}
@@ -260,6 +272,9 @@ func (c *Client) Run(ctx context.Context, req Request) (result Result, resultErr
 		return setupError("configuration", err)
 	}
 	native := nativeSnapshot(req.Native)
+	if c.profile.BackendName() == "codex" && native != nil && native.CallerContext && (len(req.Instructions) > 0 || req.InstructionsFile != "") && req.EnvironmentDirectory == "" {
+		return setupError("configuration", errors.New("Codex native instructions require an isolated execution environment"))
+	}
 	if native != nil && (req.AllowSalvage || (native.Extraction || native.RestrictedReadOnly) && len(req.AdditionalDirectories) > 0) {
 		return setupError("unsupported_controls", errors.New("host native controls cannot salvage or widen isolated execution directories"))
 	}

@@ -28,6 +28,10 @@ func TestEnvironmentUsesSeparateClaudeConfiguration(t *testing.T) {
 	marker := filepath.Join(source, "observed")
 	script := `#!/bin/sh
 printf '%s' "$CLAUDE_CONFIG_DIR" > '` + marker + `'
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = '--append-system-prompt-file' ]; then cat "$2" > '` + marker + `.instructions'; break; fi
+  shift
+done
 cat >/dev/null
 printf '%s\n' '{"type":"system","subtype":"init","session_id":"claude-isolated","model":"fixture"}' '{"type":"result","subtype":"success","is_error":false,"session_id":"claude-isolated","result":"CLAUDE_ISOLATED_OK"}'
 `
@@ -41,13 +45,17 @@ printf '%s\n' '{"type":"system","subtype":"init","session_id":"claude-isolated",
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err := client.Run(context.Background(), Request{EnvironmentDirectory: env.Root, Directory: env.Workspace, Task: "isolated task", Native: &NativeControls{CallerContext: true, PermissionMode: "bypassPermissions"}})
+	result, err := client.Run(context.Background(), Request{EnvironmentDirectory: env.Root, Directory: env.Workspace, Task: "isolated task", PresetDocuments: []PresetDocument{{Name: "AGENTS.md", Content: []byte("CLAUDE_PRESET_4317")}}, Native: &NativeControls{CallerContext: true, PermissionMode: "bypassPermissions"}})
 	if err != nil || result.Report != "CLAUDE_ISOLATED_OK" {
 		t.Fatalf("status=%s err=%v", result.Status, err)
 	}
 	observed, _ := os.ReadFile(marker)
 	if string(observed) != filepath.Join(env.Root, "claude") {
 		t.Fatal("Claude reused ambient configuration")
+	}
+	instructions, _ := os.ReadFile(marker + ".instructions")
+	if !strings.Contains(string(instructions), "CLAUDE_PRESET_4317") {
+		t.Fatal("Claude native system instructions missing preset")
 	}
 	if _, err := os.Stat(filepath.Join(env.Root, "claude/settings.json")); !os.IsNotExist(err) {
 		t.Fatal("ambient settings copied")
@@ -72,6 +80,10 @@ func TestEnvironmentUsesPrivateNativeHomeWithoutAmbientVariables(t *testing.T) {
 	binary := filepath.Join(source, "codex")
 	script := `#!/bin/sh
 printf '%s\n' "$HOME" "$CODEX_HOME" "$XDG_CONFIG_HOME" "${BASH_ENV-unset}" "${UNRELATED_SECRET-unset}" > '` + marker + `'
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = '--profile' ]; then cat "$CODEX_HOME/$2.config.toml" > '` + marker + `.instructions'; break; fi
+  shift
+done
 cat >/dev/null
 printf '%s\n' '{"type":"thread.started","thread_id":"isolated-session"}' '{"type":"item.completed","item":{"id":"m","type":"agent_message","text":"ISOLATED_OK"}}' '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}'
 `
@@ -84,7 +96,7 @@ printf '%s\n' '{"type":"thread.started","thread_id":"isolated-session"}' '{"type
 		t.Fatal(err)
 	}
 	timeout := time.Minute
-	result, err := client.Run(context.Background(), Request{EnvironmentDirectory: env.Root, Directory: env.Workspace, Task: "isolated task", Timeout: &timeout})
+	result, err := client.Run(context.Background(), Request{EnvironmentDirectory: env.Root, Directory: env.Workspace, Task: "isolated task", Timeout: &timeout, PresetDocuments: []PresetDocument{{Name: "SECURITY.md", Content: []byte("CODEX_PRESET_2763")}}, Native: &NativeControls{CallerContext: true, PermissionMode: "bypassPermissions"}})
 	if err != nil || result.Report != "ISOLATED_OK" || result.EnvironmentDirectory != env.Root {
 		t.Fatalf("status=%s report=%s err=%v", result.Status, result.Report, err)
 	}
@@ -96,12 +108,29 @@ printf '%s\n' '{"type":"thread.started","thread_id":"isolated-session"}' '{"type
 	if string(raw) != expected {
 		t.Fatalf("unexpected environment: %q", raw)
 	}
+	instructions, _ := os.ReadFile(marker + ".instructions")
+	if !strings.Contains(string(instructions), "developer_instructions") || !strings.Contains(string(instructions), "CODEX_PRESET_2763") {
+		t.Fatal("Codex native developer instructions missing preset")
+	}
 	var record struct {
 		CodexHome   string `json:"codex_home"`
 		Environment string `json:"environment_directory"`
 	}
 	if json.Unmarshal(result.RawRecord, &record) != nil || record.CodexHome != filepath.Join(env.Root, "codex") || record.Environment != env.Root {
 		t.Fatal("isolated runtime provenance missing")
+	}
+	if err := os.WriteFile(filepath.Join(env.Root, "codex", "config.toml"), []byte("developer_instructions = 'foreign policy'"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(marker); err != nil {
+		t.Fatal(err)
+	}
+	_, err = client.Run(context.Background(), Request{EnvironmentDirectory: env.Root, Directory: env.Workspace, Task: "must not dispatch", Instructions: []byte("host instructions"), Native: &NativeControls{CallerContext: true, PermissionMode: "bypassPermissions"}})
+	if err == nil {
+		t.Fatalf("foreign base configuration accepted: %v", err)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatal("native executable started despite foreign base configuration")
 	}
 }
 

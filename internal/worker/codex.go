@@ -60,7 +60,12 @@ func buildCodexArgs(o Opts) []string {
 		}
 		// Host capabilities replace ambient native integrations. Authentication
 		// remains scoped to the account home selected by Offload.
-		args = append(args, "--ignore-user-config", "--ignore-rules", "-c", "project_doc_max_bytes=0", "-c", "plugins={}", "-c", "apps._default.enabled=false")
+		// ignore-user-config also suppresses explicitly selected native profiles.
+		// Only an owned isolated home may load our private instruction profile.
+		if o.codexHostProfile == "" || o.EnvironmentDirectory == "" {
+			args = append(args, "--ignore-user-config")
+		}
+		args = append(args, "--ignore-rules", "-c", "project_doc_max_bytes=0", "-c", "plugins={}", "-c", "apps._default.enabled=false")
 		var mcpServers []NativeMCPServer
 		if o.Native != nil {
 			mcpServers = o.Native.MCPServers

@@ -182,6 +182,7 @@ func TestGracefulShutdownFlushesEventsAndPartialReport(t *testing.T) {
 	StopGrace = 5 * time.Second
 	t.Cleanup(func() { StopGrace = origGrace })
 	ready := filepath.Join(t.TempDir(), "ready")
+	trapReady := filepath.Join(t.TempDir(), "trap-ready")
 	terminationFake(t, ready, `on_term() {
   printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"text","text":"flushing before exit"}]}}'
   sleep 0.2
@@ -189,6 +190,7 @@ func TestGracefulShutdownFlushesEventsAndPartialReport(t *testing.T) {
   exit 143
 }
 trap on_term TERM
+: > '`+trapReady+`'
 while :; do sleep 0.05; done
 `)
 	var mu sync.Mutex
@@ -205,7 +207,7 @@ while :; do sleep 0.05; done
 	defer cancel(nil)
 	var stopped time.Time
 	go func() {
-		waitExists(t, ready)
+		waitExists(t, trapReady)
 		stopped = time.Now()
 		cancel(&SignalError{Signal: syscall.SIGTERM})
 	}()

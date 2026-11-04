@@ -36,3 +36,15 @@ func TestCodexHostMCPReplacesAmbientConfiguration(t *testing.T) {
 		}
 	}
 }
+
+func TestCodexHostInstructionProfileRemainsEnabledInIsolatedHome(t *testing.T) {
+	o := Opts{Native: &NativeControls{CallerContext: true, PermissionMode: "bypassPermissions"}, codexHostProfile: "private-instructions", EnvironmentDirectory: "/owned/environment"}
+	args := strings.Join(buildCodexArgs(o), "\n")
+	if !strings.Contains(args, "--profile\nprivate-instructions") || strings.Contains(args, "--ignore-user-config") {
+		t.Fatal("explicit isolated profile would be suppressed")
+	}
+	o.EnvironmentDirectory = ""
+	if !strings.Contains(strings.Join(buildCodexArgs(o), "\n"), "--ignore-user-config") {
+		t.Fatal("ambient user config would be loaded")
+	}
+}

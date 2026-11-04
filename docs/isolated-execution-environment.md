@@ -22,6 +22,13 @@ serialize access; the environment contains private authentication and task data.
 Creation uses a private temporary directory, so long-term retention also depends
 on the host's temporary-directory policy.
 
+Callers can explicitly provide reviewed `AGENTS.md`, `MEMORY.md`, `USERS.md` and
+`SECURITY.md` snapshots through `Request.PresetDocuments`. With native
+`CallerContext` enabled, these join `Instructions` in the native instruction
+channel. No user-home file discovery occurs. Omitting them leaves the new
+environment free of those ambient preferences. See the detailed contract for
+roles, limits and acceptance.
+
 This isolates execution configuration, not filesystem or network permissions.
 Native permission policies still apply, and unsupported Host controls remain
 unsupported. See [the detailed contract](isolated-execution-environment-detail.md).

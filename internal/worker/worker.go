@@ -417,6 +417,10 @@ func Run(ctx context.Context, o Opts) (rec history.Record, err error) {
 		rec.ErrorKind = ErrorKind(err)
 		return rec, err
 	}
+	if o.Profile.BackendName() == "codex" && o.Native != nil && o.Native.CallerContext && len(o.Instructions) > 0 && o.EnvironmentDirectory == "" {
+		rec.ErrorKind = "configuration"
+		return rec, errors.New("Codex native instructions require an isolated execution environment")
+	}
 	if o.toolsNotEnforced {
 		rec.ToolRestriction = history.ToolRestrictionNotEnforced
 	}
@@ -687,6 +691,11 @@ func runAttempt(ctx context.Context, bin string, o Opts, promptPath, token strin
 	if o.Profile.BackendName() == "codex" {
 		baseline, baselineError = codexBaseline(o.Resume, o.CodexHome)
 		if o.Native != nil && o.Native.CallerContext {
+			if o.EnvironmentDirectory != "" {
+				if _, err := os.Lstat(filepath.Join(o.CodexHome, "config.toml")); !errors.Is(err, os.ErrNotExist) {
+					return attempt{runErr: errors.New("isolated Codex instruction profile requires an absent base config.toml")}
+				}
+			}
 			if err := os.MkdirAll(o.CodexHome, 0700); err != nil {
 				return attempt{runErr: err}
 			}

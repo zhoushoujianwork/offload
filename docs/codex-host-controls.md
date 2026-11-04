@@ -5,7 +5,10 @@ The package accepts Host native controls for ordinary owner Codex execution with
 are passed as developer instructions through a private temporary native profile,
 removed after the owned attempt. Task text remains on stdin. Ambient user config,
 exec rules and project instruction discovery are excluded from this invocation.
-Authentication remains in the Offload-selected Codex account home.
+Caller instructions require an [isolated execution environment](isolated-execution-environment.md).
+The profile must be loaded without `--ignore-user-config`, which also suppresses
+explicit profiles; a foreign base config in the owned home is rejected. Only
+authentication is seeded from the Offload-selected account into that home.
 
 The embedding Host must adopt the native thread ID from the first initialization
 event; the Claude fresh-session identifier cannot select a Codex thread ID.
