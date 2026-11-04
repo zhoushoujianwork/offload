@@ -450,10 +450,11 @@ func TestDetachedDescendantIsOutsideTheOwnedGroup(t *testing.T) {
 	}
 	work, _ := setup(t, okReply)
 	childPID := filepath.Join(t.TempDir(), "detached.pid")
+	detachedReady := filepath.Join(t.TempDir(), "detached.ready")
 	fake := os.Getenv("OFFLOAD_CLAUDE")
 	b, _ := os.ReadFile(fake)
 	script := strings.Replace(string(b), "cat <<'EOF'",
-		"perl -MPOSIX -e 'POSIX::setsid(); exec \"sleep\",\"300\"' >/dev/null 2>&1 &\necho $! > '"+childPID+"'\nsleep 0.5\ncat <<'EOF'", 1)
+		"DETACHED_READY='"+detachedReady+"' perl -MPOSIX -e 'POSIX::setsid(); open my $f, \">\", $ENV{\"DETACHED_READY\"} or die $!; print $f \"$$\\n\"; close $f; exec \"sleep\",\"300\"' >/dev/null 2>&1 &\nchild=$!\necho \"$child\" > '"+childPID+"'\nwhile [ ! -s '"+detachedReady+"' ]; do kill -0 \"$child\" 2>/dev/null || exit 1; sleep 0.01; done\ncat <<'EOF'", 1)
 	if err := os.WriteFile(fake, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
