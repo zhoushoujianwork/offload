@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -51,6 +52,7 @@ var errIdle = errors.New("worker idle")
 
 // Opts is one worker run.
 type Opts struct {
+	codexHostProfile string
 	Native           *NativeControls
 	CodexHome        string
 	RunID            string
@@ -661,6 +663,22 @@ func runAttempt(ctx context.Context, bin string, o Opts, promptPath, token strin
 	// Not CommandContext: that kills only the worker process and never its children.
 	if o.Profile.BackendName() == "codex" {
 		baseline, baselineError = codexBaseline(o.Resume, o.CodexHome)
+		if o.Native != nil && o.Native.CallerContext {
+			if err := os.MkdirAll(o.CodexHome, 0700); err != nil {
+				return attempt{runErr: err}
+			}
+			file, err := os.CreateTemp(o.CodexHome, "offload-host-*.config.toml")
+			if err != nil {
+				return attempt{runErr: err}
+			}
+			defer os.Remove(file.Name())
+			_, writeErr := file.WriteString("developer_instructions = " + strconv.Quote(string(o.Instructions)) + "\n")
+			closeErr := file.Close()
+			if err := errors.Join(writeErr, closeErr); err != nil {
+				return attempt{runErr: err}
+			}
+			o.codexHostProfile = strings.TrimSuffix(filepath.Base(file.Name()), ".config.toml")
+		}
 		cmd = exec.Command(bin, buildCodexArgs(o)...)
 		cmd.Dir = o.Dir
 		cmd.Env = o.Limits.ApplyEnv(codexChildEnv(os.Environ(), o.CodexHome, o.Profile.CodexAccount == ""))
@@ -668,7 +686,11 @@ func runAttempt(ctx context.Context, bin string, o Opts, promptPath, token strin
 		if err != nil {
 			return attempt{runErr: err}
 		}
-		cmd.Stdin = strings.NewReader(string(prompt) + "\nTask:\n" + o.Task)
+		if o.Native != nil && o.Native.CallerContext {
+			cmd.Stdin = strings.NewReader(o.Task)
+		} else {
+			cmd.Stdin = strings.NewReader(string(prompt) + "\nTask:\n" + o.Task)
+		}
 		parser = &codexParser{}
 	} else {
 		if o.Resume != "" && !o.Salvage {
