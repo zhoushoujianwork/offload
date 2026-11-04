@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -51,14 +52,17 @@ var errIdle = errors.New("worker idle")
 
 // Opts is one worker run.
 type Opts struct {
-	Native           *NativeControls
-	CodexHome        string
-	RunID            string
-	CallerRunID      string
-	Caller           string // normalized --caller; empty means unspecified
-	ExecutionPolicy  string
-	InstructionsFile string
-	CodexSandbox     string
+	EnvironmentDirectory string
+	environment          []string
+	codexHostProfile     string
+	Native               *NativeControls
+	CodexHome            string
+	RunID                string
+	CallerRunID          string
+	Caller               string // normalized --caller; empty means unspecified
+	ExecutionPolicy      string
+	InstructionsFile     string
+	CodexSandbox         string
 
 	Instructions                  []byte
 	ToolsDisabled                 bool
@@ -130,7 +134,11 @@ var SalvageTimeout = 4 * time.Minute
 
 func buildArgs(o Opts, promptPath string) []string {
 	if o.Native != nil {
-		return hostClaudeArgs(o, promptPath)
+		args := hostClaudeArgs(o, promptPath)
+		if o.EnvironmentDirectory != "" {
+			args = append(args, "--bare")
+		}
+		return args
 	}
 	// Gateway, token and model reach the worker only through env (see childEnv), never argv.
 	// --bare still loads settings; disable user/project/local sources so their env cannot
@@ -301,7 +309,8 @@ func Run(ctx context.Context, o Opts) (rec history.Record, err error) {
 		started = time.Now()
 	}
 	rec = history.Record{TS: started.Format("2006-01-02 15:04:05"), CodexAccount: o.Profile.CodexAccount, CodexHome: o.CodexHome, Profile: o.ProfileName, Model: o.Model,
-		RunID: o.RunID, CallerRunID: o.CallerRunID, Caller: history.CallerOrUnspecified(o.Caller), ExecutionPolicy: policyName(o.ExecutionPolicy), Backend: o.Profile.BackendName(), Dir: o.Dir, AddDirs: slices.Clone(o.AddDirs), Task: o.Task, Status: "error", CostIsEstimate: true}
+		EnvironmentDirectory: o.EnvironmentDirectory,
+		RunID:                o.RunID, CallerRunID: o.CallerRunID, Caller: history.CallerOrUnspecified(o.Caller), ExecutionPolicy: policyName(o.ExecutionPolicy), Backend: o.Profile.BackendName(), Dir: o.Dir, AddDirs: slices.Clone(o.AddDirs), Task: o.Task, Status: "error", CostIsEstimate: true}
 	if rec.Backend == "claude" {
 		rec.ClaudeHome = os.Getenv("CLAUDE_CONFIG_DIR")
 		if o.Native != nil && o.Native.ProfileDirectory != "" {
@@ -313,12 +322,28 @@ func Run(ctx context.Context, o Opts) (rec history.Record, err error) {
 		if accountErr != nil {
 			return rec, accountErr
 		}
-		if o.CodexHome != "" && o.CodexHome != accountHome {
+		if o.CodexHome != "" && o.CodexHome != accountHome && !(o.EnvironmentDirectory != "" && o.CodexHome == filepath.Join(o.EnvironmentDirectory, "codex")) {
 			return rec, fmt.Errorf("session managed account home changed")
 		}
 		o.CodexHome = accountHome
 	} else if o.Profile.BackendName() == "codex" && o.CodexHome == "" {
 		o.CodexHome = codexHome()
+	}
+	sourceHome := o.CodexHome
+	if o.EnvironmentDirectory != "" && o.Profile.BackendName() == "codex" && o.Profile.CodexAccount == "" {
+		sourceHome = codexHome()
+		if o.CodexHome != "" && o.CodexHome != sourceHome && o.CodexHome != filepath.Join(o.EnvironmentDirectory, "codex") {
+			return rec, errors.New("isolated Codex account home changed")
+		}
+	}
+	if o.EnvironmentDirectory != "" {
+		_, setupErr := o.prepareEnvironment(sourceHome)
+		if setupErr != nil {
+			return rec, setupErr
+		}
+		if rec.Backend == "claude" {
+			rec.ClaudeHome = filepath.Join(o.EnvironmentDirectory, "claude")
+		}
 	}
 	rec.CodexHome = o.CodexHome
 	rec.RequestedModel = o.Model
@@ -391,6 +416,10 @@ func Run(ctx context.Context, o Opts) (rec history.Record, err error) {
 	if err = Validate(&o); err != nil {
 		rec.ErrorKind = ErrorKind(err)
 		return rec, err
+	}
+	if o.Profile.BackendName() == "codex" && o.Native != nil && o.Native.CallerContext && len(o.Instructions) > 0 && o.EnvironmentDirectory == "" {
+		rec.ErrorKind = "configuration"
+		return rec, errors.New("Codex native instructions require an isolated execution environment")
 	}
 	if o.toolsNotEnforced {
 		rec.ToolRestriction = history.ToolRestrictionNotEnforced
@@ -661,14 +690,39 @@ func runAttempt(ctx context.Context, bin string, o Opts, promptPath, token strin
 	// Not CommandContext: that kills only the worker process and never its children.
 	if o.Profile.BackendName() == "codex" {
 		baseline, baselineError = codexBaseline(o.Resume, o.CodexHome)
+		if o.Native != nil && o.Native.CallerContext {
+			if o.EnvironmentDirectory != "" {
+				if _, err := os.Lstat(filepath.Join(o.CodexHome, "config.toml")); !errors.Is(err, os.ErrNotExist) {
+					return attempt{runErr: errors.New("isolated Codex instruction profile requires an absent base config.toml")}
+				}
+			}
+			if err := os.MkdirAll(o.CodexHome, 0700); err != nil {
+				return attempt{runErr: err}
+			}
+			file, err := os.CreateTemp(o.CodexHome, "offload-host-*.config.toml")
+			if err != nil {
+				return attempt{runErr: err}
+			}
+			defer os.Remove(file.Name())
+			_, writeErr := file.WriteString("developer_instructions = " + strconv.Quote(string(o.Instructions)) + "\n")
+			closeErr := file.Close()
+			if err := errors.Join(writeErr, closeErr); err != nil {
+				return attempt{runErr: err}
+			}
+			o.codexHostProfile = strings.TrimSuffix(filepath.Base(file.Name()), ".config.toml")
+		}
 		cmd = exec.Command(bin, buildCodexArgs(o)...)
 		cmd.Dir = o.Dir
-		cmd.Env = o.Limits.ApplyEnv(codexChildEnv(os.Environ(), o.CodexHome, o.Profile.CodexAccount == ""))
+		cmd.Env = o.Limits.ApplyEnv(codexChildEnv(o.baseEnvironment(), o.CodexHome, o.Profile.CodexAccount == ""))
 		prompt, err := os.ReadFile(promptPath)
 		if err != nil {
 			return attempt{runErr: err}
 		}
-		cmd.Stdin = strings.NewReader(string(prompt) + "\nTask:\n" + o.Task)
+		if o.Native != nil && o.Native.CallerContext {
+			cmd.Stdin = strings.NewReader(o.Task)
+		} else {
+			cmd.Stdin = strings.NewReader(string(prompt) + "\nTask:\n" + o.Task)
+		}
 		parser = &codexParser{}
 	} else {
 		if o.Resume != "" && !o.Salvage {
@@ -677,7 +731,7 @@ func runAttempt(ctx context.Context, bin string, o Opts, promptPath, token strin
 		}
 		cmd = exec.Command(bin, buildArgs(o, promptPath)...)
 		cmd.Dir = o.Dir
-		cmd.Env = o.Limits.ApplyEnv(childEnv(os.Environ(), o, token))
+		cmd.Env = o.Limits.ApplyEnv(childEnv(o.baseEnvironment(), o, token))
 		if o.Native != nil {
 			cmd.Stdin = bytes.NewReader(hostClaudeInput(o))
 		} else if o.ExecutionPolicy == "managed-development" {

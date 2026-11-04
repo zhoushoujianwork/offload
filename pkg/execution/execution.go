@@ -61,6 +61,11 @@ type RawEvent struct {
 }
 
 type Request struct {
+	// PresetDocuments are caller-reviewed instructions, never ambient files.
+	PresetDocuments []PresetDocument
+	// EnvironmentDirectory opts into an environment returned by NewEnvironment.
+	// Directory must be its Workspace; task directories are explicit add-dirs.
+	EnvironmentDirectory       string
 	Monitor                    *MonitorOptions
 	Native                     *NativeControls
 	RunID, CallerRunID, Caller string
@@ -92,6 +97,7 @@ type Request struct {
 // Result is execution evidence, never task acceptance. Missing usage/cost stays
 // nil. RawRecord preserves the complete private CLI/history-compatible record.
 type Result struct {
+	EnvironmentDirectory                        string
 	MonitorError                                error
 	NativeStderr                                string
 	NativeExitCode                              *int
@@ -244,6 +250,16 @@ func (c *Client) Run(ctx context.Context, req Request) (result Result, resultErr
 	if info, err := os.Stat(req.Directory); err != nil || !info.IsDir() {
 		return setupError("configuration", errors.New("working directory must exist"))
 	}
+	if len(req.PresetDocuments) > 0 {
+		if req.Native == nil || !req.Native.CallerContext || req.Native.Extraction || req.InstructionsFile != "" {
+			return setupError("configuration", errors.New("preset documents require native caller context without extraction or an instructions file"))
+		}
+		compiled, err := compilePresetDocuments(req.Instructions, req.PresetDocuments)
+		if err != nil {
+			return setupError("configuration", err)
+		}
+		req.Instructions = compiled
+	}
 	if len(req.Instructions) > 256<<10 || len(req.Instructions) > 0 && req.InstructionsFile != "" {
 		return setupError("configuration", errors.New("instructions must fit 256KiB and cannot combine bytes with a file"))
 	}
@@ -256,6 +272,9 @@ func (c *Client) Run(ctx context.Context, req Request) (result Result, resultErr
 		return setupError("configuration", err)
 	}
 	native := nativeSnapshot(req.Native)
+	if c.profile.BackendName() == "codex" && native != nil && native.CallerContext && (len(req.Instructions) > 0 || req.InstructionsFile != "") && req.EnvironmentDirectory == "" {
+		return setupError("configuration", errors.New("Codex native instructions require an isolated execution environment"))
+	}
 	if native != nil && (req.AllowSalvage || (native.Extraction || native.RestrictedReadOnly) && len(req.AdditionalDirectories) > 0) {
 		return setupError("unsupported_controls", errors.New("host native controls cannot salvage or widen isolated execution directories"))
 	}
@@ -263,8 +282,9 @@ func (c *Client) Run(ctx context.Context, req Request) (result Result, resultErr
 		return setupError("unsupported_controls", err)
 	}
 	o := worker.Opts{ProfileName: c.cfg.ProfileName, Profile: c.profile, Model: req.Model,
-		Native:    native,
-		CodexHome: req.CodexHome, RunID: id, CallerRunID: req.CallerRunID, Caller: req.Caller,
+		EnvironmentDirectory: req.EnvironmentDirectory,
+		Native:               native,
+		CodexHome:            req.CodexHome, RunID: id, CallerRunID: req.CallerRunID, Caller: req.Caller,
 		Task: req.Task, Dir: req.Directory, AddDirs: slices.Clone(req.AdditionalDirectories), Resume: req.NativeSessionID,
 		Instructions: bytes.Clone(req.Instructions), InstructionsFile: req.InstructionsFile,
 		Write: req.Write, ExecutionPolicy: req.ExecutionPolicy, CodexSandbox: req.CodexSandbox,
@@ -327,7 +347,8 @@ func (c *Client) Run(ctx context.Context, req Request) (result Result, resultErr
 		exit = *record.ExitCode
 	}
 	result = Result{NativeStderr: record.NativeStderr, NativeExitCode: record.NativeExitCode, StructuredOutput: record.StructuredOutput, RunID: record.RunID, CallerRunID: record.CallerRunID, Profile: record.Profile,
-		Backend: record.Backend, Model: record.Model, RequestedModel: record.RequestedModel, ObservedModel: record.ObservedModel, NativeSessionID: record.Session,
+		EnvironmentDirectory: record.EnvironmentDirectory,
+		Backend:              record.Backend, Model: record.Model, RequestedModel: record.RequestedModel, ObservedModel: record.ObservedModel, NativeSessionID: record.Session,
 		Status: record.Status, ErrorKind: record.ErrorKind, ExitCode: exit, Report: record.Result,
 		Error: record.Error, Cleanup: record.Cleanup, Usage: usage, PartialUsage: partialUsage, CostUSD: record.CostUSD,
 		ElapsedMS: record.ElapsedMs, RawRecord: raw}

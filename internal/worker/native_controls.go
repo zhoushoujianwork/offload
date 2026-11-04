@@ -38,7 +38,20 @@ func (n *NativeControls) Validate(backend, resume string, toolsDisabled bool) er
 	if n == nil {
 		return nil
 	}
-	if backend != "claude" {
+	if backend == "codex" {
+		if n.Executable != "" || n.ProfileDirectory != "" || n.FreshSessionID != "" || len(n.StreamEnvironment) > 0 {
+			return errors.New("Codex host execution uses the Offload-selected executable, account and generated session identity; Claude process controls are unsupported")
+		}
+		if toolsDisabled || n.Extraction || n.RestrictedReadOnly || len(n.AllowedTools) > 0 {
+			return errors.New("Codex host controls cannot enforce tool-free execution or native tool allowlists")
+		}
+		if n.SkillDirectory != "" || len(n.Images) > 0 || n.JSONSchema != "" || n.ForkFromSessionID != "" {
+			return errors.New("Codex host controls do not yet support Skills, images, structured extraction or forks")
+		}
+		if n.PermissionMode != "bypassPermissions" {
+			return errors.New("Codex host controls require explicit owner bypassPermissions")
+		}
+	} else if backend != "claude" {
 		return errors.New("selected backend does not support host native controls")
 	}
 	for k, v := range n.StreamEnvironment {
