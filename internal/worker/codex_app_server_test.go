@@ -2,6 +2,7 @@ package worker
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -177,6 +178,122 @@ func TestCodexAppServerEnforcesExactSkillSet(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestCodexAppServerCarriesValidatedSkillStatesIntoThreadConfig(t *testing.T) {
+	selected := t.TempDir()
+	selectedPath := filepath.Join(selected, "SKILL.md")
+	nested := filepath.Join(selected, "nested")
+	nestedPath := filepath.Join(nested, "SKILL.md")
+	ambient := t.TempDir()
+	ambientPath := filepath.Join(ambient, "SKILL.md")
+	if err := os.Mkdir(nested, 0700); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{selectedPath, nestedPath, ambientPath} {
+		if err := os.WriteFile(path, []byte("fixture"), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	initial := "[" + skillDeclaration(selectedPath, true, "") + "," + skillDeclaration(nestedPath, true, "") + "," + skillDeclaration(ambientPath, true, "") + "]"
+	final := "[" + skillDeclaration(selectedPath, true, "") + "," + skillDeclaration(nestedPath, false, "") + "," + skillDeclaration(ambientPath, false, "") + "]"
+	canonicalSelected, _ := filepath.EvalSymlinks(selectedPath)
+	canonicalNested, _ := filepath.EvalSymlinks(nestedPath)
+	canonicalAmbient, _ := filepath.EvalSymlinks(ambientPath)
+	want := map[string]bool{canonicalSelected: true, canonicalNested: false, canonicalAmbient: false}
+	for _, resume := range []bool{false, true} {
+		name := "start"
+		method := "thread/start"
+		if resume {
+			name, method = "resume", "thread/resume"
+		}
+		t.Run(name, func(t *testing.T) {
+			bin, log := appServerInventoryFixture(t, initial, final, "", completedAppServerTail)
+			o := appServerOpts(t, selected)
+			o.Native.JSONSchema = ""
+			if resume {
+				o.Resume = "original-thread-id"
+			}
+			a := runAttempt(context.Background(), bin, o, "", "", o.Timeout, nil, hooks{})
+			if a.runErr != nil || a.s.Result == nil {
+				t.Fatalf("%+v", a)
+			}
+			config := capturedThreadSkillConfig(t, log, method)
+			if config == nil || len(*config) != len(want) {
+				t.Fatalf("thread Skill config is not the validated inventory: %+v", config)
+			}
+			for _, state := range *config {
+				if enabled, ok := want[state.Path]; !ok || enabled != state.Enabled {
+					t.Fatalf("unexpected thread Skill state: %+v want=%+v", state, want)
+				}
+			}
+		})
+	}
+}
+
+func TestCodexAppServerCarriesNonNilEmptySkillConfig(t *testing.T) {
+	for _, resume := range []bool{false, true} {
+		name := "start"
+		method := "thread/start"
+		if resume {
+			name, method = "resume", "thread/resume"
+		}
+		t.Run(name, func(t *testing.T) {
+			bin, log := appServerInventoryFixture(t, `[]`, `[]`, "", completedAppServerTail)
+			o := appServerOpts(t, t.TempDir())
+			o.Native.SkillRoots = nil
+			o.Native.JSONSchema = ""
+			if resume {
+				o.Resume = "original-thread-id"
+			}
+			a := runAttempt(context.Background(), bin, o, "", "", o.Timeout, nil, hooks{})
+			if a.runErr != nil || a.s.Result == nil {
+				t.Fatalf("%+v", a)
+			}
+			config := capturedThreadSkillConfig(t, log, method)
+			if config == nil || len(*config) != 0 {
+				t.Fatalf("empty validated Skill config was not serialized as []: %+v", config)
+			}
+		})
+	}
+}
+
+func capturedThreadSkillConfig(t *testing.T, log, method string) *[]appServerSkillConfig {
+	t.Helper()
+	raw, err := os.ReadFile(log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, line := range strings.Split(string(raw), "\n") {
+		var request struct {
+			Method string `json:"method"`
+			Params struct {
+				Config struct {
+					Skills struct {
+						Bundled struct {
+							Enabled *bool `json:"enabled"`
+						} `json:"bundled"`
+						Config *[]appServerSkillConfig `json:"config"`
+					} `json:"skills"`
+					Cloud struct {
+						Skills struct {
+							Enabled *bool `json:"enabled"`
+						} `json:"skills"`
+					} `json:"cloud"`
+				} `json:"config"`
+			} `json:"params"`
+		}
+		if json.Unmarshal([]byte(line), &request) == nil && request.Method == method {
+			bundled := request.Params.Config.Skills.Bundled.Enabled
+			cloud := request.Params.Config.Cloud.Skills.Enabled
+			if bundled == nil || *bundled || cloud == nil || *cloud {
+				t.Fatalf("%s did not explicitly disable bundled/cloud Skills: %s", method, line)
+			}
+			return request.Params.Config.Skills.Config
+		}
+	}
+	t.Fatalf("%s request missing from %s", method, raw)
+	return nil
 }
 
 func TestCodexAppServerDisablesBuiltinAndPluginSkills(t *testing.T) {

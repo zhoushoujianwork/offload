@@ -40,6 +40,7 @@ type appServerParser struct {
 	turnID          string
 	report          strings.Builder
 	completedReport string
+	skillConfig     []appServerSkillConfig
 	o               Opts
 }
 
@@ -279,12 +280,8 @@ func (p *appServerParser) initialize() error {
 	if err := p.initializeExactSkills(); err != nil {
 		return err
 	}
-	config := appServerConfig(p.o.Native.MCPServers)
 	roots := append([]string{p.o.Dir}, p.o.AddDirs...)
-	params := map[string]any{"cwd": p.o.Dir, "developerInstructions": string(p.o.Instructions), "approvalPolicy": "never", "sandbox": "danger-full-access", "runtimeWorkspaceRoots": roots, "config": config}
-	if p.o.Model != "" {
-		params["model"] = p.o.Model
-	}
+	params := appServerThreadParams(p.o, p.skillConfig)
 	var threadRaw json.RawMessage
 	var err error
 	if p.o.Resume != "" {
@@ -386,6 +383,11 @@ func (p *appServerParser) initializeExactSkills() error {
 	if err := validateExactAppServerSkills(final, manifest.Paths); err != nil {
 		return err
 	}
+	p.skillConfig = make([]appServerSkillConfig, len(final))
+	for i, skill := range final {
+		p.skillConfig[i] = appServerSkillConfig{Path: skill.Path, Enabled: skill.Enabled}
+	}
+	sort.Slice(p.skillConfig, func(i, j int) bool { return p.skillConfig[i].Path < p.skillConfig[j].Path })
 	return nil
 }
 
@@ -403,12 +405,27 @@ func (p *appServerParser) writeSkillConfig(path string, enabled bool) error {
 	return nil
 }
 
-func appServerConfig(servers []NativeMCPServer) map[string]any {
+type appServerSkillConfig struct {
+	Path    string `json:"path"`
+	Enabled bool   `json:"enabled"`
+}
+
+func appServerConfig(servers []NativeMCPServer, skills []appServerSkillConfig) map[string]any {
 	mcp := make(map[string]any, len(servers))
 	for _, s := range servers {
 		mcp[s.Name] = map[string]any{"command": s.Command, "args": s.Args, "required": true}
 	}
-	return map[string]any{"mcp_servers": mcp, "plugins": map[string]any{}, "apps": map[string]any{"_default": map[string]any{"enabled": false}}, "skills": map[string]any{"bundled": map[string]any{"enabled": false}}, "cloud": map[string]any{"skills": map[string]any{"enabled": false}}, "project_doc_max_bytes": 0, "allow_login_shell": false}
+	config := append([]appServerSkillConfig{}, skills...)
+	return map[string]any{"mcp_servers": mcp, "plugins": map[string]any{}, "apps": map[string]any{"_default": map[string]any{"enabled": false}}, "skills": map[string]any{"bundled": map[string]any{"enabled": false}, "config": config}, "cloud": map[string]any{"skills": map[string]any{"enabled": false}}, "project_doc_max_bytes": 0, "allow_login_shell": false}
+}
+
+func appServerThreadParams(o Opts, skills []appServerSkillConfig) map[string]any {
+	roots := append([]string{o.Dir}, o.AddDirs...)
+	params := map[string]any{"cwd": o.Dir, "developerInstructions": string(o.Instructions), "approvalPolicy": "never", "sandbox": "danger-full-access", "runtimeWorkspaceRoots": roots, "config": appServerConfig(o.Native.MCPServers, skills)}
+	if o.Model != "" {
+		params["model"] = o.Model
+	}
+	return params
 }
 
 type skillManifest struct {

@@ -16,8 +16,8 @@ import (
 	"time"
 )
 
-// This opt-in probe exercises only app-server Skill configuration. It never
-// starts or resumes a thread and therefore never authenticates or calls a model.
+// This opt-in probe exercises Skill configuration and an ephemeral metadata-only
+// thread/start. It never starts a turn, authenticates or calls a model.
 func TestInstalledCodexAppServerExactSkillsModelFree(t *testing.T) {
 	if os.Getenv("OFFLOAD_APP_SERVER_NATIVE") != "1" {
 		t.Skip("explicit installed-native protocol probe only")
@@ -184,14 +184,14 @@ func runInstalledSkillProbe(t *testing.T, bin string, o Opts) ([]discoveredSkill
 		return nil, stderr.String(), errors.Join(err, finish(true))
 	}
 
-	type inventoryResult struct {
+	type rpcResult struct {
 		raw json.RawMessage
 		err error
 	}
-	listed := make(chan inventoryResult, 1)
+	listed := make(chan rpcResult, 1)
 	go func() {
 		raw, requestErr := parser.request("skills/list", map[string]any{"cwds": []string{o.Dir}, "forceReload": true})
-		listed <- inventoryResult{raw: raw, err: requestErr}
+		listed <- rpcResult{raw: raw, err: requestErr}
 	}()
 	var raw json.RawMessage
 	select {
@@ -205,9 +205,37 @@ func runInstalledSkillProbe(t *testing.T, bin string, o Opts) ([]discoveredSkill
 		return nil, stderr.String(), errors.Join(err, finish(true))
 	}
 	inventory, err := parseAppServerSkills(raw)
+	if err != nil {
+		return nil, stderr.String(), errors.Join(err, finish(true))
+	}
+	started := make(chan rpcResult, 1)
+	go func() {
+		threadRaw, requestErr := parser.request("thread/start", appServerThreadParams(o, parser.skillConfig))
+		started <- rpcResult{raw: threadRaw, err: requestErr}
+	}()
+	select {
+	case result := <-started:
+		raw, err = result.raw, result.err
+	case <-ctx.Done():
+		parser.fail(ctx.Err())
+		err = ctx.Err()
+	}
+	if err == nil {
+		var thread struct {
+			Thread struct {
+				ID string `json:"id"`
+			} `json:"thread"`
+		}
+		if json.Unmarshal(raw, &thread) != nil || thread.Thread.ID == "" {
+			err = errors.New("installed app-server returned an invalid ephemeral thread")
+		}
+	}
+	if err != nil {
+		return nil, stderr.String(), errors.Join(err, finish(true))
+	}
 	finishErr := finish(false)
-	if err != nil || finishErr != nil {
-		return nil, stderr.String(), errors.Join(err, finishErr)
+	if finishErr != nil {
+		return nil, stderr.String(), finishErr
 	}
 	if err := os.Remove(filepath.Join(o.CodexHome, "config.toml")); err != nil && !os.IsNotExist(err) {
 		return nil, stderr.String(), err

@@ -127,10 +127,13 @@ discovery, explicitly enables every selected file and disables every other
 discovered file (including nested, bundled, system
 and plugin declarations), then reloads again. The enabled set must equal the
 declared canonical paths exactly, with no duplicate paths, plugin entries or
-discovery errors. Unsupported writes, malformed responses and state mismatches
-fail closed without starting or resuming a thread. Ambient apps, cloud and
-bundled Skills, plugins, project instructions and MCP configuration are replaced
-by the explicit request configuration. Images, forks, tool-free execution,
+discovery errors. The validated canonical enabled and disabled states are carried
+explicitly in `config.skills.config` for both thread start and resume; arbitrary
+native config-file contents are never forwarded. Unsupported writes, malformed
+responses and state mismatches fail closed without starting or resuming a thread.
+Ambient apps, cloud and bundled Skills, plugins, project instructions and MCP
+configuration are replaced by the explicit request configuration. Images,
+forks, tool-free execution,
 extraction, restricted reads and tool allowlists remain unsupported on this path.
 
 App-server raw callbacks carry `NativeProtocol="codex-app-server"` and preserve
