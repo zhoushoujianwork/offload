@@ -118,13 +118,23 @@ output-token limit; it is applied consistently to child environment and settings
 Codex also has an explicit `CodexAppServer` mode. It requires caller context,
 owner `bypassPermissions`, an isolated environment and the Offload-selected
 binary/account/model; opaque executable and profile overrides remain rejected.
-`SkillRoots` contains only clean absolute roots approved by the caller. Before a
-business turn, Offload initializes the stdio protocol, sets those extra roots,
-forces a Skills reload and rejects discovery errors, plugin Skills, or any enabled
-Skill whose real path is outside the approved roots. Ambient apps, plugins,
-bundled Skills, project instructions and MCP configuration are replaced by the
-explicit request configuration. Images, forks, tool-free execution, extraction,
-restricted reads and tool allowlists remain unsupported on this path.
+Each clean absolute directory in `SkillRoots` selects exactly its own regular
+`SKILL.md`; descendants are not implicitly selected. Offload mounts those
+caller-approved external directories as native extra roots. Before a business
+thread, Offload canonicalizes that exact manifest, initializes the stdio protocol,
+sets the declared roots (or an empty array for an empty manifest), reloads
+discovery, explicitly enables every selected file and disables every other
+discovered file (including nested, bundled, system
+and plugin declarations), then reloads again. The enabled set must equal the
+declared canonical paths exactly, with no duplicate paths, plugin entries or
+discovery errors. The validated canonical enabled and disabled states are carried
+explicitly in `config.skills.config` for both thread start and resume; arbitrary
+native config-file contents are never forwarded. Unsupported writes, malformed
+responses and state mismatches fail closed without starting or resuming a thread.
+Ambient apps, cloud and bundled Skills, plugins, project instructions and MCP
+configuration are replaced by the explicit request configuration. Images,
+forks, tool-free execution,
+extraction, restricted reads and tool allowlists remain unsupported on this path.
 
 App-server raw callbacks carry `NativeProtocol="codex-app-server"` and preserve
 the original JSON-RPC method and params. Matching thread/turn completion is the

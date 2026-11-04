@@ -70,3 +70,15 @@ func TestCodexAppServerControlsRemainExplicit(t *testing.T) {
 		}
 	}
 }
+
+func TestCodexAppServerLaunchDisablesAmbientSkillSources(t *testing.T) {
+	args := strings.Join(buildCodexAppServerArgs(Opts{}), "\n")
+	for _, expected := range []string{"--strict-config", "skills.bundled.enabled=false", "cloud.skills.enabled=false", "apps._default.enabled=false", "plugins={}"} {
+		if !strings.Contains(args, expected) {
+			t.Fatalf("missing %q in %s", expected, args)
+		}
+	}
+	if strings.Contains(args, "--ignore-user-config") {
+		t.Fatal("unsupported ignore-user-config was added to app-server")
+	}
+}

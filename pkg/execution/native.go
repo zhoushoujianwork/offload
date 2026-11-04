@@ -12,10 +12,12 @@ type NativeControls struct {
 	CallerContext, Extraction, RestrictedReadOnly                   bool
 	CodexAppServer                                                  bool
 	StreamEnvironment                                               map[string]string
-	SkillRoots                                                      []string
-	AllowedTools                                                    []string
-	MCPServers                                                      []MCPServer
-	Images                                                          []Image
+	// SkillRoots mounts and selects exact directories that each contain their own
+	// regular SKILL.md. Descendant directories are not implicitly selected.
+	SkillRoots   []string
+	AllowedTools []string
+	MCPServers   []MCPServer
+	Images       []Image
 }
 
 type MCPServer struct {

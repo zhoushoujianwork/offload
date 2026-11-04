@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -39,6 +40,7 @@ type appServerParser struct {
 	turnID          string
 	report          strings.Builder
 	completedReport string
+	skillConfig     []appServerSkillConfig
 	o               Opts
 }
 
@@ -275,30 +277,13 @@ func (p *appServerParser) start() {
 }
 
 func (p *appServerParser) initialize() error {
-	if _, err := p.request("initialize", map[string]any{"clientInfo": map[string]any{"name": "offload", "title": "Offload", "version": "1"}, "capabilities": map[string]any{"experimentalApi": true}}); err != nil {
+	if err := p.initializeExactSkills(); err != nil {
 		return err
 	}
-	if err := p.write(map[string]any{"jsonrpc": "2.0", "method": "initialized", "params": map[string]any{}}); err != nil {
-		return err
-	}
-	skillRoots := append([]string{}, p.o.Native.SkillRoots...)
-	if _, err := p.request("skills/extraRoots/set", map[string]any{"extraRoots": skillRoots}); err != nil {
-		return err
-	}
-	listed, err := p.request("skills/list", map[string]any{"cwds": []string{p.o.Dir}, "forceReload": true})
-	if err != nil {
-		return err
-	}
-	if err := validateAppServerSkills(listed, p.o.Native.SkillRoots); err != nil {
-		return err
-	}
-	config := appServerConfig(p.o.Native.MCPServers)
 	roots := append([]string{p.o.Dir}, p.o.AddDirs...)
-	params := map[string]any{"cwd": p.o.Dir, "developerInstructions": string(p.o.Instructions), "approvalPolicy": "never", "sandbox": "danger-full-access", "runtimeWorkspaceRoots": roots, "config": config}
-	if p.o.Model != "" {
-		params["model"] = p.o.Model
-	}
+	params := appServerThreadParams(p.o, p.skillConfig)
 	var threadRaw json.RawMessage
+	var err error
 	if p.o.Resume != "" {
 		params["threadId"] = p.o.Resume
 		threadRaw, err = p.request("thread/resume", params)
@@ -343,68 +328,225 @@ func (p *appServerParser) initialize() error {
 	return nil
 }
 
-func appServerConfig(servers []NativeMCPServer) map[string]any {
+func (p *appServerParser) initializeExactSkills() error {
+	manifest, err := exactSkillManifest(p.o.Native.SkillRoots)
+	if err != nil {
+		return err
+	}
+	if _, err := p.request("initialize", map[string]any{"clientInfo": map[string]any{"name": "offload", "title": "Offload", "version": "1"}, "capabilities": map[string]any{"experimentalApi": true}}); err != nil {
+		return err
+	}
+	if err := p.write(map[string]any{"jsonrpc": "2.0", "method": "initialized", "params": map[string]any{}}); err != nil {
+		return err
+	}
+	extraRoots := append([]string{}, p.o.Native.SkillRoots...)
+	if _, err := p.request("skills/extraRoots/set", map[string]any{"extraRoots": extraRoots}); err != nil {
+		return err
+	}
+	listed, err := p.request("skills/list", map[string]any{"cwds": []string{p.o.Dir}, "forceReload": true})
+	if err != nil {
+		return err
+	}
+	discovered, err := parseAppServerSkills(listed)
+	if err != nil {
+		return err
+	}
+	approved := make(map[string]bool, len(manifest.Paths))
+	for _, path := range manifest.Paths {
+		approved[path] = true
+	}
+	for _, skill := range discovered {
+		if approved[skill.Path] && skill.Plugin {
+			return errors.New("an approved Skill path is owned by a plugin")
+		}
+	}
+	for _, path := range manifest.Paths {
+		if err := p.writeSkillConfig(path, true); err != nil {
+			return err
+		}
+	}
+	for _, skill := range discovered {
+		if !approved[skill.Path] {
+			if err := p.writeSkillConfig(skill.Path, false); err != nil {
+				return err
+			}
+		}
+	}
+	listed, err = p.request("skills/list", map[string]any{"cwds": []string{p.o.Dir}, "forceReload": true})
+	if err != nil {
+		return err
+	}
+	final, err := parseAppServerSkills(listed)
+	if err != nil {
+		return err
+	}
+	if err := validateExactAppServerSkills(final, manifest.Paths); err != nil {
+		return err
+	}
+	p.skillConfig = make([]appServerSkillConfig, len(final))
+	for i, skill := range final {
+		p.skillConfig[i] = appServerSkillConfig{Path: skill.Path, Enabled: skill.Enabled}
+	}
+	sort.Slice(p.skillConfig, func(i, j int) bool { return p.skillConfig[i].Path < p.skillConfig[j].Path })
+	return nil
+}
+
+func (p *appServerParser) writeSkillConfig(path string, enabled bool) error {
+	raw, err := p.request("skills/config/write", map[string]any{"path": path, "enabled": enabled})
+	if err != nil {
+		return err
+	}
+	var response struct {
+		EffectiveEnabled *bool `json:"effectiveEnabled"`
+	}
+	if json.Unmarshal(raw, &response) != nil || response.EffectiveEnabled == nil || *response.EffectiveEnabled != enabled {
+		return errors.New("Codex app-server returned an invalid Skill configuration result")
+	}
+	return nil
+}
+
+type appServerSkillConfig struct {
+	Path    string `json:"path"`
+	Enabled bool   `json:"enabled"`
+}
+
+func appServerConfig(servers []NativeMCPServer, skills []appServerSkillConfig) map[string]any {
 	mcp := make(map[string]any, len(servers))
 	for _, s := range servers {
 		mcp[s.Name] = map[string]any{"command": s.Command, "args": s.Args, "required": true}
 	}
-	return map[string]any{"mcp_servers": mcp, "plugins": map[string]any{}, "apps": map[string]any{"_default": map[string]any{"enabled": false}}, "skills": map[string]any{"bundled": map[string]any{"enabled": false}}, "project_doc_max_bytes": 0, "allow_login_shell": false}
+	config := append([]appServerSkillConfig{}, skills...)
+	return map[string]any{"mcp_servers": mcp, "plugins": map[string]any{}, "apps": map[string]any{"_default": map[string]any{"enabled": false}}, "skills": map[string]any{"bundled": map[string]any{"enabled": false}, "config": config}, "cloud": map[string]any{"skills": map[string]any{"enabled": false}}, "project_doc_max_bytes": 0, "allow_login_shell": false}
 }
 
-func validateAppServerSkills(raw json.RawMessage, roots []string) error {
-	approved := make([]string, len(roots))
-	for i, root := range roots {
-		st, err := os.Stat(root)
-		if err != nil || !st.IsDir() {
-			return errors.New("approved Skill root must exist and be a directory")
+func appServerThreadParams(o Opts, skills []appServerSkillConfig) map[string]any {
+	roots := append([]string{o.Dir}, o.AddDirs...)
+	params := map[string]any{"cwd": o.Dir, "developerInstructions": string(o.Instructions), "approvalPolicy": "never", "sandbox": "danger-full-access", "runtimeWorkspaceRoots": roots, "config": appServerConfig(o.Native.MCPServers, skills)}
+	if o.Model != "" {
+		params["model"] = o.Model
+	}
+	return params
+}
+
+type skillManifest struct {
+	Paths []string
+}
+
+func exactSkillManifest(roots []string) (skillManifest, error) {
+	manifest := skillManifest{Paths: []string{}}
+	seen := make(map[string]bool, len(roots))
+	for _, root := range roots {
+		if !filepath.IsAbs(root) || filepath.Clean(root) != root || strings.ContainsRune(root, 0) {
+			return skillManifest{}, errors.New("Skill roots must be clean absolute paths")
 		}
-		approved[i], err = filepath.EvalSymlinks(root)
+		canonicalRoot, err := filepath.EvalSymlinks(root)
 		if err != nil {
-			return errors.New("approved Skill root cannot be resolved")
+			return skillManifest{}, errors.New("approved Skill root cannot be resolved")
 		}
+		st, err := os.Stat(canonicalRoot)
+		if err != nil || !st.IsDir() {
+			return skillManifest{}, errors.New("approved Skill root must exist and be a directory")
+		}
+		path := filepath.Join(canonicalRoot, "SKILL.md")
+		st, err = os.Lstat(path)
+		if err != nil || !st.Mode().IsRegular() {
+			return skillManifest{}, errors.New("approved Skill root must contain its own regular SKILL.md")
+		}
+		if seen[path] {
+			return skillManifest{}, errors.New("approved Skill paths must be canonically unique")
+		}
+		seen[path] = true
+		manifest.Paths = append(manifest.Paths, path)
+	}
+	sort.Strings(manifest.Paths)
+	return manifest, nil
+}
+
+type discoveredSkill struct {
+	Path    string
+	Enabled bool
+	Plugin  bool
+}
+
+func parseAppServerSkills(raw json.RawMessage) ([]discoveredSkill, error) {
+	if len(raw) == 0 || len(raw) > maxLineKept {
+		return nil, errors.New("Codex app-server returned an invalid Skills list")
 	}
 	var list struct {
-		Data []struct {
-			Errors []any
-			Skills []struct {
-				Enabled  bool
+		Data *[]struct {
+			Errors *[]json.RawMessage `json:"errors"`
+			Skills *[]struct {
+				Enabled  *bool
 				Path     string
 				PluginID json.RawMessage `json:"pluginId"`
-			}
+			} `json:"skills"`
 		}
 	}
-	if json.Unmarshal(raw, &list) != nil {
-		return errors.New("Codex app-server returned an invalid Skills list")
+	if json.Unmarshal(raw, &list) != nil || list.Data == nil || len(*list.Data) != 1 {
+		return nil, errors.New("Codex app-server returned an invalid Skills list")
 	}
-	for _, entry := range list.Data {
-		if len(entry.Errors) > 0 {
-			return errors.New("Codex app-server reported a Skill discovery error")
+	var skills []discoveredSkill
+	seen := map[string]bool{}
+	for _, entry := range *list.Data {
+		if entry.Errors == nil || entry.Skills == nil {
+			return nil, errors.New("Codex app-server returned a malformed Skills inventory")
 		}
-		for _, skill := range entry.Skills {
-			if !skill.Enabled {
-				continue
-			}
-			if len(skill.PluginID) > 0 && string(skill.PluginID) != "null" {
-				return errors.New("plugin-provided Skills are not allowed")
-			}
-			if !filepath.IsAbs(skill.Path) {
-				return errors.New("enabled Skill path is not absolute")
+		if len(*entry.Errors) > 0 {
+			return nil, errors.New("Codex app-server reported a Skill discovery error")
+		}
+		if len(*entry.Skills) > 4096 || len(skills)+len(*entry.Skills) > 4096 {
+			return nil, errors.New("Codex app-server Skills inventory exceeds limit")
+		}
+		for _, skill := range *entry.Skills {
+			if skill.Enabled == nil || len(skill.PluginID) == 0 || !filepath.IsAbs(skill.Path) || filepath.Clean(skill.Path) != skill.Path || filepath.Base(skill.Path) != "SKILL.md" {
+				return nil, errors.New("Codex app-server returned a malformed Skill declaration")
 			}
 			path, err := filepath.EvalSymlinks(skill.Path)
-			if err != nil {
-				return errors.New("enabled Skill path is unreadable")
+			if err != nil || filepath.Base(path) != "SKILL.md" {
+				return nil, errors.New("discovered Skill path cannot be resolved")
 			}
-			inside := false
-			for _, root := range approved {
-				rel, e := filepath.Rel(root, path)
-				if e == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-					inside = true
-					break
+			st, err := os.Lstat(path)
+			if err != nil || !st.Mode().IsRegular() {
+				return nil, errors.New("discovered Skill path is not a regular file")
+			}
+			if seen[path] {
+				return nil, errors.New("Codex app-server returned a duplicate canonical Skill path")
+			}
+			seen[path] = true
+			plugin := string(skill.PluginID) != "null"
+			if plugin {
+				var pluginID string
+				if json.Unmarshal(skill.PluginID, &pluginID) != nil || pluginID == "" {
+					return nil, errors.New("Codex app-server returned a malformed Skill plugin identity")
 				}
 			}
-			if !inside {
-				return fmt.Errorf("enabled Skill is outside approved roots: %s", skill.Path)
-			}
+			skills = append(skills, discoveredSkill{Path: path, Enabled: *skill.Enabled, Plugin: plugin})
+		}
+	}
+	return skills, nil
+}
+
+func validateExactAppServerSkills(skills []discoveredSkill, paths []string) error {
+	want := make(map[string]bool, len(paths))
+	for _, path := range paths {
+		want[path] = true
+	}
+	got := make(map[string]bool, len(paths))
+	for _, skill := range skills {
+		if !skill.Enabled {
+			continue
+		}
+		if skill.Plugin {
+			return errors.New("plugin-provided Skill remained enabled")
+		}
+		if !want[skill.Path] {
+			return fmt.Errorf("unexpected Skill remained enabled: %s", skill.Path)
+		}
+		got[skill.Path] = true
+	}
+	for _, path := range paths {
+		if !got[path] {
+			return fmt.Errorf("approved Skill was not enabled: %s", path)
 		}
 	}
 	return nil
