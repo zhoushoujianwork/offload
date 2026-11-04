@@ -10,7 +10,9 @@ type NativeControls struct {
 	Executable, ProfileDirectory, FreshSessionID, ForkFromSessionID string
 	PermissionMode, JSONSchema, SkillDirectory                      string
 	CallerContext, Extraction, RestrictedReadOnly                   bool
+	CodexAppServer                                                  bool
 	StreamEnvironment                                               map[string]string
+	SkillRoots                                                      []string
 	AllowedTools                                                    []string
 	MCPServers                                                      []MCPServer
 	Images                                                          []Image
@@ -34,6 +36,7 @@ func nativeSnapshot(n *NativeControls) *worker.NativeControls {
 		FreshSessionID: n.FreshSessionID, ForkFromSessionID: n.ForkFromSessionID,
 		PermissionMode: n.PermissionMode, JSONSchema: n.JSONSchema, SkillDirectory: n.SkillDirectory,
 		CallerContext: n.CallerContext, Extraction: n.Extraction, RestrictedReadOnly: n.RestrictedReadOnly,
+		CodexAppServer: n.CodexAppServer, SkillRoots: append([]string(nil), n.SkillRoots...),
 		AllowedTools: append([]string(nil), n.AllowedTools...)}
 	out.StreamEnvironment = make(map[string]string, len(n.StreamEnvironment))
 	for k, v := range n.StreamEnvironment {

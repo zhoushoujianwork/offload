@@ -100,6 +100,17 @@ func buildCodexArgs(o Opts) []string {
 	return append(args, "-") // instructions and task go through stdin, never argv
 }
 
+func buildCodexAppServerArgs(o Opts) []string {
+	args := []string{"-c", `approval_policy="never"`, "-c", `sandbox_mode="danger-full-access"`, "-c", "project_doc_max_bytes=0", "-c", "plugins={}", "-c", "apps._default.enabled=false", "-c", "skills.bundled.enabled=false", "-c", "allow_login_shell=false", "-c", `cli_auth_credentials_store="file"`}
+	if o.Profile.ReasoningEffort != "" {
+		args = append(args, "-c", "model_reasoning_effort="+strconv.Quote(o.Profile.ReasoningEffort))
+	}
+	if o.Profile.ServiceTier != "" {
+		args = append(args, "-c", "service_tier="+strconv.Quote(o.Profile.ServiceTier))
+	}
+	return append(args, "app-server")
+}
+
 // codexParser normalizes Codex JSONL events into the shared progress/result model.
 // Usage is session-cumulative; run accounting is applied after the process exits.
 type codexParser struct {

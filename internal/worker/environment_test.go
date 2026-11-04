@@ -81,3 +81,26 @@ func TestIsolatedEnvironmentRejectsForeignWorkspaceAndSymlinkAuth(t *testing.T) 
 		t.Fatal("symlink authentication accepted")
 	}
 }
+
+func TestNewEnvironmentAtIsExclusiveAndCleansOnlyItsCreation(t *testing.T) {
+	parent := t.TempDir()
+	parent, _ = filepath.EvalSymlinks(parent)
+	root := filepath.Join(parent, "owned")
+	got, err := NewEnvironmentAt(root)
+	if err != nil || got != root {
+		t.Fatalf("root=%q err=%v", got, err)
+	}
+	if err := environmentDirectory(root); err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(root, "keep")
+	if err := os.WriteFile(marker, []byte("user"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := NewEnvironmentAt(root); err == nil {
+		t.Fatal("existing root accepted")
+	}
+	if raw, err := os.ReadFile(marker); err != nil || string(raw) != "user" {
+		t.Fatal("existing root was changed")
+	}
+}

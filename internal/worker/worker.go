@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/url"
 	"os"
@@ -311,6 +312,9 @@ func Run(ctx context.Context, o Opts) (rec history.Record, err error) {
 	rec = history.Record{TS: started.Format("2006-01-02 15:04:05"), CodexAccount: o.Profile.CodexAccount, CodexHome: o.CodexHome, Profile: o.ProfileName, Model: o.Model,
 		EnvironmentDirectory: o.EnvironmentDirectory,
 		RunID:                o.RunID, CallerRunID: o.CallerRunID, Caller: history.CallerOrUnspecified(o.Caller), ExecutionPolicy: policyName(o.ExecutionPolicy), Backend: o.Profile.BackendName(), Dir: o.Dir, AddDirs: slices.Clone(o.AddDirs), Task: o.Task, Status: "error", CostIsEstimate: true}
+	if o.Native != nil && o.Native.CodexAppServer {
+		rec.NativeProtocol = codexAppServerProtocol
+	}
 	if rec.Backend == "claude" {
 		rec.ClaudeHome = os.Getenv("CLAUDE_CONFIG_DIR")
 		if o.Native != nil && o.Native.ProfileDirectory != "" {
@@ -356,9 +360,13 @@ func Run(ctx context.Context, o Opts) (rec history.Record, err error) {
 	var leftover *proc.Group // worker processes that survived cleanup
 	nativeSessionObserved := false
 	defer func() {
-		if rec.Backend == "codex" {
+		if rec.Backend == "codex" && rec.NativeProtocol != codexAppServerProtocol {
 			resolveCodexModel(&rec, o.Model, o.CodexHome)
 			rec.ObservedModel = codexSessionModel(rec.Session, o.CodexHome)
+		}
+		if rec.NativeProtocol == codexAppServerProtocol {
+			rec.Usage, rec.CumulativeUsage, rec.CostUSD = nil, nil, nil
+			rec.UsageSource, rec.UsageUnavailable, rec.CostUnavailable = "", "app-server emitted no trusted terminal usage", "app-server emitted no trusted native cost"
 		}
 		elapsed := time.Since(started).Milliseconds()
 		rec.ElapsedMs = &elapsed
@@ -400,7 +408,7 @@ func Run(ctx context.Context, o Opts) (rec history.Record, err error) {
 			rec.Cleanup += "; their worker slot stays unavailable until they exit"
 		}
 		// Publish only after the exit code is final, or watch/status would show 0 for a failure.
-		if nativeSessionObserved && nativeusage.Needed(rec) && rec.Session != "" && leftover == nil {
+		if rec.NativeProtocol != codexAppServerProtocol && nativeSessionObserved && nativeusage.Needed(rec) && rec.Session != "" && leftover == nil {
 			if recovered, ok, _ := nativeusage.NewReader().Recover(rec); ok {
 				rec = recovered
 			}
@@ -420,6 +428,10 @@ func Run(ctx context.Context, o Opts) (rec history.Record, err error) {
 	if o.Profile.BackendName() == "codex" && o.Native != nil && o.Native.CallerContext && len(o.Instructions) > 0 && o.EnvironmentDirectory == "" {
 		rec.ErrorKind = "configuration"
 		return rec, errors.New("Codex native instructions require an isolated execution environment")
+	}
+	if o.Native != nil && o.Native.CodexAppServer && o.EnvironmentDirectory == "" {
+		rec.ErrorKind = "configuration"
+		return rec, errors.New("Codex app-server requires an isolated execution environment")
 	}
 	if o.toolsNotEnforced {
 		rec.ToolRestriction = history.ToolRestrictionNotEnforced
@@ -526,8 +538,21 @@ func Run(ctx context.Context, o Opts) (rec history.Record, err error) {
 	}
 	if o.Profile.BackendName() == "codex" {
 		defer func() {
-			applyCodexAccounting(&rec, s, a.baseline, a.baselineError, o, a.runErr == nil && a.cause == nil)
+			if rec.NativeProtocol != codexAppServerProtocol {
+				applyCodexAccounting(&rec, s, a.baseline, a.baselineError, o, a.runErr == nil && a.cause == nil)
+			}
 		}()
+	}
+	if rec.NativeProtocol == codexAppServerProtocol {
+		rec.ObservedModel = s.ObservedModel
+		rec.Model = s.ObservedModel
+		if s.ObservedModel == "" {
+			rec.ModelSource, rec.ModelUnavailable = "unknown", "app-server emitted no native model evidence"
+		} else {
+			rec.ModelSource = "native_app_server"
+		}
+		rec.Usage, rec.CumulativeUsage, rec.CostUSD = nil, nil, nil
+		rec.UsageSource, rec.UsageUnavailable, rec.CostUnavailable = "", "app-server emitted no trusted terminal usage", "app-server emitted no trusted native cost"
 	}
 	rec.Session, rec.Turns, rec.Denials = s.Session, s.ToolCalls, s.Denials
 	stopped := errors.Is(a.cause, errIdle) || errors.Is(a.cause, context.DeadlineExceeded)
@@ -604,7 +629,9 @@ func Run(ctx context.Context, o Opts) (rec history.Record, err error) {
 	rec.Session, rec.Turns, rec.DurationMs, rec.Result =
 		firstNonEmpty(res.SessionID, s.Session), res.NumTurns, res.DurationMs, res.Result
 	rec.StructuredOutput = res.StructuredOutput
-	applyClaudeAccounting(&rec, &res, o, a.claudeBase)
+	if rec.NativeProtocol != codexAppServerProtocol {
+		applyClaudeAccounting(&rec, &res, o, a.claudeBase)
+	}
 	if !res.IsError && a.runErr == nil && a.cause == nil {
 		rec.Status = "ok"
 	} else {
@@ -684,46 +711,64 @@ func runAttempt(ctx context.Context, bin string, o Opts, promptPath, token strin
 	defer cancelCause(nil)
 	var cmd *exec.Cmd
 	var parser eventParser = &claudeParser{}
+	var appServer *appServerParser
 	var baseline *history.TokenUsage
 	var baselineError string
 	var claudeBase claudeBaseline
 	// Not CommandContext: that kills only the worker process and never its children.
 	if o.Profile.BackendName() == "codex" {
-		baseline, baselineError = codexBaseline(o.Resume, o.CodexHome)
-		if o.Native != nil && o.Native.CallerContext {
-			if o.EnvironmentDirectory != "" {
-				if _, err := os.Lstat(filepath.Join(o.CodexHome, "config.toml")); !errors.Is(err, os.ErrNotExist) {
-					return attempt{runErr: errors.New("isolated Codex instruction profile requires an absent base config.toml")}
+		if o.Native == nil || !o.Native.CodexAppServer {
+			baseline, baselineError = codexBaseline(o.Resume, o.CodexHome)
+		}
+		if o.Native != nil && o.Native.CodexAppServer {
+			if _, err := os.Lstat(filepath.Join(o.CodexHome, "config.toml")); !errors.Is(err, os.ErrNotExist) {
+				return attempt{runErr: errors.New("isolated Codex app-server requires an absent base config.toml")}
+			}
+			cmd = exec.Command(bin, buildCodexAppServerArgs(o)...)
+			cmd.Dir = o.Dir
+			cmd.Env = o.Limits.ApplyEnv(codexChildEnv(o.baseEnvironment(), o.CodexHome, o.Profile.CodexAccount == ""))
+			stdin, pipeErr := cmd.StdinPipe()
+			if pipeErr != nil {
+				return attempt{runErr: pipeErr}
+			}
+			appServer = newAppServerParser(stdin, o)
+			parser = appServer
+		} else {
+			if o.Native != nil && o.Native.CallerContext {
+				if o.EnvironmentDirectory != "" {
+					if _, err := os.Lstat(filepath.Join(o.CodexHome, "config.toml")); !errors.Is(err, os.ErrNotExist) {
+						return attempt{runErr: errors.New("isolated Codex instruction profile requires an absent base config.toml")}
+					}
 				}
+				if err := os.MkdirAll(o.CodexHome, 0700); err != nil {
+					return attempt{runErr: err}
+				}
+				file, err := os.CreateTemp(o.CodexHome, "offload-host-*.config.toml")
+				if err != nil {
+					return attempt{runErr: err}
+				}
+				defer os.Remove(file.Name())
+				_, writeErr := file.WriteString("developer_instructions = " + strconv.Quote(string(o.Instructions)) + "\n")
+				closeErr := file.Close()
+				if err := errors.Join(writeErr, closeErr); err != nil {
+					return attempt{runErr: err}
+				}
+				o.codexHostProfile = strings.TrimSuffix(filepath.Base(file.Name()), ".config.toml")
 			}
-			if err := os.MkdirAll(o.CodexHome, 0700); err != nil {
-				return attempt{runErr: err}
-			}
-			file, err := os.CreateTemp(o.CodexHome, "offload-host-*.config.toml")
+			cmd = exec.Command(bin, buildCodexArgs(o)...)
+			cmd.Dir = o.Dir
+			cmd.Env = o.Limits.ApplyEnv(codexChildEnv(o.baseEnvironment(), o.CodexHome, o.Profile.CodexAccount == ""))
+			prompt, err := os.ReadFile(promptPath)
 			if err != nil {
 				return attempt{runErr: err}
 			}
-			defer os.Remove(file.Name())
-			_, writeErr := file.WriteString("developer_instructions = " + strconv.Quote(string(o.Instructions)) + "\n")
-			closeErr := file.Close()
-			if err := errors.Join(writeErr, closeErr); err != nil {
-				return attempt{runErr: err}
+			if o.Native != nil && o.Native.CallerContext {
+				cmd.Stdin = strings.NewReader(o.Task)
+			} else {
+				cmd.Stdin = strings.NewReader(string(prompt) + "\nTask:\n" + o.Task)
 			}
-			o.codexHostProfile = strings.TrimSuffix(filepath.Base(file.Name()), ".config.toml")
+			parser = &codexParser{}
 		}
-		cmd = exec.Command(bin, buildCodexArgs(o)...)
-		cmd.Dir = o.Dir
-		cmd.Env = o.Limits.ApplyEnv(codexChildEnv(o.baseEnvironment(), o.CodexHome, o.Profile.CodexAccount == ""))
-		prompt, err := os.ReadFile(promptPath)
-		if err != nil {
-			return attempt{runErr: err}
-		}
-		if o.Native != nil && o.Native.CallerContext {
-			cmd.Stdin = strings.NewReader(o.Task)
-		} else {
-			cmd.Stdin = strings.NewReader(string(prompt) + "\nTask:\n" + o.Task)
-		}
-		parser = &codexParser{}
 	} else {
 		if o.Resume != "" && !o.Salvage {
 			// Capture before the child starts: the result's cost and modelUsage are session totals.
@@ -787,6 +832,9 @@ func runAttempt(ctx context.Context, bin string, o Opts, promptPath, token strin
 	if err := cmd.Start(); err != nil {
 		return attempt{runErr: err}
 	}
+	if appServer != nil {
+		appServer.start()
+	}
 	group := proc.Started(cmd)
 	if h.started != nil {
 		h.started(group)
@@ -825,6 +873,10 @@ func runAttempt(ctx context.Context, bin string, o Opts, promptPath, token strin
 	case runErr = <-waited:
 	case <-ctx.Done():
 		// Timeout, idle limit or interrupt: stop the group, then collect the worker's exit.
+		if appServer != nil {
+			appServer.interruptAndWait(StopGrace / 2)
+			_ = appServer.w.Close()
+		}
 		if o.Native != nil && o.Native.CallerContext {
 			stopErr = stopOwnedTree(cmd.Process.Pid)
 			if errors.Is(stopErr, os.ErrProcessDone) {
@@ -844,7 +896,15 @@ func runAttempt(ctx context.Context, bin string, o Opts, promptPath, token strin
 			}
 		}
 	}
+	if appServer != nil && appServer.summary().Result == nil {
+		appServer.fail(io.ErrUnexpectedEOF)
+	}
 	runErr = errors.Join(runErr, stopErr)
+	if appServer != nil {
+		appServer.mu.Lock()
+		runErr = errors.Join(runErr, appServer.err)
+		appServer.mu.Unlock()
+	}
 	cause := context.Cause(ctx)
 	if h.cleaning != nil && group.Alive() {
 		h.cleaning()

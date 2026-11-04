@@ -18,26 +18,57 @@ func NewEnvironment() (string, error) {
 	if err != nil {
 		return "", err
 	}
+	if err := initializeEnvironment(root, true); err != nil {
+		return "", err
+	}
+	return filepath.EvalSymlinks(root)
+}
+
+// NewEnvironmentAt exclusively creates an environment at a caller-selected root.
+// It never removes or overwrites a root that existed before this call.
+func NewEnvironmentAt(root string) (string, error) {
+	if !filepath.IsAbs(root) || filepath.Clean(root) != root {
+		return "", errors.New("environment root must be a clean absolute path")
+	}
+	if err := initializeEnvironment(root, false); err != nil {
+		return "", err
+	}
+	return root, nil
+}
+
+func initializeEnvironment(root string, exists bool) error {
 	created, ready := root, false
 	defer func() {
 		if !ready {
 			_ = os.RemoveAll(created)
 		}
 	}()
-	root, err = filepath.EvalSymlinks(root)
-	if err != nil {
-		return "", err
+	if !exists {
+		if err := os.Mkdir(root, 0700); err != nil {
+			created = ""
+			return err
+		}
+	} else {
+		canonical, err := filepath.EvalSymlinks(root)
+		if err != nil {
+			return err
+		}
+		root, created = canonical, canonical
+	}
+	canonical, err := filepath.EvalSymlinks(root)
+	if err != nil || canonical != root {
+		return errors.New("environment root must not contain symlinks")
 	}
 	for _, name := range []string{"workspace", "home", "codex", "claude", "config", "cache", "data"} {
 		if err := os.Mkdir(filepath.Join(root, name), 0700); err != nil {
-			return "", err
+			return err
 		}
 	}
 	if err := os.WriteFile(filepath.Join(root, "environment.json"), []byte(`{"version":1}`), 0600); err != nil {
-		return "", err
+		return err
 	}
 	ready = true
-	return root, nil
+	return nil
 }
 
 func privateEnvironmentFile(path string) ([]byte, error) {

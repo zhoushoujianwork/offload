@@ -98,7 +98,7 @@ App/CLI release process. Agent-Host consumes these controls behind its own execu
 
 ## Host native controls
 
-`NativeControls` is optional and currently supports Claude only. It snapshots
+`NativeControls` is optional. The existing Claude path snapshots
 executable/profile paths, fresh/fork session IDs, permission mode, tool rules,
 MCP server commands, skill directory, JSON schema and at most four 5 MiB images.
 Unsupported combinations return `unsupported_controls` before native dispatch.
@@ -114,6 +114,30 @@ Credentials always come from the selected Offload profile, never an ambient
 native profile's settings or caller ANTHROPIC variables. The optional stream
 environment accepts only the validated streaming-recovery switch and positive
 output-token limit; it is applied consistently to child environment and settings.
+
+Codex also has an explicit `CodexAppServer` mode. It requires caller context,
+owner `bypassPermissions`, an isolated environment and the Offload-selected
+binary/account/model; opaque executable and profile overrides remain rejected.
+`SkillRoots` contains only clean absolute roots approved by the caller. Before a
+business turn, Offload initializes the stdio protocol, sets those extra roots,
+forces a Skills reload and rejects discovery errors, plugin Skills, or any enabled
+Skill whose real path is outside the approved roots. Ambient apps, plugins,
+bundled Skills, project instructions and MCP configuration are replaced by the
+explicit request configuration. Images, forks, tool-free execution, extraction,
+restricted reads and tool allowlists remain unsupported on this path.
+
+App-server raw callbacks carry `NativeProtocol="codex-app-server"` and preserve
+the original JSON-RPC method and params. Matching thread/turn completion is the
+only success terminal. Model evidence comes from thread start/resume and native
+reroute notifications; missing model, usage and cost remain unavailable. On
+cancellation Offload first requests `turn/interrupt`, then closes and reaps the
+same owned process group under the normal worker bounds.
+The initialize request opts into the experimental API required by explicit Skill
+roots. Native app-server responses may omit the optional `jsonrpc` member; an
+explicit version other than `2.0` is rejected.
+Completed agent-message items are authoritative final text when deltas or terminal
+turn items are absent. Malformed response envelopes fail before dispatch, and a
+failed turn retains only a bounded single-line provider diagnostic.
 
 For Native calls, callbacks retain complete events up to 32 MiB (bounded image
 envelopes included), including a final unterminated line. Larger events fail

@@ -48,3 +48,25 @@ func TestCodexHostInstructionProfileRemainsEnabledInIsolatedHome(t *testing.T) {
 		t.Fatal("ambient user config would be loaded")
 	}
 }
+
+func TestCodexAppServerControlsRemainExplicit(t *testing.T) {
+	n := &NativeControls{CallerContext: true, CodexAppServer: true, PermissionMode: "bypassPermissions", SkillRoots: []string{"/approved"}, JSONSchema: `{"type":"object"}`}
+	if err := n.Validate("codex", "", false); err != nil {
+		t.Fatal(err)
+	}
+	for _, mutate := range []func(*NativeControls){
+		func(v *NativeControls) { v.CallerContext = false },
+		func(v *NativeControls) { v.PermissionMode = "default" },
+		func(v *NativeControls) {
+			v.Images = []NativeImage{{Name: "x", MediaType: "image/png", Data: []byte("x")}}
+		},
+		func(v *NativeControls) { v.ForkFromSessionID = "fork" },
+		func(v *NativeControls) { v.AllowedTools = []string{"Read"} },
+	} {
+		copy := *n
+		mutate(&copy)
+		if copy.Validate("codex", "", false) == nil {
+			t.Fatal("unsupported app-server control accepted")
+		}
+	}
+}
