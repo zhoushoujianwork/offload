@@ -54,15 +54,19 @@ func buildCodexArgs(o Opts) []string {
 	if o.Profile.ServiceTier != "" {
 		args = append(args, "-c", "service_tier="+strconv.Quote(o.Profile.ServiceTier))
 	}
-	if o.Native != nil {
+	if o.Native != nil || o.EnvironmentDirectory != "" {
 		if o.codexHostProfile != "" {
 			args = append(args, "--profile", o.codexHostProfile)
 		}
 		// Host capabilities replace ambient native integrations. Authentication
 		// remains scoped to the account home selected by Offload.
 		args = append(args, "--ignore-user-config", "--ignore-rules", "-c", "project_doc_max_bytes=0", "-c", "plugins={}", "-c", "apps._default.enabled=false")
-		servers := make([]string, 0, len(o.Native.MCPServers))
-		for _, server := range o.Native.MCPServers {
+		var mcpServers []NativeMCPServer
+		if o.Native != nil {
+			mcpServers = o.Native.MCPServers
+		}
+		servers := make([]string, 0, len(mcpServers))
+		for _, server := range mcpServers {
 			values := make([]string, len(server.Args))
 			for i, value := range server.Args {
 				values[i] = strconv.Quote(value)
@@ -70,6 +74,9 @@ func buildCodexArgs(o Opts) []string {
 			servers = append(servers, strconv.Quote(server.Name)+"={command="+strconv.Quote(server.Command)+",args=["+strings.Join(values, ",")+"],required=true}")
 		}
 		args = append(args, "-c", "mcp_servers={"+strings.Join(servers, ",")+"}")
+		if o.EnvironmentDirectory != "" {
+			args = append(args, "-c", "skills.bundled.enabled=false", "-c", "allow_login_shell=false", "-c", `cli_auth_credentials_store="file"`)
+		}
 	}
 	// exec accepts --add-dir only before the resume subcommand.
 	for _, d := range o.AddDirs {

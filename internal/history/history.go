@@ -30,37 +30,38 @@ type Record struct {
 	ToolRestriction string `json:"tool_restriction,omitempty"`
 	// Transcript is set only when -capture-transcript was given: captured, not_created (the run
 	// failed before capture started) or failed (the transcript could not be created).
-	Transcript         string           `json:"transcript,omitempty"`
-	Caller             string           `json:"caller"`
-	TS                 string           `json:"ts"`
-	Status             string           `json:"status"` // ok | error | timeout
-	ExitCode           *int             `json:"exit_code"`
-	Profile            string           `json:"profile"`
-	Backend            string           `json:"backend,omitempty"`
-	Model              string           `json:"model"`
-	RequestedModel     string           `json:"requested_model,omitempty"`
-	ObservedModel      string           `json:"observed_model,omitempty"`
-	ModelSource        string           `json:"model_source,omitempty"`
-	ModelUnavailable   string           `json:"model_unavailable,omitempty"`
-	ServiceTier        string           `json:"service_tier,omitempty"`
-	Dir                string           `json:"dir"`
-	Task               string           `json:"task"`
-	Session            string           `json:"session"`
-	Turns              int              `json:"turns"`                        // for an interrupted run: tool calls made
-	Denials            int              `json:"permission_denials,omitempty"` // tool calls the worker was refused
-	CostUSD            *float64         `json:"cost_usd"`                     // worker estimate, never verified billing; nil means unavailable
-	CostIsEstimate     bool             `json:"cost_is_estimate"`
-	Usage              *TokenUsage      `json:"usage,omitempty"`
-	CumulativeUsage    *TokenUsage      `json:"cumulative_usage,omitempty"`
-	UsageSource        string           `json:"usage_source,omitempty"`
-	AccountingEvidence string           `json:"accounting_evidence,omitempty"`
-	ClaudeHome         string           `json:"claude_home,omitempty"`
-	UsageScope         string           `json:"usage_scope,omitempty"`
-	UsageUnavailable   string           `json:"usage_unavailable,omitempty"`
-	CostUnavailable    string           `json:"cost_unavailable,omitempty"`
-	CostBasis          string           `json:"cost_basis,omitempty"`
-	Pricing            *PricingSnapshot `json:"pricing,omitempty"`
-	AddDirs            []string         `json:"add_dirs,omitempty"` // effective absolute extra directories
+	Transcript           string           `json:"transcript,omitempty"`
+	Caller               string           `json:"caller"`
+	TS                   string           `json:"ts"`
+	Status               string           `json:"status"` // ok | error | timeout
+	ExitCode             *int             `json:"exit_code"`
+	Profile              string           `json:"profile"`
+	Backend              string           `json:"backend,omitempty"`
+	Model                string           `json:"model"`
+	EnvironmentDirectory string           `json:"environment_directory,omitempty"`
+	RequestedModel       string           `json:"requested_model,omitempty"`
+	ObservedModel        string           `json:"observed_model,omitempty"`
+	ModelSource          string           `json:"model_source,omitempty"`
+	ModelUnavailable     string           `json:"model_unavailable,omitempty"`
+	ServiceTier          string           `json:"service_tier,omitempty"`
+	Dir                  string           `json:"dir"`
+	Task                 string           `json:"task"`
+	Session              string           `json:"session"`
+	Turns                int              `json:"turns"`                        // for an interrupted run: tool calls made
+	Denials              int              `json:"permission_denials,omitempty"` // tool calls the worker was refused
+	CostUSD              *float64         `json:"cost_usd"`                     // worker estimate, never verified billing; nil means unavailable
+	CostIsEstimate       bool             `json:"cost_is_estimate"`
+	Usage                *TokenUsage      `json:"usage,omitempty"`
+	CumulativeUsage      *TokenUsage      `json:"cumulative_usage,omitempty"`
+	UsageSource          string           `json:"usage_source,omitempty"`
+	AccountingEvidence   string           `json:"accounting_evidence,omitempty"`
+	ClaudeHome           string           `json:"claude_home,omitempty"`
+	UsageScope           string           `json:"usage_scope,omitempty"`
+	UsageUnavailable     string           `json:"usage_unavailable,omitempty"`
+	CostUnavailable      string           `json:"cost_unavailable,omitempty"`
+	CostBasis            string           `json:"cost_basis,omitempty"`
+	Pricing              *PricingSnapshot `json:"pricing,omitempty"`
+	AddDirs              []string         `json:"add_dirs,omitempty"` // effective absolute extra directories
 	// Session cumulative cost is a resume baseline, never a per-run cost.
 	CumulativeCostUSD *float64 `json:"cumulative_cost_usd,omitempty"`
 	// CostNote explains why CostUSD is nil. Read derives it for display only; it is never persisted.

@@ -61,6 +61,9 @@ type RawEvent struct {
 }
 
 type Request struct {
+	// EnvironmentDirectory opts into an environment returned by NewEnvironment.
+	// Directory must be its Workspace; task directories are explicit add-dirs.
+	EnvironmentDirectory       string
 	Monitor                    *MonitorOptions
 	Native                     *NativeControls
 	RunID, CallerRunID, Caller string
@@ -92,6 +95,7 @@ type Request struct {
 // Result is execution evidence, never task acceptance. Missing usage/cost stays
 // nil. RawRecord preserves the complete private CLI/history-compatible record.
 type Result struct {
+	EnvironmentDirectory                        string
 	MonitorError                                error
 	NativeStderr                                string
 	NativeExitCode                              *int
@@ -263,8 +267,9 @@ func (c *Client) Run(ctx context.Context, req Request) (result Result, resultErr
 		return setupError("unsupported_controls", err)
 	}
 	o := worker.Opts{ProfileName: c.cfg.ProfileName, Profile: c.profile, Model: req.Model,
-		Native:    native,
-		CodexHome: req.CodexHome, RunID: id, CallerRunID: req.CallerRunID, Caller: req.Caller,
+		EnvironmentDirectory: req.EnvironmentDirectory,
+		Native:               native,
+		CodexHome:            req.CodexHome, RunID: id, CallerRunID: req.CallerRunID, Caller: req.Caller,
 		Task: req.Task, Dir: req.Directory, AddDirs: slices.Clone(req.AdditionalDirectories), Resume: req.NativeSessionID,
 		Instructions: bytes.Clone(req.Instructions), InstructionsFile: req.InstructionsFile,
 		Write: req.Write, ExecutionPolicy: req.ExecutionPolicy, CodexSandbox: req.CodexSandbox,
@@ -327,7 +332,8 @@ func (c *Client) Run(ctx context.Context, req Request) (result Result, resultErr
 		exit = *record.ExitCode
 	}
 	result = Result{NativeStderr: record.NativeStderr, NativeExitCode: record.NativeExitCode, StructuredOutput: record.StructuredOutput, RunID: record.RunID, CallerRunID: record.CallerRunID, Profile: record.Profile,
-		Backend: record.Backend, Model: record.Model, RequestedModel: record.RequestedModel, ObservedModel: record.ObservedModel, NativeSessionID: record.Session,
+		EnvironmentDirectory: record.EnvironmentDirectory,
+		Backend:              record.Backend, Model: record.Model, RequestedModel: record.RequestedModel, ObservedModel: record.ObservedModel, NativeSessionID: record.Session,
 		Status: record.Status, ErrorKind: record.ErrorKind, ExitCode: exit, Report: record.Result,
 		Error: record.Error, Cleanup: record.Cleanup, Usage: usage, PartialUsage: partialUsage, CostUSD: record.CostUSD,
 		ElapsedMS: record.ElapsedMs, RawRecord: raw}
