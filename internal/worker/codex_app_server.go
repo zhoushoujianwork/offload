@@ -281,7 +281,8 @@ func (p *appServerParser) initialize() error {
 	if err := p.write(map[string]any{"jsonrpc": "2.0", "method": "initialized", "params": map[string]any{}}); err != nil {
 		return err
 	}
-	if _, err := p.request("skills/extraRoots/set", map[string]any{"extraRoots": p.o.Native.SkillRoots}); err != nil {
+	skillRoots := append([]string{}, p.o.Native.SkillRoots...)
+	if _, err := p.request("skills/extraRoots/set", map[string]any{"extraRoots": skillRoots}); err != nil {
 		return err
 	}
 	listed, err := p.request("skills/list", map[string]any{"cwds": []string{p.o.Dir}, "forceReload": true})

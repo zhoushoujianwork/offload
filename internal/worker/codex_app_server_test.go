@@ -18,6 +18,10 @@ func appServerFixture(t *testing.T, skillPath, tail string) (string, string) {
 	dir := t.TempDir()
 	log := filepath.Join(dir, "requests")
 	bin := filepath.Join(dir, "codex-fixture")
+	skills := `[]`
+	if skillPath != "" {
+		skills = fmt.Sprintf(`[{"name":"ops","description":"fixture","enabled":true,"path":%q,"scope":"user","pluginId":null}]`, skillPath)
+	}
 	body := fmt.Sprintf(`#!/bin/sh
 log=%q
 read_frame() { IFS= read -r frame || exit 0; printf '%%s\n' "$frame" >> "$log"; }
@@ -27,17 +31,56 @@ read_frame
 read_frame
 printf '%%s\n' '{"id":2,"result":{}}'
 read_frame
-printf '%%s\n' '{"id":3,"result":{"data":[{"cwd":"/workspace","errors":[],"skills":[{"name":"ops","description":"fixture","enabled":true,"path":%q,"scope":"user","pluginId":null}]}]}}'
+printf '%%s\n' '{"id":3,"result":{"data":[{"cwd":"/workspace","errors":[],"skills":%s}]}}'
 read_frame
 printf '%%s\n' '{"id":4,"result":{"model":"gpt-start","thread":{"id":"thread-native","model":"gpt-start"}}}'
 read_frame
 printf '%%s\n' '{"id":5,"result":{"turn":{"id":"turn-native","status":"inProgress","items":[]}}}'
 %s
-`, log, skillPath, tail)
+`, log, skills, tail)
 	if err := os.WriteFile(bin, []byte(body), 0700); err != nil {
 		t.Fatal(err)
 	}
 	return bin, log
+}
+
+func TestCodexAppServerEmptySkillRootsSerializeAsArray(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		roots []string
+	}{
+		{name: "nil"},
+		{name: "empty", roots: []string{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tail := `printf '%s\n' '{"method":"turn/started","params":{"threadId":"thread-native","turn":{"id":"turn-native"}}}'
+printf '%s\n' '{"method":"turn/completed","params":{"threadId":"thread-native","turn":{"id":"turn-native","status":"completed","items":[{"id":"item","type":"agentMessage","text":"done"}],"error":null}}}'`
+			bin, log := appServerFixture(t, "", tail)
+			o := appServerOpts(t, t.TempDir())
+			o.Native.SkillRoots = tc.roots
+			o.Native.JSONSchema = ""
+			a := runAttempt(context.Background(), bin, o, "", "", o.Timeout, nil, hooks{})
+			if a.runErr != nil || a.s.Result == nil || a.s.Result.Result != "done" {
+				t.Fatalf("%+v", a)
+			}
+			requests, err := os.ReadFile(log)
+			if err != nil {
+				t.Fatal(err)
+			}
+			found := false
+			for _, line := range strings.Split(string(requests), "\n") {
+				if strings.Contains(line, `"method":"skills/extraRoots/set"`) {
+					found = true
+					if !strings.Contains(line, `"extraRoots":[]`) || strings.Contains(line, `"extraRoots":null`) {
+						t.Fatalf("invalid roots request: %s", line)
+					}
+				}
+			}
+			if !found {
+				t.Fatal("skills/extraRoots/set request missing")
+			}
+		})
+	}
 }
 
 func appServerOpts(t *testing.T, skillRoot string) Opts {

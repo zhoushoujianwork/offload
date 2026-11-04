@@ -20,8 +20,12 @@ const initLine = `printf '%s\n' '{"type":"system","subtype":"init","session_id":
 // terminationFake writes a fake claude. body runs after the init event has been printed; ready is
 // created once the worker is running so tests can act on a worker that has a session.
 func terminationFake(t *testing.T, ready, body string) {
+	terminationFakeAfterSetup(t, ready, "", body)
+}
+
+func terminationFakeAfterSetup(t *testing.T, ready, setup, body string) {
 	t.Helper()
-	script := "#!/bin/sh\n" + initLine + `: > '` + ready + "'\n" + body
+	script := "#!/bin/sh\n" + initLine + setup + `: > '` + ready + "'\n" + body
 	bin := filepath.Join(t.TempDir(), "claude")
 	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
@@ -44,11 +48,15 @@ func waitExists(t *testing.T, path string) {
 const resumeCmd = `offload -r s-term "stop exploring and report what you already found"`
 
 func runWithStop(t *testing.T, body string, cause error) history.Record {
+	return runWithStopAfterSetup(t, "", body, cause)
+}
+
+func runWithStopAfterSetup(t *testing.T, setup, body string, cause error) history.Record {
 	t.Helper()
 	stateEnv(t)
 	mockPreflight(t)
 	ready := filepath.Join(t.TempDir(), "ready")
-	terminationFake(t, ready, body)
+	terminationFakeAfterSetup(t, ready, setup, body)
 	ctx, cancel := context.WithCancelCause(context.Background())
 	defer cancel(nil)
 	if cause != nil {
@@ -162,7 +170,7 @@ func TestTerminationRecordsExpiredGrace(t *testing.T) {
 	orig := StopGrace
 	StopGrace = 300 * time.Millisecond
 	t.Cleanup(func() { StopGrace = orig })
-	rec := runWithStop(t, "trap '' TERM\nwhile :; do sleep 0.05; done\n", &SignalError{Signal: syscall.SIGTERM})
+	rec := runWithStopAfterSetup(t, "trap '' TERM\n", "while :; do sleep 0.05; done\n", &SignalError{Signal: syscall.SIGTERM})
 	tm := rec.Termination
 	if tm == nil || tm.Class != history.ClassInterrupted || !tm.GraceExpired || tm.WorkerSignal != "SIGKILL" || tm.SystemKilled {
 		t.Fatalf("termination = %+v", tm)
