@@ -21,6 +21,13 @@ printf '%s\n' '{"type":"item.completed","item":{"id":"m","type":"agent_message",
 printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":12,"output_tokens":3}}'
 `
 
+var (
+	_ = execution.NewEnvironmentAt
+	_ = execution.NativeControls{CodexAppServer: true, SkillRoots: []string{"/approved"}}
+	_ = execution.RawEvent{NativeProtocol: "codex-app-server"}
+	_ = execution.Result{NativeProtocol: "codex-app-server"}
+)
+
 func fixture(t *testing.T, backend, body string) (*execution.Client, string, string) {
 	t.Helper()
 	dir := t.TempDir()

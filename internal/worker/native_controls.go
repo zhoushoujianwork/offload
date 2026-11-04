@@ -28,7 +28,9 @@ type NativeControls struct {
 	Executable, ProfileDirectory, FreshSessionID, ForkFromSessionID string
 	PermissionMode, JSONSchema, SkillDirectory                      string
 	CallerContext, Extraction, RestrictedReadOnly                   bool
+	CodexAppServer                                                  bool
 	StreamEnvironment                                               map[string]string
+	SkillRoots                                                      []string
 	AllowedTools                                                    []string
 	MCPServers                                                      []NativeMCPServer
 	Images                                                          []NativeImage
@@ -45,14 +47,24 @@ func (n *NativeControls) Validate(backend, resume string, toolsDisabled bool) er
 		if toolsDisabled || n.Extraction || n.RestrictedReadOnly || len(n.AllowedTools) > 0 {
 			return errors.New("Codex host controls cannot enforce tool-free execution or native tool allowlists")
 		}
-		if n.SkillDirectory != "" || len(n.Images) > 0 || n.JSONSchema != "" || n.ForkFromSessionID != "" {
-			return errors.New("Codex host controls do not yet support Skills, images, structured extraction or forks")
+		if n.SkillDirectory != "" || len(n.Images) > 0 || n.ForkFromSessionID != "" {
+			return errors.New("Codex host controls do not yet support plugin Skills, images or forks")
 		}
 		if n.PermissionMode != "bypassPermissions" {
 			return errors.New("Codex host controls require explicit owner bypassPermissions")
 		}
+		if n.CodexAppServer {
+			if !n.CallerContext {
+				return errors.New("Codex app-server requires caller context")
+			}
+		} else if len(n.SkillRoots) > 0 || n.JSONSchema != "" {
+			return errors.New("Codex Skills and structured output require the app-server protocol")
+		}
 	} else if backend != "claude" {
 		return errors.New("selected backend does not support host native controls")
+	}
+	if backend != "codex" && (n.CodexAppServer || len(n.SkillRoots) > 0) {
+		return errors.New("Codex app-server controls require the Codex backend")
 	}
 	for k, v := range n.StreamEnvironment {
 		switch k {
@@ -72,6 +84,11 @@ func (n *NativeControls) Validate(backend, resume string, toolsDisabled bool) er
 	for _, path := range []string{n.Executable, n.ProfileDirectory, n.SkillDirectory} {
 		if path != "" && (!filepath.IsAbs(path) || filepath.Clean(path) != path || strings.ContainsRune(path, 0)) {
 			return errors.New("native control paths must be clean absolute paths")
+		}
+	}
+	for _, path := range n.SkillRoots {
+		if !filepath.IsAbs(path) || filepath.Clean(path) != path || strings.ContainsRune(path, 0) {
+			return errors.New("Skill roots must be clean absolute paths")
 		}
 	}
 	for _, id := range []string{n.FreshSessionID, n.ForkFromSessionID} {

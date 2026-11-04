@@ -21,3 +21,13 @@ func NewEnvironment() (Environment, error) {
 	}
 	return Environment{Root: root, Workspace: filepath.Join(root, "workspace")}, nil
 }
+
+// NewEnvironmentAt exclusively creates the same private directory structure at
+// root. Existing roots are rejected and are never overwritten or removed.
+func NewEnvironmentAt(root string) (Environment, error) {
+	root, err := worker.NewEnvironmentAt(root)
+	if err != nil {
+		return Environment{}, err
+	}
+	return Environment{Root: root, Workspace: filepath.Join(root, "workspace")}, nil
+}

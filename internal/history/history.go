@@ -37,6 +37,7 @@ type Record struct {
 	ExitCode             *int             `json:"exit_code"`
 	Profile              string           `json:"profile"`
 	Backend              string           `json:"backend,omitempty"`
+	NativeProtocol       string           `json:"native_protocol,omitempty"`
 	Model                string           `json:"model"`
 	EnvironmentDirectory string           `json:"environment_directory,omitempty"`
 	RequestedModel       string           `json:"requested_model,omitempty"`

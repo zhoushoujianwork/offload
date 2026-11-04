@@ -56,8 +56,8 @@ type Capture interface {
 // differ; no token deltas or normalized tool schema are implied. Data is copied
 // and may be retained by the observer. Do not forward it to public logs.
 type RawEvent struct {
-	RunID, CallerRunID, Backend string
-	Data                        []byte
+	RunID, CallerRunID, Backend, NativeProtocol string
+	Data                                        []byte
 }
 
 type Request struct {
@@ -107,6 +107,7 @@ type Result struct {
 	// Empty ObservedModel means unavailable, never an inferred profile fallback.
 	RequestedModel, ObservedModel      string
 	NativeSessionID, Status, ErrorKind string
+	NativeProtocol                     string
 	Report, Error, Cleanup             string
 	ExitCode                           int
 	Usage                              json.RawMessage
@@ -321,7 +322,11 @@ func (c *Client) Run(ctx context.Context, req Request) (result Result, resultErr
 	var observerErr error
 	if req.OnEvent != nil {
 		o.OnLine = func(line []byte) error {
-			err := req.OnEvent(RawEvent{RunID: id, CallerRunID: req.CallerRunID, Backend: c.profile.BackendName(), Data: bytes.Clone(line)})
+			protocol := ""
+			if native != nil && native.CodexAppServer {
+				protocol = "codex-app-server"
+			}
+			err := req.OnEvent(RawEvent{RunID: id, CallerRunID: req.CallerRunID, Backend: c.profile.BackendName(), NativeProtocol: protocol, Data: bytes.Clone(line)})
 			observerErr = errors.Join(observerErr, err)
 			return err
 		}
@@ -348,6 +353,7 @@ func (c *Client) Run(ctx context.Context, req Request) (result Result, resultErr
 	}
 	result = Result{NativeStderr: record.NativeStderr, NativeExitCode: record.NativeExitCode, StructuredOutput: record.StructuredOutput, RunID: record.RunID, CallerRunID: record.CallerRunID, Profile: record.Profile,
 		EnvironmentDirectory: record.EnvironmentDirectory,
+		NativeProtocol:       record.NativeProtocol,
 		Backend:              record.Backend, Model: record.Model, RequestedModel: record.RequestedModel, ObservedModel: record.ObservedModel, NativeSessionID: record.Session,
 		Status: record.Status, ErrorKind: record.ErrorKind, ExitCode: exit, Report: record.Result,
 		Error: record.Error, Cleanup: record.Cleanup, Usage: usage, PartialUsage: partialUsage, CostUSD: record.CostUSD,

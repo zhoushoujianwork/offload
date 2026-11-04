@@ -9,6 +9,9 @@ must be its workspace. Existing task repositories are explicit additional roots.
 Symlinked roots, permissive directories, foreign native profiles and mismatched
 profile/account bindings are rejected. Results and history expose the environment
 directory independently of the native account/session home.
+`execution.NewEnvironmentAt(root)` creates the identical structure at a clean
+absolute caller-selected root using exclusive creation. It never adopts or
+overwrites an existing root; rollback removes only the root created by that call.
 
 Child environment variables start from an allowlist: native HOME/XDG paths,
 PATH, TMPDIR, locale and TLS certificate locations. Arbitrary parent variables,

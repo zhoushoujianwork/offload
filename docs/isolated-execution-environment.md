@@ -18,6 +18,10 @@ request.EnvironmentDirectory = environment.Root
 result, err := client.Run(ctx, request)
 ```
 
+For a caller-owned persistent location, use `execution.NewEnvironmentAt(root)`.
+It creates the same structure with exclusive creation; an existing root is never
+overwritten or removed, and a failed creation cleans only files from that call.
+
 Mount task directories explicitly with `AdditionalDirectories`. The selected
 Offload profile still determines the backend, model and authentication. Omitting
 `EnvironmentDirectory` preserves existing execution behavior.
