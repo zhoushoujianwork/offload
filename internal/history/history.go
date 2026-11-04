@@ -38,6 +38,8 @@ type Record struct {
 	Profile            string           `json:"profile"`
 	Backend            string           `json:"backend,omitempty"`
 	Model              string           `json:"model"`
+	RequestedModel     string           `json:"requested_model,omitempty"`
+	ObservedModel      string           `json:"observed_model,omitempty"`
 	ModelSource        string           `json:"model_source,omitempty"`
 	ModelUnavailable   string           `json:"model_unavailable,omitempty"`
 	ServiceTier        string           `json:"service_tier,omitempty"`
