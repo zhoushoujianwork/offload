@@ -30,10 +30,12 @@ type NativeControls struct {
 	CallerContext, Extraction, RestrictedReadOnly                   bool
 	CodexAppServer                                                  bool
 	StreamEnvironment                                               map[string]string
-	SkillRoots                                                      []string
-	AllowedTools                                                    []string
-	MCPServers                                                      []NativeMCPServer
-	Images                                                          []NativeImage
+	// SkillRoots mounts and selects exact directories containing their own regular
+	// SKILL.md; descendants are independent declarations.
+	SkillRoots   []string
+	AllowedTools []string
+	MCPServers   []NativeMCPServer
+	Images       []NativeImage
 }
 
 func (n *NativeControls) Validate(backend, resume string, toolsDisabled bool) error {

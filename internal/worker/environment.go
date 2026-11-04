@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 )
 
 // NewEnvironment creates an owned, persistent native home and empty workspace.
@@ -133,7 +134,18 @@ func (o *Opts) prepareEnvironment(sourceHome string) (func() error, error) {
 	if o.Dir != filepath.Join(root, "workspace") {
 		return nil, errors.New("isolated execution requires its empty owned workspace; mount task directories explicitly")
 	}
-	binding, _ := json.Marshal([]string{o.ProfileName, o.Profile.BackendName(), o.Profile.CodexAccount, sourceHome})
+	bindingValues := []string{o.ProfileName, o.Profile.BackendName(), o.Profile.CodexAccount, sourceHome}
+	if o.Native != nil && o.Native.CodexAppServer {
+		manifest, err := exactSkillManifest(o.Native.SkillRoots)
+		if err != nil {
+			return nil, err
+		}
+		paths := append([]string(nil), manifest.Paths...)
+		sort.Strings(paths)
+		bindingValues = append(bindingValues, "codex-app-server-exact-skills-v1")
+		bindingValues = append(bindingValues, paths...)
+	}
+	binding, _ := json.Marshal(bindingValues)
 	sum := sha256.Sum256(binding)
 	identity := []byte(hex.EncodeToString(sum[:]))
 	path := filepath.Join(root, "binding")

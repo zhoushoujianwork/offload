@@ -2,6 +2,7 @@ package worker
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -15,29 +16,63 @@ import (
 
 func appServerFixture(t *testing.T, skillPath, tail string) (string, string) {
 	t.Helper()
-	dir := t.TempDir()
-	log := filepath.Join(dir, "requests")
-	bin := filepath.Join(dir, "codex-fixture")
 	skills := `[]`
 	if skillPath != "" {
 		skills = fmt.Sprintf(`[{"name":"ops","description":"fixture","enabled":true,"path":%q,"scope":"user","pluginId":null}]`, skillPath)
 	}
+	return appServerInventoryFixture(t, skills, skills, "", tail)
+}
+
+func appServerInventoryFixture(t *testing.T, initialSkills, finalSkills, writeResult, tail string) (string, string) {
+	t.Helper()
+	dir := t.TempDir()
+	log := filepath.Join(dir, "requests")
+	bin := filepath.Join(dir, "codex-fixture")
 	body := fmt.Sprintf(`#!/bin/sh
 log=%q
+initial_skills=%q
+final_skills=%q
+write_result=%q
+list_count=0
 read_frame() { IFS= read -r frame || exit 0; printf '%%s\n' "$frame" >> "$log"; }
-read_frame
-printf '%%s\n' '{"id":1,"result":{"userAgent":"fixture"}}'
-read_frame
-read_frame
-printf '%%s\n' '{"id":2,"result":{}}'
-read_frame
-printf '%%s\n' '{"id":3,"result":{"data":[{"cwd":"/workspace","errors":[],"skills":%s}]}}'
-read_frame
-printf '%%s\n' '{"id":4,"result":{"model":"gpt-start","thread":{"id":"thread-native","model":"gpt-start"}}}'
-read_frame
-printf '%%s\n' '{"id":5,"result":{"turn":{"id":"turn-native","status":"inProgress","items":[]}}}'
+while true; do
+  read_frame
+  id=$(printf '%%s' "$frame" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
+  case "$frame" in
+    *'"method":"initialize"'*) printf '%%s\n' "{\"id\":$id,\"result\":{\"userAgent\":\"fixture\"}}" ;;
+    *'"method":"initialized"'*) ;;
+    *'"method":"skills/extraRoots/set"'*) printf '%%s\n' "{\"id\":$id,\"result\":{}}" ;;
+    *'"method":"skills/list"'*)
+      list_count=$((list_count + 1))
+      skills=$initial_skills
+      if [ "$list_count" -gt 1 ]; then skills=$final_skills; fi
+      printf '{"id":%%s,"result":{"data":[{"cwd":"/workspace","errors":[],"skills":%%s}]}}\n' "$id" "$skills"
+      ;;
+    *'"method":"skills/config/write"'*)
+      : > "$CODEX_HOME/config.toml"
+      if [ "$write_result" = error ]; then
+        printf '{"id":%%s,"error":{"code":-32601,"message":"unsupported"}}\n' "$id"
+        continue
+      fi
+      if [ -n "$write_result" ]; then
+        printf '{"id":%%s,"result":%%s}\n' "$id" "$write_result"
+        continue
+      fi
+      case "$frame" in
+        *'"enabled":true'*) effective=true ;;
+        *) effective=false ;;
+      esac
+      printf '%%s\n' "{\"id\":$id,\"result\":{\"effectiveEnabled\":$effective}}"
+      ;;
+    *'"method":"thread/start"'*|*'"method":"thread/resume"'*) printf '%%s\n' "{\"id\":$id,\"result\":{\"model\":\"gpt-start\",\"thread\":{\"id\":\"thread-native\",\"model\":\"gpt-start\"}}}" ;;
+    *'"method":"turn/start"'*)
+      printf '%%s\n' "{\"id\":$id,\"result\":{\"turn\":{\"id\":\"turn-native\",\"status\":\"inProgress\",\"items\":[]}}}"
+      break
+      ;;
+  esac
+done
 %s
-`, log, skills, tail)
+`, log, initialSkills, finalSkills, writeResult, tail)
 	if err := os.WriteFile(bin, []byte(body), 0700); err != nil {
 		t.Fatal(err)
 	}
@@ -93,6 +128,183 @@ func appServerOpts(t *testing.T, skillRoot string) Opts {
 	return Opts{ProfileName: "fixture", Profile: config.Profile{Backend: "codex"}, Model: "gpt-requested", Dir: filepath.Join(root, "workspace"), EnvironmentDirectory: root, CodexHome: filepath.Join(root, "codex"), Task: "do work", Instructions: []byte("developer"), Timeout: 5 * time.Second, Native: &NativeControls{CallerContext: true, CodexAppServer: true, PermissionMode: "bypassPermissions", SkillRoots: []string{skillRoot}, JSONSchema: `{"type":"object"}`, MCPServers: []NativeMCPServer{{Name: "ops", Command: "/bin/echo", Args: []string{"ok"}}}}}
 }
 
+func skillDeclaration(path string, enabled bool, pluginID string) string {
+	plugin := "null"
+	if pluginID != "" {
+		plugin = fmt.Sprintf(`%q`, pluginID)
+	}
+	return fmt.Sprintf(`{"name":"fixture","description":"fixture","enabled":%t,"path":%q,"scope":"user","pluginId":%s}`, enabled, path, plugin)
+}
+
+const completedAppServerTail = `printf '%s\n' '{"method":"turn/started","params":{"threadId":"thread-native","turn":{"id":"turn-native"}}}'
+printf '%s\n' '{"method":"turn/completed","params":{"threadId":"thread-native","turn":{"id":"turn-native","status":"completed","items":[{"id":"item","type":"agentMessage","text":"done"}],"error":null}}}'`
+
+func TestCodexAppServerEnforcesExactSkillSet(t *testing.T) {
+	parent := t.TempDir()
+	parentSkill := filepath.Join(parent, "SKILL.md")
+	child := filepath.Join(parent, "child")
+	childSkill := filepath.Join(child, "SKILL.md")
+	if err := os.Mkdir(child, 0700); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{parentSkill, childSkill} {
+		if err := os.WriteFile(path, []byte("fixture"), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, tc := range []struct {
+		name     string
+		selected string
+		final    string
+		disabled string
+	}{
+		{name: "parent does not imply child", selected: parent, final: "[" + skillDeclaration(parentSkill, true, "") + "," + skillDeclaration(childSkill, false, "") + "]", disabled: childSkill},
+		{name: "child explicitly selected", selected: child, final: "[" + skillDeclaration(parentSkill, false, "") + "," + skillDeclaration(childSkill, true, "") + "]", disabled: parentSkill},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			initial := "[" + skillDeclaration(parentSkill, true, "") + "," + skillDeclaration(childSkill, true, "") + "]"
+			bin, log := appServerInventoryFixture(t, initial, tc.final, "", completedAppServerTail)
+			o := appServerOpts(t, tc.selected)
+			o.Native.JSONSchema = ""
+			a := runAttempt(context.Background(), bin, o, "", "", o.Timeout, nil, hooks{})
+			if a.runErr != nil || a.s.Result == nil {
+				t.Fatalf("%+v", a)
+			}
+			requests, _ := os.ReadFile(log)
+			disabled, _ := filepath.EvalSymlinks(tc.disabled)
+			if !strings.Contains(string(requests), fmt.Sprintf(`"enabled":false,"path":%q`, disabled)) {
+				t.Fatalf("unapproved Skill was not disabled: %s", requests)
+			}
+		})
+	}
+}
+
+func TestCodexAppServerDisablesBuiltinAndPluginSkills(t *testing.T) {
+	approved := t.TempDir()
+	approvedPath := filepath.Join(approved, "SKILL.md")
+	builtin := filepath.Join(t.TempDir(), "SKILL.md")
+	plugin := filepath.Join(t.TempDir(), "SKILL.md")
+	for _, path := range []string{approvedPath, builtin, plugin} {
+		if err := os.WriteFile(path, []byte("fixture"), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	initial := "[" + skillDeclaration(approvedPath, false, "") + "," + skillDeclaration(builtin, true, "") + "," + skillDeclaration(plugin, false, "plugin.fixture") + "]"
+	final := "[" + skillDeclaration(approvedPath, true, "") + "," + skillDeclaration(builtin, false, "") + "," + skillDeclaration(plugin, false, "plugin.fixture") + "]"
+	bin, log := appServerInventoryFixture(t, initial, final, "", completedAppServerTail)
+	o := appServerOpts(t, approved)
+	o.Native.JSONSchema = ""
+	a := runAttempt(context.Background(), bin, o, "", "", o.Timeout, nil, hooks{})
+	if a.runErr != nil || a.s.Result == nil {
+		t.Fatalf("%+v", a)
+	}
+	requests, _ := os.ReadFile(log)
+	for _, path := range []string{builtin, plugin} {
+		canonical, _ := filepath.EvalSymlinks(path)
+		if !strings.Contains(string(requests), fmt.Sprintf(`"enabled":false,"path":%q`, canonical)) {
+			t.Fatalf("unapproved declaration was not explicitly disabled: %s", requests)
+		}
+	}
+}
+
+func TestCodexAppServerSkillConfigurationFailuresStopBeforeThread(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "SKILL.md")
+	if err := os.WriteFile(path, []byte("fixture"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	declaration := "[" + skillDeclaration(path, false, "") + "]"
+	for _, tc := range []struct {
+		name, initial, final, writeResult, want string
+	}{
+		{name: "write unsupported", initial: declaration, final: declaration, writeResult: "error", want: "skills/config/write failed"},
+		{name: "invalid write response", initial: declaration, final: declaration, writeResult: `{}`, want: "invalid Skill configuration result"},
+		{name: "effective state mismatch", initial: declaration, final: declaration, writeResult: `{"effectiveEnabled":false}`, want: "invalid Skill configuration result"},
+		{name: "missing approved", initial: `[]`, final: `[]`, want: "approved Skill was not enabled"},
+		{name: "duplicate canonical", initial: "[" + skillDeclaration(path, false, "") + "," + skillDeclaration(path, false, "") + "]", final: declaration, want: "duplicate canonical Skill path"},
+		{name: "malformed discovered path", initial: `[{"name":"bad","enabled":true,"path":"relative/SKILL.md","pluginId":null}]`, final: declaration, want: "malformed Skill declaration"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			bin, log := appServerInventoryFixture(t, tc.initial, tc.final, tc.writeResult, `exit 0`)
+			o := appServerOpts(t, root)
+			a := runAttempt(context.Background(), bin, o, "", "", o.Timeout, nil, hooks{})
+			if a.runErr == nil || !strings.Contains(a.runErr.Error(), tc.want) {
+				t.Fatalf("%+v", a)
+			}
+			requests, _ := os.ReadFile(log)
+			if strings.Contains(string(requests), `"method":"thread/start"`) || strings.Contains(string(requests), `"method":"thread/resume"`) {
+				t.Fatalf("thread started after Skill policy failure: %s", requests)
+			}
+			if tc.name == "malformed discovered path" && strings.Contains(string(requests), `"method":"skills/config/write"`) {
+				t.Fatalf("malformed discovered path reached configuration write: %s", requests)
+			}
+		})
+	}
+}
+
+func TestAppServerSkillInventoriesAreStructurallyBounded(t *testing.T) {
+	for _, tc := range []struct {
+		name, raw, want string
+	}{
+		{name: "missing data", raw: `{}`, want: "invalid Skills list"},
+		{name: "empty data", raw: `{"data":[]}`, want: "invalid Skills list"},
+		{name: "missing errors", raw: `{"data":[{"skills":[]}]}`, want: "malformed Skills inventory"},
+		{name: "missing skills", raw: `{"data":[{"errors":[]}]}`, want: "malformed Skills inventory"},
+		{name: "discovery error", raw: `{"data":[{"errors":[{"message":"bad"}],"skills":[]}]}`, want: "discovery error"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := parseAppServerSkills([]byte(tc.raw)); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("malformed inventory accepted: %v", err)
+			}
+		})
+	}
+}
+
+func TestExactSkillManifestRejectsMissingAndDuplicateCanonicalFiles(t *testing.T) {
+	missing := t.TempDir()
+	if _, err := exactSkillManifest([]string{missing}); err == nil || !strings.Contains(err.Error(), "own regular SKILL.md") {
+		t.Fatalf("missing exact Skill file accepted: %v", err)
+	}
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "SKILL.md"), []byte("fixture"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	alias := filepath.Join(t.TempDir(), "alias")
+	if err := os.Symlink(root, alias); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := exactSkillManifest([]string{root, alias}); err == nil || !strings.Contains(err.Error(), "canonically unique") {
+		t.Fatalf("duplicate canonical manifest accepted: %v", err)
+	}
+}
+
+func TestCodexAppServerConfigCleanupAndResidueGuard(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "SKILL.md")
+	if err := os.WriteFile(path, []byte("fixture"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	declaration := "[" + skillDeclaration(path, true, "") + "]"
+	bin, _ := appServerInventoryFixture(t, declaration, declaration, "", completedAppServerTail)
+	o := appServerOpts(t, root)
+	o.Native.JSONSchema = ""
+	a := runAttempt(context.Background(), bin, o, "", "", o.Timeout, nil, hooks{})
+	configPath := filepath.Join(o.CodexHome, "config.toml")
+	if a.runErr != nil || a.s.Result == nil {
+		t.Fatalf("%+v", a)
+	}
+	if _, err := os.Lstat(configPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("attempt-owned config was not removed after reap: %v", err)
+	}
+	if err := os.WriteFile(configPath, []byte("foreign = true\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	a = runAttempt(context.Background(), bin, o, "", "", o.Timeout, nil, hooks{})
+	if a.runErr == nil || !strings.Contains(a.runErr.Error(), "requires an absent base config.toml") {
+		t.Fatalf("ambient config residue was accepted: %+v", a)
+	}
+}
+
 func TestCodexAppServerProtocolAndStructuredResult(t *testing.T) {
 	skillRoot := t.TempDir()
 	skill := filepath.Join(skillRoot, "ops", "SKILL.md")
@@ -107,7 +319,7 @@ printf '%s\n' '{"method":"item/agentMessage/delta","params":{"threadId":"thread-
 printf '%s\n' '{"method":"model/rerouted","params":{"threadId":"thread-native","turnId":"turn-native","fromModel":"gpt-start","toModel":"gpt-rerouted","reason":"highRiskCyberActivity"}}'
 printf '%s\n' '{"method":"turn/completed","params":{"threadId":"thread-native","turn":{"id":"turn-native","status":"completed","items":[{"id":"item","type":"agentMessage","text":"{\"ok\":true}"}],"error":null}}}'`
 	bin, log := appServerFixture(t, skill, tail)
-	o := appServerOpts(t, skillRoot)
+	o := appServerOpts(t, filepath.Dir(skill))
 	var events []string
 	o.OnLine = func(b []byte) error { events = append(events, string(b)); return nil }
 	a := runAttempt(context.Background(), bin, o, "", "", o.Timeout, nil, hooks{})
@@ -118,7 +330,7 @@ printf '%s\n' '{"method":"turn/completed","params":{"threadId":"thread-native","
 		t.Fatalf("%+v", a.s)
 	}
 	requests, _ := os.ReadFile(log)
-	for _, want := range []string{`"method":"initialize"`, `"experimentalApi":true`, `"method":"skills/extraRoots/set"`, `"forceReload":true`, `"method":"thread/start"`, `"developerInstructions":"developer"`, `"mcp_servers"`, `"method":"turn/start"`, `"outputSchema"`} {
+	for _, want := range []string{`"method":"initialize"`, `"experimentalApi":true`, `"method":"skills/extraRoots/set"`, fmt.Sprintf(`"extraRoots":[%q]`, filepath.Dir(skill)), `"forceReload":true`, `"method":"thread/start"`, `"developerInstructions":"developer"`, `"mcp_servers"`, `"method":"turn/start"`, `"outputSchema"`} {
 		if !strings.Contains(string(requests), want) {
 			t.Fatalf("missing %s in %s", want, requests)
 		}
@@ -243,7 +455,7 @@ printf '%s\n' '{"method":"turn/completed","params":{"threadId":"thread-native","
 	o = appServerOpts(t, approved)
 	o.Resume = "original-thread-id"
 	a = runAttempt(context.Background(), bin, o, "", "", o.Timeout, nil, hooks{})
-	if a.runErr == nil || !strings.Contains(a.runErr.Error(), "outside approved roots") {
+	if a.runErr == nil || !strings.Contains(a.runErr.Error(), "unexpected Skill remained enabled") {
 		t.Fatalf("%+v", a)
 	}
 	requests, _ = os.ReadFile(log)
@@ -294,7 +506,8 @@ func TestCodexAppServerCancelInterruptsAndReaps(t *testing.T) {
 	}
 	tail := `printf '%s\n' '{"method":"turn/started","params":{"threadId":"thread-native","turn":{"id":"turn-native"}}}'
 read_frame
-printf '%s\n' '{"id":6,"result":{}}'
+id=$(printf '%s' "$frame" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
+printf '%s\n' "{\"id\":$id,\"result\":{}}"
 printf '%s\n' '{"method":"turn/completed","params":{"threadId":"thread-native","turn":{"id":"turn-native","status":"interrupted","items":[],"error":{"message":"interrupted"}}}}'`
 	bin, log := appServerFixture(t, skill, tail)
 	o := appServerOpts(t, root)

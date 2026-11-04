@@ -59,7 +59,7 @@ func TestAppServerLiveIsolatedSkillAndResume(t *testing.T) {
 		EnvironmentDirectory: environment.Root, Directory: environment.Workspace,
 		Task:         "OPS_NATIVE_ACCEPTANCE: use the acceptance-ops-marker skill and reply with its validation marker. Do not use the network or change files.",
 		Instructions: []byte("This is a bounded native Skills acceptance check. Use only the supplied validation skill; do not delegate or execute operational actions."),
-		Native:       &NativeControls{CallerContext: true, CodexAppServer: true, PermissionMode: "bypassPermissions", SkillRoots: []string{root}},
+		Native:       &NativeControls{CallerContext: true, CodexAppServer: true, PermissionMode: "bypassPermissions", SkillRoots: []string{skill}},
 		Timeout:      &timeout,
 	}
 	first, err := client.Run(context.Background(), request)

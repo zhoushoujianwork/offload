@@ -104,3 +104,37 @@ func TestNewEnvironmentAtIsExclusiveAndCleansOnlyItsCreation(t *testing.T) {
 		t.Fatal("existing root was changed")
 	}
 }
+
+func TestCodexAppServerEnvironmentBindsExactSkillManifest(t *testing.T) {
+	root, err := NewEnvironment()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(root) })
+	source := t.TempDir()
+	if err := os.WriteFile(filepath.Join(source, "auth.json"), []byte(`{"token":"fixture"}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	first := t.TempDir()
+	second := t.TempDir()
+	for _, skillRoot := range []string{first, second} {
+		if err := os.WriteFile(filepath.Join(skillRoot, "SKILL.md"), []byte("fixture"), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	o := Opts{ProfileName: "isolated", Profile: config.Profile{Backend: "codex"}, Dir: filepath.Join(root, "workspace"), EnvironmentDirectory: root,
+		Native: &NativeControls{CallerContext: true, CodexAppServer: true, PermissionMode: "bypassPermissions", SkillRoots: []string{first, second}}}
+	if _, err := o.prepareEnvironment(source); err != nil {
+		t.Fatal(err)
+	}
+	same := o
+	same.Native = &NativeControls{CallerContext: true, CodexAppServer: true, PermissionMode: "bypassPermissions", SkillRoots: []string{second, first}}
+	if _, err := same.prepareEnvironment(source); err != nil {
+		t.Fatalf("identical exact manifest did not reuse its environment: %v", err)
+	}
+	drifted := o
+	drifted.Native = &NativeControls{CallerContext: true, CodexAppServer: true, PermissionMode: "bypassPermissions", SkillRoots: []string{second}}
+	if _, err := drifted.prepareEnvironment(source); err == nil || !strings.Contains(err.Error(), "another execution profile or account") {
+		t.Fatalf("changed exact Skill manifest reused weaker binding: %v", err)
+	}
+}

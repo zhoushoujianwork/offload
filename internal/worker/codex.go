@@ -101,7 +101,7 @@ func buildCodexArgs(o Opts) []string {
 }
 
 func buildCodexAppServerArgs(o Opts) []string {
-	args := []string{"-c", `approval_policy="never"`, "-c", `sandbox_mode="danger-full-access"`, "-c", "project_doc_max_bytes=0", "-c", "plugins={}", "-c", "apps._default.enabled=false", "-c", "skills.bundled.enabled=false", "-c", "allow_login_shell=false", "-c", `cli_auth_credentials_store="file"`}
+	args := []string{"--strict-config", "-c", `approval_policy="never"`, "-c", `sandbox_mode="danger-full-access"`, "-c", "project_doc_max_bytes=0", "-c", "plugins={}", "-c", "apps._default.enabled=false", "-c", "skills.bundled.enabled=false", "-c", "cloud.skills.enabled=false", "-c", "allow_login_shell=false", "-c", `cli_auth_credentials_store="file"`}
 	if o.Profile.ReasoningEffort != "" {
 		args = append(args, "-c", "model_reasoning_effort="+strconv.Quote(o.Profile.ReasoningEffort))
 	}

@@ -721,6 +721,9 @@ func runAttempt(ctx context.Context, bin string, o Opts, promptPath, token strin
 			baseline, baselineError = codexBaseline(o.Resume, o.CodexHome)
 		}
 		if o.Native != nil && o.Native.CodexAppServer {
+			if _, err := exactSkillManifest(o.Native.SkillRoots); err != nil {
+				return attempt{runErr: err}
+			}
 			if _, err := os.Lstat(filepath.Join(o.CodexHome, "config.toml")); !errors.Is(err, os.ErrNotExist) {
 				return attempt{runErr: errors.New("isolated Codex app-server requires an absent base config.toml")}
 			}
@@ -919,11 +922,20 @@ func runAttempt(ctx context.Context, bin string, o Opts, promptPath, token strin
 	}
 	a := attempt{s: out.summary(), cause: cause, runErr: runErr, baseline: baseline, baselineError: baselineError, claudeBase: claudeBase,
 		stdout: out.String(), stderr: workerErr.String(), forceKilled: forceKilled, nativeExitCode: nativeExitCode}
-	if !stopGroup(group) {
+	reaped := stopGroup(group)
+	if !reaped {
 		g := group
 		a.leftover = &g
-	} else if h.cleaned != nil {
-		h.cleaned()
+	} else {
+		if appServer != nil {
+			configPath := filepath.Join(o.CodexHome, "config.toml")
+			if err := os.Remove(configPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+				a.runErr = errors.Join(a.runErr, fmt.Errorf("remove app-server Skill configuration: %w", err))
+			}
+		}
+		if h.cleaned != nil {
+			h.cleaned()
+		}
 	}
 	return a
 }
