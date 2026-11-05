@@ -504,7 +504,7 @@ func Run(ctx context.Context, o Opts) (rec history.Record, err error) {
 	}
 	admitted = time.Now()
 	pub.admitted(slot.Index(), admitted.Sub(started))
-	hooks := hooks{started: func(g proc.Group) { slot.Track(g); pub.group(g) }, cleaning: func() { pub.phase(live.Cleaning) }, cleaned: slot.Clear}
+	hooks := hooks{starting: slot.Starting, startFailed: slot.StartFailed, started: func(g proc.Group) { slot.Track(g); pub.group(g) }, cleaning: func() { pub.phase(live.Cleaning) }, cleaned: slot.Clear}
 
 	a := runAttempt(ctx, bin, o, promptPath, token, o.Timeout, pub.update, hooks)
 	if a.gateErr != nil {
@@ -695,9 +695,11 @@ type attempt struct {
 
 // hooks lets the caller record the worker's process group while it is the slot's responsibility.
 type hooks struct {
-	started  func(proc.Group)
-	cleaning func()
-	cleaned  func()
+	starting    func()
+	startFailed func()
+	started     func(proc.Group)
+	cleaning    func()
+	cleaned     func()
 }
 
 // runAttempt starts one worker process and waits for it. It stops early on the timeout or when the
@@ -841,7 +843,13 @@ func runAttempt(ctx context.Context, bin string, o Opts, promptPath, token strin
 	if o.Transcript != nil {
 		o.Transcript.BeginAttempt(kind, o.Task)
 	}
+	if h.starting != nil {
+		h.starting()
+	}
 	if err := cmd.Start(); err != nil {
+		if h.startFailed != nil {
+			h.startFailed()
+		}
 		return attempt{runErr: err}
 	}
 	if appServer != nil {

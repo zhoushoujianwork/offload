@@ -29,7 +29,11 @@ var (
 	ErrRunStillOwned = errors.New("run is still owned by a live caller; stop it through that caller")
 	// ErrRunNotFound means no worker slot records this run ID, so its state
 	// cannot be established. This is not success.
-	ErrRunNotFound = errors.New("no worker slot records this run; its native processes cannot be confirmed")
+	// ErrRunStartUnrecorded means the caller died while starting a native process and never
+	// recorded its process group, so leftover processes can be neither found nor ruled out.
+	// Every later call returns this too.
+	ErrRunStartUnrecorded = errors.New("caller died while starting a native process; its process group was not recorded and cannot be confirmed gone")
+	ErrRunNotFound        = errors.New("no worker slot records this run; its native processes cannot be confirmed")
 )
 
 // ReclaimRun ends the leftover native process group of a run whose caller no
@@ -41,7 +45,9 @@ var (
 // signalled. The group gets SIGTERM, then SIGKILL after the stop grace period,
 // and the call returns only after the group is confirmed gone. On success the
 // worker slot is released from its unresolved state. The call is idempotent.
-// Processes that left the native process group and session are not tracked.
+// A slot marked "starting" with no recorded group (the caller died in that window)
+// is never reported as ended: the call returns ReclaimUnconfirmed with
+// ErrRunStartUnrecorded each time. Processes that left the native process group and session are not tracked.
 //
 // It returns ErrRunStillOwned while the caller is alive and ErrRunNotFound when
 // the run is unknown (including runs started with worker admission disabled).
@@ -56,6 +62,12 @@ func ReclaimRun(ctx context.Context, runID string) (ReclaimOutcome, error) {
 		return ReclaimUnconfirmed, err
 	}
 	g := claim.Group()
+	if g == nil && claim.Starting() {
+		// The caller died after starting (or while starting) a process but before its
+		// group was recorded. A process may be running, so this is never "ended".
+		claim.Finish(false)
+		return ReclaimUnconfirmed, ErrRunStartUnrecorded
+	}
 	if g == nil || !g.Alive() {
 		claim.Finish(true)
 		return ReclaimAlreadyEnded, nil

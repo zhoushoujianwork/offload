@@ -25,6 +25,8 @@ jobs:
           go-version-file: go.mod
       # PanelRenderTests writes one PNG per panel state to OFFLOAD_PANEL_RENDER_DIR before it asserts layout
       # invariants, so the images exist even when this step fails.
+      - name: Reclaim tests
+        run: go test ./pkg/execution/ -run Reclaim
       - name: Swift tests (renders monitor panel states)
         env:
           OFFLOAD_PANEL_RENDER_DIR: ${{ github.workspace }}/panel-renders

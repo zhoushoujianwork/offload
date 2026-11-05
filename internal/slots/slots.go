@@ -6,6 +6,12 @@
 // crashed owner's build and test processes can outlive it. The owner therefore records its worker
 // process group in the slot file, and a slot whose recorded group still has live processes is
 // reported as unresolved and is not reused until they are gone.
+//
+// The group is only known after the process has started. Before starting, the owner therefore
+// persists a "starting" mark. If the owner dies between starting the process and recording its
+// group, the file holds the mark and no group: a process may be running that nobody can name. Such a
+// slot is never reported as free or as already ended. Acquire skips it and ReclaimRun returns
+// unconfirmed, because nothing can prove the process is gone.
 package slots
 
 import (
@@ -37,7 +43,8 @@ type Info struct {
 	OwnerPID   int         `json:"owner_pid"`
 	OwnerStart string      `json:"owner_start,omitempty"`
 	RunID      string      `json:"run_id,omitempty"`
-	Group      *proc.Group `json:"group,omitempty"` // worker process group still to be cleaned up
+	Group      *proc.Group `json:"group,omitempty"`    // worker process group still to be cleaned up
+	Starting   bool        `json:"starting,omitempty"` // a worker process is being started; its group is not recorded yet
 	AcquiredAt time.Time   `json:"acquired_at"`
 }
 
@@ -83,11 +90,31 @@ func (s *Slot) Index() int {
 	return s.idx
 }
 
-// Track records the worker process group this slot is responsible for.
+// Starting persists that a worker process is about to start. Call it before starting the process.
+// Track, StartFailed, Clear and Release clear the mark.
+func (s *Slot) Starting() {
+	if s == nil || s.lock == nil {
+		return
+	}
+	s.info.Starting = true
+	s.write()
+}
+
+// StartFailed says the process did not start, so no group needs recording.
+func (s *Slot) StartFailed() {
+	if s == nil || s.lock == nil {
+		return
+	}
+	s.info.Starting = false
+	s.write()
+}
+
+// Track records the worker process group this slot is responsible for and clears the starting mark.
 func (s *Slot) Track(g proc.Group) {
 	if s == nil || s.lock == nil {
 		return
 	}
+	s.info.Starting = false
 	s.group = &g
 	s.write()
 }
@@ -98,6 +125,7 @@ func (s *Slot) Clear() {
 		return
 	}
 	s.group = nil
+	s.info.Starting = false
 	s.write()
 }
 
@@ -121,6 +149,8 @@ func (s *Slot) Release() (clean bool) {
 	if s.group != nil && !s.group.Alive() {
 		s.group = nil
 	}
+	// A live owner releasing has no start in flight.
+	s.info.Starting = false
 	s.write()
 	if s.lock != nil {
 		s.lock.unlock()
@@ -181,10 +211,19 @@ func tryAcquire(o Options) (*Slot, Wait, error) {
 			continue
 		}
 		var prev Info
-		if b, err := l.readAll(); err == nil && len(b) > 0 && json.Unmarshal(b, &prev) == nil && prev.Group != nil && prev.Group.Alive() {
-			wait.Unresolved = append(wait.Unresolved, fmt.Sprintf("slot %d pgid %d (owner pid %d)", i, prev.Group.PGID, prev.OwnerPID))
-			l.unlock()
-			continue
+		if b, err := l.readAll(); err == nil && len(b) > 0 && json.Unmarshal(b, &prev) == nil {
+			if prev.Group != nil && prev.Group.Alive() {
+				wait.Unresolved = append(wait.Unresolved, fmt.Sprintf("slot %d pgid %d (owner pid %d)", i, prev.Group.PGID, prev.OwnerPID))
+				l.unlock()
+				continue
+			}
+			if prev.Starting && prev.Group == nil {
+				// The owner died while starting a process; the process may still run and
+				// has no recorded group, so the slot cannot be shown free. Reclaim reports it unconfirmed.
+				wait.Unresolved = append(wait.Unresolved, fmt.Sprintf("slot %d starting process with unrecorded group (owner pid %d)", i, prev.OwnerPID))
+				l.unlock()
+				continue
+			}
 		}
 		s := &Slot{idx: i, lock: l, info: Info{OwnerPID: os.Getpid(), OwnerStart: proc.StartToken(os.Getpid()), RunID: o.RunID, AcquiredAt: time.Now()}}
 		s.write()
@@ -285,11 +324,16 @@ type Claim struct {
 // Group is the recorded worker process group, or nil when none is outstanding.
 func (c *Claim) Group() *proc.Group { return c.info.Group }
 
+// Starting reports that the owner died while starting a process and never recorded its group.
+// Whether a process is left cannot be established.
+func (c *Claim) Starting() bool { return c.info.Starting && c.info.Group == nil }
+
 // Finish rewrites the slot with no outstanding group when cleared is true, then
 // releases the lock. The slot keeps its run ID so a repeated reclaim is idempotent.
 func (c *Claim) Finish(cleared bool) {
 	if cleared {
 		c.info.Group = nil
+		c.info.Starting = false
 		if b, err := json.Marshal(c.info); err == nil {
 			_ = c.lock.writeAll(b)
 		}
