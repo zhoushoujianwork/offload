@@ -11,6 +11,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/zhoushoujianwork/offload/internal/transcript"
 )
 
 const envDumpClaude = `#!/bin/sh
@@ -185,20 +187,89 @@ func TestProcessEnvironmentConcurrentRunsAreIndependent(t *testing.T) {
 	}
 }
 
-func TestProcessEnvironmentValuesAreRedactedFromTranscript(t *testing.T) {
-	c := envFixture(t, "claude")
-	dump := filepath.Join(t.TempDir(), "env")
-	t.Setenv("ENV_DUMP", dump)
+type recordingCapture struct {
+	mu    sync.Mutex
+	added []string
+	red   *transcript.Redactor
+	text  strings.Builder
+}
+
+func (r *recordingCapture) AddSecrets(s ...string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.added = append(r.added, s...)
+	if r.red == nil {
+		r.red = transcript.NewRedactor()
+	}
+	r.red.Add(s...)
+}
+func (r *recordingCapture) BeginAttempt(kind, task string) {}
+func (r *recordingCapture) Line(b []byte) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.red == nil {
+		r.red = transcript.NewRedactor()
+	}
+	out, _ := r.red.Apply(string(b))
+	r.text.WriteString(out)
+}
+func (r *recordingCapture) Skipped(string, int) {}
+
+// The backend echoes the variable value into its output, so the assertions
+// prove redaction rather than mere absence.
+func TestProcessEnvironmentValuesAreRedactedFromRecords(t *testing.T) {
+	t.Setenv("OFFLOAD_MAX_WORKERS", "-1")
+	state := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", state)
+	const leak = "pe-leak-value-7f3a91"
+	bin := filepath.Join(t.TempDir(), "fake")
+	script := `#!/bin/sh
+cat >/dev/null
+printf '%s\n' '{"type":"system","subtype":"init","session_id":"s","model":"fixture"}' "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"session_id\":\"s\",\"result\":\"saw $PE_SECRET\"}"
+`
+	if err := os.WriteFile(bin, []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("OFFLOAD_CLAUDE", bin)
+	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	defer server.Close()
+	c, err := New(Config{ProfileName: "fixture", Profile: Profile{Backend: "claude", Model: "fixture", BaseURL: server.URL, Token: "fixture-token"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	capture := &recordingCapture{}
 	var events []string
 	timeout := time.Minute
-	secret := "pe-secret-value-98765"
-	res, err := c.Run(context.Background(), Request{Directory: t.TempDir(), Task: "t", Timeout: &timeout, RecordHistory: false,
-		ProcessEnvironment: &ProcessEnvironment{Set: map[string]string{"PE_SECRET": secret}},
+	res, err := c.Run(context.Background(), Request{Directory: t.TempDir(), Task: "t", Timeout: &timeout, RecordHistory: true, Capture: capture,
+		ProcessEnvironment: &ProcessEnvironment{Set: map[string]string{"PE_SECRET": leak}},
 		OnEvent:            func(e RawEvent) error { events = append(events, string(e.Data)); return nil }})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(strings.Join(events, "\n")+string(res.RawRecord)+res.Report+res.NativeStderr, secret) {
-		t.Fatal("process environment value leaked into result or events")
+	if !res.HistoryRecorded {
+		t.Fatalf("history not recorded: %v", res.HistoryError)
+	}
+	hist, err := os.ReadFile(filepath.Join(state, "offload", "runs.jsonl"))
+	if err != nil || len(hist) == 0 {
+		t.Fatalf("history unreadable: %v", err)
+	}
+	capture.mu.Lock()
+	defer capture.mu.Unlock()
+	if capture.text.Len() == 0 {
+		t.Fatal("capture received no transcript lines")
+	}
+	registered := false
+	for _, s := range capture.added {
+		registered = registered || s == leak
+	}
+	if !registered {
+		t.Fatal("value was not registered for transcript redaction")
+	}
+	for name, body := range map[string]string{
+		"events": strings.Join(events, "\n"), "result": string(res.RawRecord) + res.Report + res.NativeStderr,
+		"history": string(hist), "capture": capture.text.String()} {
+		if strings.Contains(body, leak) {
+			t.Fatalf("process environment value leaked into %s", name)
+		}
 	}
 }

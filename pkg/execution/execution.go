@@ -375,7 +375,7 @@ func (c *Client) Run(ctx context.Context, req Request) (result Result, resultErr
 			if native != nil && native.CodexAppServer {
 				protocol = "codex-app-server"
 			}
-			err := req.OnEvent(RawEvent{RunID: id, CallerRunID: req.CallerRunID, Backend: c.profile.BackendName(), NativeProtocol: protocol, Data: bytes.Clone(line)})
+			err := req.OnEvent(RawEvent{RunID: id, CallerRunID: req.CallerRunID, Backend: c.profile.BackendName(), NativeProtocol: protocol, Data: redactEnvValues(line, envSet)})
 			observerErr = errors.Join(observerErr, err)
 			if err != nil || progress == nil {
 				return err
@@ -394,6 +394,9 @@ func (c *Client) Run(ctx context.Context, req Request) (result Result, resultErr
 			record.Transcript = "captured"
 		}
 	}
+	record.Result = string(redactEnvValues([]byte(record.Result), envSet))
+	record.NativeStderr = string(redactEnvValues([]byte(record.NativeStderr), envSet))
+	record.Error = string(redactEnvValues([]byte(record.Error), envSet))
 	raw, encodeErr := json.Marshal(record)
 	usage, _ := json.Marshal(record.Usage)
 	if record.Usage == nil {
@@ -471,4 +474,16 @@ func validateProcessEnvironment(pe *ProcessEnvironment, isolated bool) (map[stri
 		}
 	}
 	return set, slices.Clone(pe.Unset), nil
+}
+
+// redactEnvValues returns a copy of line with caller-supplied environment
+// values replaced, so a backend echoing them cannot expose them in events.
+func redactEnvValues(line []byte, set map[string]string) []byte {
+	out := bytes.Clone(line)
+	for _, v := range set {
+		if v != "" {
+			out = bytes.ReplaceAll(out, []byte(v), []byte("[REDACTED]"))
+		}
+	}
+	return out
 }
