@@ -487,7 +487,7 @@ func Run(ctx context.Context, o Opts) (rec history.Record, err error) {
 	}
 	rec.ErrorKind = "launch"
 	pub = newPublisher(o, started)
-	slot, err = slots.Acquire(ctx, slots.Options{Dir: slots.Dir(), Max: o.MaxWorkers, OnWait: pub.waiting, Check: config.CheckEnabled})
+	slot, err = slots.Acquire(ctx, slots.Options{Dir: slots.Dir(), Max: o.MaxWorkers, RunID: o.RunID, OnWait: pub.waiting, Check: config.CheckEnabled})
 	if err != nil {
 		if ctx.Err() != nil {
 			rec.StopReason = stopReason(context.Cause(ctx))
