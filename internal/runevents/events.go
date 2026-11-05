@@ -1,4 +1,7 @@
-package cli
+// Package runevents is the sanitized structured run event stream shared by the CLI
+// -events-file and pkg/execution. Events carry correlation and allowlisted
+// activity metadata only, never worker payloads.
+package runevents
 
 import (
 	"encoding/json"
@@ -12,8 +15,8 @@ import (
 	"github.com/zhoushoujianwork/offload/internal/history"
 )
 
-// Events contain only correlation and allowlisted activity metadata, never worker payloads.
-type supervisorEvent struct {
+// Event is one NDJSON line of the sanitized event stream.
+type Event struct {
 	StopReason string `json:"stop_reason,omitempty"`
 	// TerminationClass is canceled, interrupted or killed on a final event of a worker that ended
 	// without a result.
@@ -35,15 +38,25 @@ type supervisorEvent struct {
 	ErrorKind        *string `json:"error_kind,omitempty"`
 	Caller           string  `json:"caller"`
 }
-type eventWriter struct {
-	mu   sync.Mutex
-	w    io.Writer
-	seq  int
-	base supervisorEvent
-	err  error
+
+// Writer numbers and sanitizes events. Each event is written to W (when non-nil)
+// and then passed to Observe (when non-nil). The first error from either is sticky.
+type Writer struct {
+	mu      sync.Mutex
+	W       io.Writer
+	Observe func(Event) error
+	seq     int
+	Base    Event
+	err     error
 }
 
-func openEvents(path string, rec history.Record) (*eventWriter, *os.File, error) {
+// New returns a Writer whose base identity comes from rec.
+func New(w io.Writer, observe func(Event) error, rec history.Record) *Writer {
+	return &Writer{W: w, Observe: observe, Base: Event{SchemaVersion: 1, RunID: rec.RunID, CallerRunID: SafeMeta(rec.CallerRunID), Caller: SafeCaller(rec.Caller), Session: SafeMeta(rec.Session), Backend: SafeMeta(rec.Backend), Model: SafeMeta(rec.Model)}}
+}
+
+// Open exclusively creates an absolute events file.
+func Open(path string, rec history.Record) (*Writer, *os.File, error) {
 	if !filepath.IsAbs(path) {
 		return nil, nil, errors.New("events-file must be absolute")
 	}
@@ -51,10 +64,11 @@ func openEvents(path string, rec history.Record) (*eventWriter, *os.File, error)
 	if err != nil {
 		return nil, nil, err
 	}
-	e := &eventWriter{w: f, base: supervisorEvent{SchemaVersion: 1, RunID: rec.RunID, CallerRunID: safeMeta(rec.CallerRunID), Caller: safeCaller(rec.Caller), Session: safeMeta(rec.Session), Backend: safeMeta(rec.Backend), Model: safeMeta(rec.Model)}}
-	return e, f, nil
+	return New(f, nil, rec), f, nil
 }
-func (e *eventWriter) emit(kind, native, tool string, rec *history.Record) error {
+
+// Emit records one event. rec supplies start and final metadata.
+func (e *Writer) Emit(kind, native, tool string, rec *history.Record) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if e.err != nil {
@@ -64,12 +78,12 @@ func (e *eventWriter) emit(kind, native, tool string, rec *history.Record) error
 		return nil
 	}
 	if rec != nil {
-		e.base.Backend = safeMeta(rec.Backend)
-		e.base.Model = safeMeta(rec.Model)
-		e.base.Session = safeMeta(rec.Session)
+		e.Base.Backend = SafeMeta(rec.Backend)
+		e.Base.Model = SafeMeta(rec.Model)
+		e.Base.Session = SafeMeta(rec.Session)
 	}
 	e.seq++
-	v := e.base
+	v := e.Base
 	v.Type = kind
 	v.Seq = e.seq
 	v.Timestamp = time.Now().UTC().Format(time.RFC3339Nano)
@@ -83,23 +97,32 @@ func (e *eventWriter) emit(kind, native, tool string, rec *history.Record) error
 			v.IdleTimeout = rec.IdleTimeout
 			v.Status = rec.Status
 			v.ExitCode = rec.ExitCode
-			kind := safeKind(rec.ErrorKind)
+			kind := SafeKind(rec.ErrorKind)
 			v.ErrorKind = &kind
 		}
 	}
-	b, err := json.Marshal(v)
-	if err == nil {
-		b = append(b, '\n')
-		var n int
-		n, err = e.w.Write(b)
-		if err == nil && n != len(b) {
-			err = io.ErrShortWrite
+	var err error
+	if e.W != nil {
+		var b []byte
+		b, err = json.Marshal(v)
+		if err == nil {
+			b = append(b, '\n')
+			var n int
+			n, err = e.W.Write(b)
+			if err == nil && n != len(b) {
+				err = io.ErrShortWrite
+			}
 		}
+	}
+	if err == nil && e.Observe != nil {
+		err = e.Observe(v)
 	}
 	e.err = err
 	return err
 }
-func (e *eventWriter) progress(line []byte) error {
+
+// Progress records an allowlisted progress event for one native output line.
+func (e *Writer) Progress(line []byte) error {
 	var v struct {
 		Type    string `json:"type"`
 		Session string `json:"session_id"`
@@ -160,10 +183,10 @@ func (e *eventWriter) progress(line []byte) error {
 	}
 	if validSession(session) {
 		e.mu.Lock()
-		e.base.Session = session
+		e.Base.Session = session
 		e.mu.Unlock()
 	}
-	return e.emit("progress", native, tool, nil)
+	return e.Emit("progress", native, tool, nil)
 }
 func validSession(s string) bool {
 	if len(s) == 0 || len(s) > 128 {
@@ -177,7 +200,7 @@ func validSession(s string) bool {
 	return true
 }
 
-func safeMeta(s string) string {
+func SafeMeta(s string) string {
 	if len(s) > 128 {
 		return ""
 	}
@@ -189,7 +212,7 @@ func safeMeta(s string) string {
 	return s
 }
 
-func safeKind(kind string) string {
+func SafeKind(kind string) string {
 	switch kind {
 	case "", "configuration", "unsupported_tools", "launch", "execution", "timeout", "canceled", "events_io", "capacity", "rate_limit":
 		return kind
@@ -198,8 +221,8 @@ func safeKind(kind string) string {
 	}
 }
 
-// safeCaller reports only a canonical caller; anything else is unspecified.
-func safeCaller(s string) string {
+// SafeCaller reports only a canonical caller; anything else is unspecified.
+func SafeCaller(s string) string {
 	if c, err := history.NormalizeCaller(s); err == nil {
 		return c
 	}
