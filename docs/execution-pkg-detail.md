@@ -51,6 +51,24 @@ separate completeness/redaction contract through the public `Capture` interface;
 the capture owner still creates/finalizes it. `RawEvent` is not a token delta or
 a unified tool schema. No credentials are deliberately added to event metadata.
 
+`OnRunEvent` receives sanitized `RunEvent` values, the same type and JSON shape
+(including `schema_version`) as the CLI `-events-file` NDJSON, built by the same
+code. Events are `start` (run ID, backend, model, and the requested native
+session), one `progress` per native output line (allowlisted native type and tool
+category only), and `final` (status, exit code, error kind, stop reason). The
+native session ID appears on the first progress event after the backend reports
+it, and on `final`. They never contain prompts, model text, tool arguments or
+credentials, so they are safe to persist. Differences from `OnEvent`:
+
+- `OnEvent` gives raw backend lines (format differs per backend, sensitive);
+  `OnRunEvent` gives one normalized, sanitized format.
+- The two callbacks and `Capture` are independent and may be combined.
+- Both are called synchronously and in order, so a slow callback blocks the run.
+  An error from `OnRunEvent` stops the owned execution with error kind
+  `events_io`, and is kept in `RunError.Cause`. An error from the `start` event
+  prevents the native process from launching. As with `-events-file`, progress
+  events stop after 10001 events; `final` is still delivered.
+
 ## Compatibility and lifecycle
 
 The CLI continues owning parsing, profile/account selection, session/thread

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/zhoushoujianwork/offload/internal/runevents"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -42,7 +43,7 @@ func TestSupervisorFinalJSONAndEvents(t *testing.T) {
 	}
 	lines := bytes.Split(bytes.TrimSpace(b), []byte("\n"))
 	for i, line := range lines {
-		var e supervisorEvent
+		var e runevents.Event
 		if err := json.Unmarshal(line, &e); err != nil {
 			t.Fatal(err)
 		}
@@ -116,21 +117,21 @@ type failedEventWriter struct{}
 func (failedEventWriter) Write([]byte) (int, error) { return 0, errors.New("disk full") }
 func TestEventBoundsAndFailure(t *testing.T) {
 	var b bytes.Buffer
-	e := &eventWriter{w: &b, base: supervisorEvent{SchemaVersion: 1}}
+	e := &runevents.Writer{W: &b, Base: runevents.Event{SchemaVersion: 1}}
 	for i := 0; i < 10010; i++ {
-		if err := e.progress([]byte(`{"type":"SECRET_TYPE","message":"SECRET","item":{"type":"SECRET_TOOL"}}`)); err != nil {
+		if err := e.Progress([]byte(`{"type":"SECRET_TYPE","message":"SECRET","item":{"type":"SECRET_TOOL"}}`)); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if e.seq != 10001 || bytes.Contains(b.Bytes(), []byte("SECRET")) {
-		t.Fatal(e.seq)
+	if n := bytes.Count(b.Bytes(), []byte("\n")); n != 10001 || bytes.Contains(b.Bytes(), []byte("SECRET")) {
+		t.Fatal(n)
 	}
 	rec := history.Record{Status: "error", ErrorKind: "execution"}
-	if err := e.emit("final", "", "", &rec); err != nil || e.seq != 10002 {
-		t.Fatal(err, e.seq)
+	if err := e.Emit("final", "", "", &rec); err != nil || bytes.Count(b.Bytes(), []byte("\n")) != 10002 {
+		t.Fatal(err, bytes.Count(b.Bytes(), []byte("\n")))
 	}
-	e = &eventWriter{w: failedEventWriter{}}
-	if err := e.emit("start", "", "", nil); err == nil {
+	e = &runevents.Writer{W: failedEventWriter{}}
+	if err := e.Emit("start", "", "", nil); err == nil {
 		t.Fatal("write failure ignored")
 	}
 }
@@ -214,8 +215,8 @@ func TestStructuredErrorKinds(t *testing.T) {
 
 func TestClaudeProgressSanitizesToolMetadata(t *testing.T) {
 	var b bytes.Buffer
-	e := &eventWriter{w: &b}
-	if err := e.progress([]byte(`{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"SECRET"}}]}}`)); err != nil {
+	e := &runevents.Writer{W: &b}
+	if err := e.Progress([]byte(`{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"SECRET"}}]}}`)); err != nil {
 		t.Fatal(err)
 	}
 	if bytes.Contains(b.Bytes(), []byte("SECRET")) || !bytes.Contains(b.Bytes(), []byte(`"tool_category":"shell"`)) {
@@ -423,7 +424,7 @@ func TestIdleCLIProtocol(t *testing.T) {
 				t.Fatal(err)
 			}
 			lines := bytes.Split(bytes.TrimSpace(b), []byte("\n"))
-			var final supervisorEvent
+			var final runevents.Event
 			if err := json.Unmarshal(lines[len(lines)-1], &final); err != nil {
 				t.Fatal(err)
 			}
@@ -476,11 +477,11 @@ func TestProviderFailureResultKinds(t *testing.T) {
 
 func TestSafeKind(t *testing.T) {
 	for _, kind := range []string{"", "configuration", "unsupported_tools", "launch", "execution", "timeout", "canceled", "events_io", "capacity", "rate_limit"} {
-		if safeKind(kind) != kind {
+		if runevents.SafeKind(kind) != kind {
 			t.Fatal(kind)
 		}
 	}
-	if safeKind("PRIVATE_PROVIDER_MESSAGE") != "execution" {
+	if runevents.SafeKind("PRIVATE_PROVIDER_MESSAGE") != "execution" {
 		t.Fatal("unknown kind escaped allowlist")
 	}
 }

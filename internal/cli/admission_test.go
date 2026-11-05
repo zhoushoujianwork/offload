@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"github.com/zhoushoujianwork/offload/internal/runevents"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -385,7 +386,7 @@ sleep 300
 					t.Fatal(err)
 				}
 				for _, line := range bytes.Split(data, []byte("\n")) {
-					var event supervisorEvent
+					var event runevents.Event
 					if json.Unmarshal(line, &event) == nil && event.Type == "progress" && event.Session == "s-x" && pidFrom(childPID) > 0 {
 						return true
 					}
