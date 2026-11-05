@@ -1,7 +1,7 @@
 import Foundation
 
-/// Replaces an installed app bundle with a staged one and rolls back on failure. Only same-volume
-/// renames are used, so each step is atomic and undoable. No privileges are needed or requested.
+/// Replaces an installed app bundle with a staged one and rolls back on failure. The old app is
+/// archived so macOS does not discover a second runnable bundle at the backup path.
 struct AppSwapper {
     var current: URL
     var staged: URL
@@ -24,8 +24,12 @@ struct AppSwapper {
         guard fm.fileExists(atPath: current.path) else { return .rolledBack(reason: "the installed app is missing") }
         if fm.fileExists(atPath: backup.path) { return .rolledBack(reason: "a backup from an earlier update is in the way") }
 
-        do { try fm.moveItem(at: current, to: backup) } catch {
-            return .rolledBack(reason: "could not move the current app aside: \(error.localizedDescription)")
+        do { try archiveCurrent() } catch {
+            try? fm.removeItem(at: backup)
+            return .rolledBack(reason: "could not back up the current app: \(error.localizedDescription)")
+        }
+        do { try fm.removeItem(at: current) } catch {
+            return .needsManualRecovery(reason: "could not remove the current app: \(error.localizedDescription); the previous app is kept at \(backup.path)")
         }
         do { try fm.moveItem(at: staged, to: current) } catch {
             return restoreBackup(after: "could not move the new app into place: \(error.localizedDescription)", removeNew: false)
@@ -44,11 +48,34 @@ struct AppSwapper {
             if (try? fm.moveItem(at: current, to: failed)) != nil { try? fm.removeItem(at: failed) }
             else { try? fm.removeItem(at: current) }
         }
-        do { try fm.moveItem(at: backup, to: current) } catch {
+        do { try extractBackup() } catch {
             return .needsManualRecovery(reason: "\(reason); the previous app is kept at \(backup.path)")
         }
+        try? fm.removeItem(at: backup)
         try? relaunch(current)
         return .rolledBack(reason: reason)
+    }
+
+    private func archiveCurrent() throws {
+        try runDitto(["-c", "-k", "--sequesterRsrc", "--keepParent", current.path, backup.path])
+    }
+
+    private func extractBackup() throws {
+        try runDitto(["-x", "-k", backup.path, current.deletingLastPathComponent().path])
+    }
+
+    private func runDitto(_ arguments: [String]) throws {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/ditto")
+        process.arguments = arguments
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        try process.run()
+        process.waitUntilExit()
+        guard process.terminationStatus == 0 else {
+            throw NSError(domain: "OffloadMonitor.AppSwapper", code: Int(process.terminationStatus),
+                          userInfo: [NSLocalizedDescriptionKey: "ditto exited with status \(process.terminationStatus)"])
+        }
     }
 }
 

@@ -86,8 +86,13 @@ struct UpdateService {
         let dir = parent.appendingPathComponent(".OffloadMonitor-update-\(UUID().uuidString)", isDirectory: true)
         do {
             try fm.createDirectory(at: dir, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
-            try await ArchiveValidator.extract(zip: zip, into: dir)
+            try Data().write(to: dir.appendingPathComponent(".metadata_never_index"))
+            let unpack = dir.appendingPathComponent("unpack", isDirectory: true)
+            try fm.createDirectory(at: unpack, withIntermediateDirectories: false)
+            try await ArchiveValidator.extract(zip: zip, into: unpack)
             let bundle = dir.appendingPathComponent(ArchiveValidator.topLevel, isDirectory: true)
+            try fm.moveItem(at: unpack.appendingPathComponent(ArchiveValidator.topLevel, isDirectory: true), to: bundle)
+            try fm.removeItem(at: unpack)
             try ArchiveValidator.validateBundle(bundle, expectedVersion: candidate.version)
             if verifySignature { try await ArchiveValidator.verifySignature(bundle) }
             return Staged(directory: dir, bundle: bundle)
@@ -118,7 +123,7 @@ struct UpdateService {
         guard let exe = Bundle.main.executableURL else { throw UpdateError.helperFailed("executable not found") }
         let helper = staged.directory.appendingPathComponent("install-helper")
         let backup = installedApp.deletingLastPathComponent()
-            .appendingPathComponent(".\(installedApp.lastPathComponent).backup", isDirectory: true)
+            .appendingPathComponent(".\(installedApp.lastPathComponent).backup.zip")
         var copied = false
         do {
             try fm.copyItem(at: exe, to: helper)

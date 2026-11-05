@@ -112,6 +112,7 @@ final class ArchiveAndSwapTests: XCTestCase {
         let staged = try await stage(z, candidate: try candidate(for: z))
         XCTAssertTrue(fm.isExecutableFile(atPath: staged.bundle.appendingPathComponent("Contents/Resources/offload").path))
         XCTAssertEqual(staged.bundle.deletingLastPathComponent(), staged.directory)
+        XCTAssertTrue(fm.fileExists(atPath: staged.directory.appendingPathComponent(".metadata_never_index").path))
     }
 
     func testInternalSymlinkAllowedEscapingSymlinkRejected() async throws {
@@ -190,14 +191,20 @@ final class ArchiveAndSwapTests: XCTestCase {
         let stagingDir = apps.appendingPathComponent(".staging"); try fm.createDirectory(at: stagingDir, withIntermediateDirectories: true)
         let cur = try makeApp(at: apps, version: "0.1.0", marker: "old")
         let staged = try makeApp(at: stagingDir, version: "0.2.0", marker: "new")
-        return (cur, staged, apps.appendingPathComponent(".Offload Monitor.app.backup"))
+        return (cur, staged, apps.appendingPathComponent(".Offload Monitor.app.backup.zip"))
     }
     func marker(_ app: URL) -> String? { try? String(contentsOf: app.appendingPathComponent("Contents/Resources/marker.txt")) }
 
     func testSwapSucceeds() throws {
         let f = try swapFixture()
         var launched: URL?
-        let out = AppSwapper(current: f.cur, staged: f.staged, backup: f.backup, relaunch: { launched = $0 }).run()
+        let out = AppSwapper(current: f.cur, staged: f.staged, backup: f.backup, relaunch: { url in
+            launched = url
+            XCTAssertEqual(url, f.cur)
+            XCTAssertEqual(self.marker(url), "new")
+            XCTAssertTrue(self.fm.fileExists(atPath: f.backup.path))
+            XCTAssertFalse(self.fm.fileExists(atPath: f.backup.deletingPathExtension().path))
+        }).run()
         XCTAssertEqual(out, .installed)
         XCTAssertEqual(marker(f.cur), "new")
         XCTAssertEqual(launched, f.cur)
@@ -208,7 +215,12 @@ final class ArchiveAndSwapTests: XCTestCase {
         let f = try swapFixture()
         var calls: [String?] = []
         let out = AppSwapper(current: f.cur, staged: f.staged, backup: f.backup, relaunch: { [self] url in
-            calls.append(marker(url)); if calls.count == 1 { throw Boom() }
+            calls.append(marker(url))
+            if calls.count == 1 {
+                XCTAssertTrue(fm.fileExists(atPath: f.backup.path))
+                XCTAssertFalse(fm.fileExists(atPath: f.backup.deletingPathExtension().path))
+                throw Boom()
+            }
         }).run()
         guard case .rolledBack = out else { return XCTFail("\(out)") }
         XCTAssertEqual(marker(f.cur), "old")
@@ -237,7 +249,7 @@ final class ArchiveAndSwapTests: XCTestCase {
 
     func testExistingBackupBlocksSwap() throws {
         let f = try swapFixture()
-        try fm.createDirectory(at: f.backup, withIntermediateDirectories: true)
+        try Data("old backup".utf8).write(to: f.backup)
         let out = AppSwapper(current: f.cur, staged: f.staged, backup: f.backup, relaunch: { _ in XCTFail() }).run()
         guard case .rolledBack = out else { return XCTFail("\(out)") }
         XCTAssertEqual(marker(f.cur), "old")
