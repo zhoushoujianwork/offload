@@ -90,3 +90,13 @@ the owning Host's validated session; omit it when that cannot be reconstructed.
 A dedicated continuation may pass `MonitorResumeSource()` as `ResumedFrom` to
 link the new run. This metadata grants no execution permissions.
 See [task controls](monitor-task-controls.md).
+
+## Reading transcripts
+
+`execution.ReadTranscript(execution.TranscriptReadOptions{RunID, CallerRunID, Cursor, Limit, MaxBytes})`
+and `execution.ListTranscripts(callerRunID, limit)` read what `CaptureTranscript` wrote. They wrap the
+same reader as `offload transcript read|list --json`, and the response types are aliases, so the JSON is
+identical. Reading opens only the requested run's file, starts no backend and uses no worker slot.
+A missing run or invalid cursor is reported in `Availability` and `Reason` (`not_found`,
+`cursor_invalid`), not as an error. Page by passing `NextCursor` back as `Cursor` while `HasMore` is true.
+See [transcripts](execution-transcript.md).

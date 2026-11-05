@@ -461,3 +461,45 @@ printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens
  capture:=read(t,filepath.Join(dir,"state","offload","transcripts",ids[0]+".ndjson"))
  if !strings.Contains(capture,"execution_end")||!strings.Contains(capture,"canceled"){t.Fatal("canceled evidence lost")}
 }
+
+func TestPublicTranscriptReadPagesCapturedRun(t *testing.T) {
+	c, dir, _ := fixture(t, "codex", codexReply)
+	id := strings.Repeat("c", 32)
+	if _, err := c.Run(context.Background(), execution.Request{RunID: id, CallerRunID: "caller-1", Caller: "agh", Task: "t", Directory: dir, Monitor: &execution.MonitorOptions{CaptureTranscript: true}}); err != nil {
+		t.Fatal(err)
+	}
+	var events []json.RawMessage
+	cursor := ""
+	for page := 0; page < 50; page++ {
+		r := execution.ReadTranscript(execution.TranscriptReadOptions{RunID: id, CallerRunID: "caller-1", Cursor: cursor, Limit: 1})
+		if r.Availability != "available" {
+			t.Fatalf("%s %s", r.Availability, r.Reason)
+		}
+		events = append(events, r.Events...)
+		if !r.HasMore {
+			break
+		}
+		cursor = r.NextCursor
+	}
+	if !strings.Contains(string(mustJSON(t, events)), "library answer") {
+		t.Fatalf("message not read back: %s", mustJSON(t, events))
+	}
+	if l := execution.ListTranscripts("caller-1", 0); len(l.Transcripts) != 1 || l.Transcripts[0].RunID != id {
+		t.Fatalf("%+v", l)
+	}
+	if r := execution.ReadTranscript(execution.TranscriptReadOptions{RunID: strings.Repeat("d", 32)}); r.Availability != "not_found" {
+		t.Fatalf("%+v", r)
+	}
+	if r := execution.ReadTranscript(execution.TranscriptReadOptions{RunID: id, Cursor: "bogus"}); r.Availability != "cursor_invalid" {
+		t.Fatalf("%+v", r)
+	}
+}
+
+func mustJSON(t *testing.T, v any) []byte {
+	t.Helper()
+	b, err := json.Marshal(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
+}
