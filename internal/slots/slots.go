@@ -36,6 +36,7 @@ var PollEvery = 250 * time.Millisecond
 type Info struct {
 	OwnerPID   int         `json:"owner_pid"`
 	OwnerStart string      `json:"owner_start,omitempty"`
+	RunID      string      `json:"run_id,omitempty"`
 	Group      *proc.Group `json:"group,omitempty"` // worker process group still to be cleaned up
 	AcquiredAt time.Time   `json:"acquired_at"`
 }
@@ -60,6 +61,7 @@ func (w Wait) Reason() string {
 type Options struct {
 	Dir    string
 	Max    int          // <= 0 disables admission control
+	RunID  string       // optional; lets Reclaim find this run after its owner crashed
 	Check  func() error // checked before every admission attempt
 	OnWait func(Wait)   // called on every failed attempt
 }
@@ -101,6 +103,9 @@ func (s *Slot) Clear() {
 
 func (s *Slot) write() {
 	s.info.Group = s.group
+	if s.lock == nil {
+		return
+	}
 	if b, err := json.Marshal(s.info); err == nil {
 		_ = s.lock.writeAll(b)
 	}
@@ -117,8 +122,10 @@ func (s *Slot) Release() (clean bool) {
 		s.group = nil
 	}
 	s.write()
-	s.lock.unlock()
-	s.lock = nil
+	if s.lock != nil {
+		s.lock.unlock()
+		s.lock = nil
+	}
 	return s.group == nil
 }
 
@@ -179,7 +186,7 @@ func tryAcquire(o Options) (*Slot, Wait, error) {
 			l.unlock()
 			continue
 		}
-		s := &Slot{idx: i, lock: l, info: Info{OwnerPID: os.Getpid(), OwnerStart: proc.StartToken(os.Getpid()), AcquiredAt: time.Now()}}
+		s := &Slot{idx: i, lock: l, info: Info{OwnerPID: os.Getpid(), OwnerStart: proc.StartToken(os.Getpid()), RunID: o.RunID, AcquiredAt: time.Now()}}
 		s.write()
 		return s, wait, nil
 	}
@@ -259,4 +266,68 @@ type fileLock interface {
 	readAll() ([]byte, error)
 	writeAll([]byte) error
 	unlock()
+}
+
+// Reclaim errors. ErrRunActive means the run's owner still holds its slot lock.
+// ErrRunUnknown means no slot file records the run, so nothing can be confirmed.
+var (
+	ErrRunActive  = errors.New("run is still owned by a live process")
+	ErrRunUnknown = errors.New("no worker slot records this run")
+)
+
+// Claim is an exclusive hold on the slot that recorded a run whose owner is gone.
+type Claim struct {
+	lock  fileLock
+	info  Info
+	Index int
+}
+
+// Group is the recorded worker process group, or nil when none is outstanding.
+func (c *Claim) Group() *proc.Group { return c.info.Group }
+
+// Finish rewrites the slot with no outstanding group when cleared is true, then
+// releases the lock. The slot keeps its run ID so a repeated reclaim is idempotent.
+func (c *Claim) Finish(cleared bool) {
+	if cleared {
+		c.info.Group = nil
+		if b, err := json.Marshal(c.info); err == nil {
+			_ = c.lock.writeAll(b)
+		}
+	}
+	c.lock.unlock()
+}
+
+// ClaimRun locks the slot that recorded runID. It never waits: a held lock means
+// the owner is alive and yields ErrRunActive.
+func ClaimRun(dir, runID string) (*Claim, error) {
+	if runID == "" || !Supported {
+		return nil, ErrRunUnknown
+	}
+	names, _ := filepath.Glob(filepath.Join(dir, "slot-*.lock"))
+	busy := false
+	for i, name := range names {
+		l, ok, err := openLock(name)
+		if err != nil {
+			return nil, err
+		}
+		if !ok {
+			// The lock is held, so the record cannot be read safely; peek at it.
+			if b, err := os.ReadFile(name); err == nil {
+				var in Info
+				if json.Unmarshal(b, &in) == nil && in.RunID == runID {
+					busy = true
+				}
+			}
+			continue
+		}
+		var in Info
+		if b, err := l.readAll(); err == nil && len(b) > 0 && json.Unmarshal(b, &in) == nil && in.RunID == runID {
+			return &Claim{lock: l, info: in, Index: i}, nil
+		}
+		l.unlock()
+	}
+	if busy {
+		return nil, ErrRunActive
+	}
+	return nil, ErrRunUnknown
 }
