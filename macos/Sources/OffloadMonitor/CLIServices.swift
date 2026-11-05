@@ -71,6 +71,14 @@ struct OffloadCLI {
         _ = try await run(["default", name])
     }
 
+    /// `offload profile test <name>`: one minimal real model call. Exit 1 (test failed) is reported through the
+    /// refreshed snapshot, so only a launch failure throws.
+    func testProfile(_ name: String) async throws -> ProfilesSnapshot {
+        guard Self.validArgumentName(name) else { throw CLIError.invalidArgument("That profile name cannot be tested from here.") }
+        _ = try? await run(["profile", "test", name])
+        return try await profiles()
+    }
+
     func saveProfile(_ request: ProfileSaveRequest) async throws -> ProfilesSnapshot {
         let body: Data
         do { body = try JSONEncoder().encode(request) } catch { throw CLIError.invalidArgument("The profile could not be encoded.") }

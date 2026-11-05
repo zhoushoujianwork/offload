@@ -13,7 +13,18 @@ struct ProfileEntry: Codable, Equatable, Identifiable {
     var reasoningEffort: String
     var serviceTier: String
     var authMode: String
+    /// Optional so older CLI output still decodes; nil means available.
+    var available: Bool? = nil
+    var unavailableReason: String? = nil
+    var unavailableAt: String? = nil
     var id: String { name }
+    var isUnavailable: Bool { available == false }
+    /// Hover text for an unavailable profile: the sanitized reason and when it happened.
+    var unavailableDetail: String {
+        let reason = (unavailableReason ?? "").isEmpty ? "Unavailable" : unavailableReason!
+        guard let at = unavailableAt, !at.isEmpty else { return reason }
+        return "\(reason)\nSince \(at)"
+    }
     var isCodex: Bool { backend == "codex" }
 }
 
@@ -319,4 +330,14 @@ extension ProfileDraft {
         if stored == original { return .none }
         return draft.isDirty ? .keepEdits : .reload(stored)
     }
+}
+
+/// Wording shared by the menu, the Settings form and the render tests.
+enum ProfilePresentation {
+    static func pickerTitle(_ p: ProfileEntry) -> String {
+        let base = p.model.isEmpty ? p.name : "\(p.name) — \(p.model)"
+        return p.isUnavailable ? "\(base) (unavailable)" : base
+    }
+    static func retestTitle(testing: Bool) -> String { testing ? "Testing…" : "Re-test" }
+    static func testing(_ running: Bool) -> String? { running ? "Testing profile…" : nil }
 }

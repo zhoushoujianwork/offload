@@ -24,6 +24,11 @@ type ProfileInfo struct {
 	AuthMode string
 	// ToolRestrictions reports whether the backend enforces tool restrictions.
 	ToolRestrictions bool
+	// Available is false after an unrecoverable failure. UnavailableReason is
+	// sanitized and UnavailableAt is an RFC 3339 UTC time; both are empty when available.
+	Available         bool
+	UnavailableReason string
+	UnavailableAt     string
 }
 
 // DefaultConfigPath returns the standard config path that the offload CLI uses
@@ -55,10 +60,14 @@ func ListProfiles(path string) ([]ProfileInfo, error) {
 	for _, n := range names {
 		p := cfg.Profiles[n]
 		base, redacted := safeBaseURL(p.BaseURL)
-		out = append(out, ProfileInfo{Name: n, Backend: p.BackendName(), Model: p.Model, Endpoint: p.Endpoint,
-			ReasoningEffort: p.ReasoningEffort, ServiceTier: p.ServiceTier, CodexAccount: p.CodexAccount,
-			BaseURL: base, BaseURLRedacted: redacted, AuthMode: profileAuthMode(p),
-			ToolRestrictions: p.SupportsToolRestrictions()})
+		info := ProfileInfo{Available: p.Available()}
+		if p.Unavailable != nil {
+			info.UnavailableReason, info.UnavailableAt = config.SanitizeReason(p.Unavailable.Reason), p.Unavailable.At
+		}
+		info.Name, info.Backend, info.Model, info.Endpoint = n, p.BackendName(), p.Model, p.Endpoint
+		info.ReasoningEffort, info.ServiceTier, info.CodexAccount = p.ReasoningEffort, p.ServiceTier, p.CodexAccount
+		info.BaseURL, info.BaseURLRedacted, info.AuthMode, info.ToolRestrictions = base, redacted, profileAuthMode(p), p.SupportsToolRestrictions()
+		out = append(out, info)
 	}
 	return out, nil
 }

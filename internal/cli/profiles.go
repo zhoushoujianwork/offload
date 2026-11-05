@@ -35,6 +35,10 @@ type profileEntry struct {
 	// ToolRestrictions reports whether -allowed-tools, -disallowed-tools and -tools-disabled are
 	// enforced by this profile's backend.
 	ToolRestrictions bool `json:"tool_restrictions"`
+	// Available is false after an unrecoverable failure; the reason is sanitized.
+	Available         bool   `json:"available"`
+	UnavailableReason string `json:"unavailable_reason"`
+	UnavailableAt     string `json:"unavailable_at"`
 }
 
 // profileSnapshot is the `offload profiles --json` document (schema_version 1).
@@ -108,7 +112,7 @@ func buildProfileSnapshot(path string) (profileSnapshot, error) {
 		snap.Profiles = append(snap.Profiles, profileEntry{CodexAccount: p.CodexAccount, Name: n, Backend: p.BackendName(), BaseURL: base,
 			BaseURLRedacted: redacted, Model: p.Model, Endpoint: p.Endpoint,
 			ReasoningEffort: p.ReasoningEffort, ServiceTier: p.ServiceTier, AuthMode: authMode(p),
-			ToolRestrictions: p.SupportsToolRestrictions()})
+			ToolRestrictions: p.SupportsToolRestrictions()}.withAvailability(p))
 	}
 	envName := os.Getenv("OFFLOAD_PROFILE")
 	switch {
@@ -294,6 +298,9 @@ func applyProfileRequest(p config.Profile, req profileSaveRequest) (config.Profi
 // cmdProfile handles `offload profile save --json`. Creating selects the new profile as default
 // (SaveProfile semantics); editing keeps the saved default. Names are exact and immutable.
 func cmdProfile(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
+	if len(args) >= 1 && args[0] == "test" {
+		return cmdProfileTest(args[1:], stdout, stderr)
+	}
 	if len(args) != 2 || args[0] != "save" || args[1] != "--json" {
 		return fail(stderr, errors.New(profileSaveUsage))
 	}
@@ -326,4 +333,12 @@ func cmdProfile(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return fail(stderr, err)
 	}
 	return writeSnapshot(stdout, stderr, snap)
+}
+
+func (e profileEntry) withAvailability(p config.Profile) profileEntry {
+	e.Available = p.Available()
+	if p.Unavailable != nil {
+		e.UnavailableReason, e.UnavailableAt = config.SanitizeReason(p.Unavailable.Reason), p.Unavailable.At
+	}
+	return e
 }

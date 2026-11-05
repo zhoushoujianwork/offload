@@ -245,9 +245,13 @@ struct ProfileMenu: View {
                     Button {
                         Task { await profiles.use(p.name) }
                     } label: {
-                        let t = p.model.isEmpty ? p.name : "\(p.name) — \(p.model)"
-                        if p.name == s.active { Label(t, systemImage: "checkmark") } else { Text(t) }
+                        let base = p.model.isEmpty ? p.name : "\(p.name) — \(p.model)"
+                        let t = p.isUnavailable ? "\(base) (unavailable)" : base
+                        if p.name == s.active { Label(t, systemImage: "checkmark") }
+                        else if p.isUnavailable { Label(t, systemImage: "exclamationmark.triangle") }
+                        else { Text(t) }
                     }
+                    .help(p.isUnavailable ? p.unavailableDetail : "")
                 }
                 if s.overriddenByEnvironment {
                     Divider()

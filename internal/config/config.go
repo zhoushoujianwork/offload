@@ -26,6 +26,8 @@ type Profile struct {
 	ServiceTier     string   `json:"service_tier,omitempty"`
 	// Endpoint is the gateway kind: "cc" (Claude Code proxy) or "llm" (generic LLM gateway); claude backend only, informational.
 	Endpoint string `json:"endpoint,omitempty"`
+	// Unavailable is set when a run or test found an unrecoverable failure; nil means available.
+	Unavailable *Unavailable `json:"unavailable,omitempty"`
 	// TokenCmd prints the token on stdout (e.g. `security find-generic-password -s offload-minimax -w`).
 	// Preferred over Token so secrets stay out of the config file.
 	TokenCmd string `json:"token_cmd,omitempty"`
@@ -106,7 +108,7 @@ func Load(path string) (*Config, error) {
 }
 
 // Resolve picks a profile by name or alias ("" means OFFLOAD_PROFILE, then config default).
-func (c *Config) Resolve(name string) (string, Profile, error) {
+func (c *Config) resolveNamed(name string) (string, Profile, error) {
 	if name == "" {
 		name = os.Getenv("OFFLOAD_PROFILE")
 	}

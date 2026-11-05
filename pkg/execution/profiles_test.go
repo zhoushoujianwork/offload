@@ -217,3 +217,21 @@ func TestProfilesSymlinkAndPermissionsMatchCLI(t *testing.T) {
 		t.Fatalf("set lib %v cli %d", libSet, code)
 	}
 }
+
+func TestListProfilesReportsAvailability(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	body := `{"default":"a","profiles":{"a":{"base_url":"https://a.example","model":"m","token_cmd":"echo a","unavailable":{"reason":"quota exhausted: out of credits","at":"2026-01-02T03:04:05Z"}},"b":{"base_url":"https://b.example","model":"m","token_cmd":"echo b"}}}`
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	list, err := execution.ListProfiles(path)
+	if err != nil || len(list) != 2 {
+		t.Fatalf("list=%v err=%v", list, err)
+	}
+	if list[0].Available || list[0].UnavailableReason != "quota exhausted: out of credits" || list[0].UnavailableAt != "2026-01-02T03:04:05Z" {
+		t.Fatalf("a = %+v", list[0])
+	}
+	if !list[1].Available || list[1].UnavailableReason != "" || list[1].UnavailableAt != "" {
+		t.Fatalf("b = %+v", list[1])
+	}
+}
