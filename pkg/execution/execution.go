@@ -60,7 +60,22 @@ type RawEvent struct {
 	Data                                        []byte
 }
 
+// ProcessEnvironment describes per-run changes to the native child process
+// environment, applied on top of the base environment. Set adds or replaces
+// variables and Unset removes them; a name in both is set. Values are passed
+// only to the child and are redacted from transcripts; they are never recorded
+// in events or history. Variables Offload owns (ANTHROPIC_*, CODEX_HOME, Codex
+// and OpenAI credentials, Claude configuration, and HOME/XDG_* for isolated
+// environments) are rejected as a configuration error.
+type ProcessEnvironment struct {
+	Set   map[string]string
+	Unset []string
+}
+
 type Request struct {
+	// ProcessEnvironment optionally changes this run's child environment only.
+	// Nil leaves the environment unchanged.
+	ProcessEnvironment *ProcessEnvironment
 	// PresetDocuments are caller-reviewed instructions, never ambient files.
 	PresetDocuments []PresetDocument
 	// EnvironmentDirectory opts into an environment returned by NewEnvironment.
@@ -282,7 +297,11 @@ func (c *Client) Run(ctx context.Context, req Request) (result Result, resultErr
 	if err := native.Validate(c.profile.BackendName(), req.NativeSessionID, req.ToolsDisabled); err != nil {
 		return setupError("unsupported_controls", err)
 	}
-	o := worker.Opts{ProfileName: c.cfg.ProfileName, Profile: c.profile, Model: req.Model,
+	envSet, envUnset, err := validateProcessEnvironment(req.ProcessEnvironment, req.EnvironmentDirectory != "")
+	if err != nil {
+		return setupError("configuration", err)
+	}
+	o := worker.Opts{EnvSet: envSet, EnvUnset: envUnset, ProfileName: c.cfg.ProfileName, Profile: c.profile, Model: req.Model,
 		EnvironmentDirectory: req.EnvironmentDirectory,
 		Native:               native,
 		CodexHome:            req.CodexHome, RunID: id, CallerRunID: req.CallerRunID, Caller: req.Caller,
@@ -376,4 +395,43 @@ func (c *Client) Run(ctx context.Context, req Request) (result Result, resultErr
 		cause = errors.New("native execution did not complete successfully")
 	}
 	return result, &RunError{Kind: result.ErrorKind, Status: result.Status, ExitCode: exit, Cause: cause}
+}
+
+func validateProcessEnvironment(pe *ProcessEnvironment, isolated bool) (map[string]string, []string, error) {
+	if pe == nil {
+		return nil, nil, nil
+	}
+	check := func(name string) error {
+		if name == "" || strings.ContainsAny(name, "=\x00") {
+			return errors.New("invalid process environment variable name")
+		}
+		u := strings.ToUpper(name)
+		switch {
+		case strings.HasPrefix(u, "ANTHROPIC_"), strings.HasPrefix(u, "CLAUDE_CODE_"), strings.HasPrefix(u, "CODEX_"),
+			u == "CLAUDE_CONFIG_DIR", u == "OPENAI_API_KEY", u == "OFFLOAD_CLAUDE", u == "OFFLOAD_CODEX":
+			return errors.New("process environment cannot change a variable owned by Offload")
+		case isolated && (u == "HOME" || strings.HasPrefix(u, "XDG_")):
+			return errors.New("process environment cannot change isolated environment locations")
+		}
+		return nil
+	}
+	var set map[string]string
+	if len(pe.Set) > 0 {
+		set = make(map[string]string, len(pe.Set))
+	}
+	for k, v := range pe.Set {
+		if err := check(k); err != nil {
+			return nil, nil, err
+		}
+		if strings.ContainsRune(v, 0) {
+			return nil, nil, errors.New("invalid process environment variable value")
+		}
+		set[k] = v
+	}
+	for _, k := range pe.Unset {
+		if err := check(k); err != nil {
+			return nil, nil, err
+		}
+	}
+	return set, slices.Clone(pe.Unset), nil
 }
