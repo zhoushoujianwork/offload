@@ -24,6 +24,8 @@ esac
 
 app="$root/dist/Offload Monitor.app"
 rm -rf "$app"
+mkdir -p "$root/dist"
+touch "$root/dist/.metadata_never_index"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 
 echo "==> offload CLI $version ($arch)"

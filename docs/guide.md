@@ -489,7 +489,7 @@ The app shows the output of `offload stats --json`. Its compact panel has no scr
 
 #### Applying App and CLI updates
 
-Release updates replace the **whole App**, including its bundled CLI. The updater verifies the archive and bundle before installation, then waits for app-owned chats, unsent messages, unsaved responses and profile edits before quitting and relaunching. Confirmed release updates wait for a safe idle state; discovering a release never queues installation.
+Release updates replace the **whole App** at its existing path, including its bundled CLI. The updater verifies the archive and bundle before installation, then waits for app-owned chats, unsent messages, unsaved responses and profile edits before quitting and relaunching. During replacement it keeps the previous App in a temporary zip archive for rollback, rather than leaving a second discoverable App bundle. Confirmed release updates wait for a safe idle state; discovering a release never queues installation.
 
 The running App also checks its installed executable and version metadata every 15 seconds. When a local installer replaces the App, including a different build with the same version number, two stable observations and a valid bundle signature enable an idle restart. **Settings > App > Restart when the installed App changes** controls this behavior (on by default). A restart notice offers a manual retry, and failed helpers do not retry in a loop.
 

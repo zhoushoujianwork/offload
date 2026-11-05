@@ -22,6 +22,7 @@ if $install_dev; then
   mkdir -p "$parent"
   staging="$(mktemp -d "$parent/.offload-dev.XXXXXX")"
   trap 'rm -rf "$staging"' EXIT
+  touch "$staging/.metadata_never_index"
   ditto "$root/dist/Offload Monitor.app" "$staging/Offload Monitor.app"
   codesign --verify --deep --strict "$staging/Offload Monitor.app"
   codesign --verify --strict "$staging/Offload Monitor.app/Contents/Resources/offload"

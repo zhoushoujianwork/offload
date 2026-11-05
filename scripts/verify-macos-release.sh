@@ -46,8 +46,9 @@ while IFS= read -r e; do
 done <<<"$entries"
 
 mkdir "$work/extract"
+touch "$work/extract/.metadata_never_index"
 ditto -x -k "$work/$name" "$work/extract"
-[ "$(ls "$work/extract")" = "Offload Monitor.app" ] || fail "archive must contain only Offload Monitor.app"
+[ "$(find "$work/extract" -mindepth 1 -maxdepth 1 ! -name .metadata_never_index -print)" = "$work/extract/Offload Monitor.app" ] || fail "archive must contain only Offload Monitor.app"
 app="$work/extract/Offload Monitor.app"
 
 plist="$app/Contents/Info.plist"
