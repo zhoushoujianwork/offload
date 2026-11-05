@@ -55,15 +55,19 @@ var errIdle = errors.New("worker idle")
 type Opts struct {
 	EnvironmentDirectory string
 	environment          []string
-	codexHostProfile     string
-	Native               *NativeControls
-	CodexHome            string
-	RunID                string
-	CallerRunID          string
-	Caller               string // normalized --caller; empty means unspecified
-	ExecutionPolicy      string
-	InstructionsFile     string
-	CodexSandbox         string
+	// EnvSet and EnvUnset are per-run caller changes to the child environment,
+	// applied before Offload's own credential and account variables.
+	EnvSet           map[string]string
+	EnvUnset         []string
+	codexHostProfile string
+	Native           *NativeControls
+	CodexHome        string
+	RunID            string
+	CallerRunID      string
+	Caller           string // normalized --caller; empty means unspecified
+	ExecutionPolicy  string
+	InstructionsFile string
+	CodexSandbox     string
 
 	Instructions                  []byte
 	ToolsDisabled                 bool
@@ -353,6 +357,11 @@ func Run(ctx context.Context, o Opts) (rec history.Record, err error) {
 	rec.RequestedModel = o.Model
 	if o.Profile.BackendName() == "codex" && o.Transcript != nil {
 		o.Transcript.AddSecrets(codexAuthSecrets(o.CodexHome)...)
+	}
+	if o.Transcript != nil {
+		for _, v := range o.EnvSet {
+			o.Transcript.AddSecrets(v)
+		}
 	}
 	var pub *publisher
 	var slot *slots.Slot

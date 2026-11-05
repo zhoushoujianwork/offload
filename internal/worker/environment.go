@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 )
 
 // NewEnvironment creates an owned, persistent native home and empty workspace.
@@ -220,8 +221,40 @@ func (o *Opts) prepareEnvironment(sourceHome string) (func() error, error) {
 }
 
 func (o Opts) baseEnvironment() []string {
+	base := os.Environ()
 	if o.environment != nil {
-		return append([]string(nil), o.environment...)
+		base = append([]string(nil), o.environment...)
 	}
-	return os.Environ()
+	return ApplyEnvChanges(base, o.EnvSet, o.EnvUnset)
+}
+
+// ApplyEnvChanges returns a copy of base with unset names removed and set
+// values added or replacing existing entries. It never touches the process
+// environment, so concurrent runs cannot affect each other.
+func ApplyEnvChanges(base []string, set map[string]string, unset []string) []string {
+	if len(set) == 0 && len(unset) == 0 {
+		return base
+	}
+	drop := make(map[string]bool, len(set)+len(unset))
+	for _, k := range unset {
+		drop[k] = true
+	}
+	for k := range set {
+		drop[k] = true
+	}
+	out := make([]string, 0, len(base)+len(set))
+	for _, kv := range base {
+		if k, _, _ := strings.Cut(kv, "="); !drop[k] {
+			out = append(out, kv)
+		}
+	}
+	keys := make([]string, 0, len(set))
+	for k := range set {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		out = append(out, k+"="+set[k])
+	}
+	return out
 }
