@@ -5,6 +5,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"github.com/zhoushoujianwork/offload/internal/runevents"
 	"io"
 
 	"github.com/zhoushoujianwork/offload/internal/transcript"
@@ -120,7 +121,7 @@ func cmdTranscript(args []string, stdout, stderr io.Writer) int {
 	if *limit < 0 || *maxBytes < 0 {
 		return fail(stderr, errors.New("--limit and --max-bytes must not be negative"))
 	}
-	if *callerRunID != "" && safeMeta(*callerRunID) != *callerRunID {
+	if *callerRunID != "" && runevents.SafeMeta(*callerRunID) != *callerRunID {
 		return fail(stderr, errors.New("--caller-run-id must be 1-128 printable characters without spaces"))
 	}
 	switch args[0] {

@@ -23,6 +23,7 @@ import (
 	"github.com/zhoushoujianwork/offload/internal/history"
 	"github.com/zhoushoujianwork/offload/internal/live"
 	"github.com/zhoushoujianwork/offload/internal/runcontrol"
+	"github.com/zhoushoujianwork/offload/internal/runevents"
 	"github.com/zhoushoujianwork/offload/internal/slots"
 	"github.com/zhoushoujianwork/offload/internal/text"
 	"github.com/zhoushoujianwork/offload/internal/thread"
@@ -218,7 +219,7 @@ func cmdRunSaved(args []string, stdin io.Reader, stdout, stderr io.Writer, paren
 	logPath := history.Path()
 	rec := history.Record{RunID: worker.NewRunID(), CallerRunID: *callerRunID, Caller: callerID, ExecutionPolicy: *executionPolicy, Session: *resume, TS: started.Format("2006-01-02 15:04:05"), Status: "error", Profile: *profile,
 		Model: *model, Dir: *dir, Task: task, CostIsEstimate: true}
-	var events *eventWriter
+	var events *runevents.Writer
 	var eventFile *os.File
 	var capture *transcript.Recorder
 	if *captureTranscript {
@@ -229,11 +230,11 @@ func cmdRunSaved(args []string, stdin io.Reader, stdout, stderr io.Writer, paren
 		if events != nil {
 			var err error
 			if !eventsStarted {
-				err = events.emit("start", "", "", &rec)
+				err = events.Emit("start", "", "", &rec)
 				eventsStarted = true
 			}
 			if err == nil {
-				err = events.emit("final", "", "", &rec)
+				err = events.Emit("final", "", "", &rec)
 			}
 			if closeErr := eventFile.Close(); err == nil {
 				err = closeErr
@@ -297,7 +298,7 @@ func cmdRunSaved(args []string, stdin io.Reader, stdout, stderr io.Writer, paren
 	}
 	if *eventsFile != "" {
 		var err error
-		events, eventFile, err = openEvents(*eventsFile, rec)
+		events, eventFile, err = runevents.Open(*eventsFile, rec)
 		if err != nil {
 			return failRun(err)
 		}
@@ -426,8 +427,8 @@ func cmdRunSaved(args []string, stdin io.Reader, stdout, stderr io.Writer, paren
 		// Opened before the worker slot is requested, so a queued run is already readable. The
 		// task text is the one thing written now; backend output arrives through the worker.
 		var err error
-		capture, err = transcript.Open(transcript.Identity{RunID: rec.RunID, CallerRunID: safeMeta(rec.CallerRunID), Caller: safeCaller(rec.Caller),
-			Backend: rec.Backend, Model: rec.Model, Session: safeMeta(*resume)},
+		capture, err = transcript.Open(transcript.Identity{RunID: rec.RunID, CallerRunID: runevents.SafeMeta(rec.CallerRunID), Caller: runevents.SafeCaller(rec.Caller),
+			Backend: rec.Backend, Model: rec.Model, Session: runevents.SafeMeta(*resume)},
 			transcript.NewRedactor(transcript.EnvSecrets(os.Environ())...))
 		if err != nil {
 			rec.Transcript = "failed"
@@ -443,7 +444,7 @@ func cmdRunSaved(args []string, stdin io.Reader, stdout, stderr io.Writer, paren
 		o.Transcript = capture
 	}
 	if events != nil {
-		if err := events.emit("start", "", "", &rec); err != nil {
+		if err := events.Emit("start", "", "", &rec); err != nil {
 			rec.ErrorKind = "events_io"
 			code := 2
 			rec.ExitCode = &code
@@ -453,7 +454,7 @@ func cmdRunSaved(args []string, stdin io.Reader, stdout, stderr io.Writer, paren
 			return finish()
 		}
 		eventsStarted = true
-		o.OnLine = events.progress
+		o.OnLine = events.Progress
 	}
 
 	// SIGTERM is what a host shutdown, service stop or a supervisor's timeout wrapper sends; handle it

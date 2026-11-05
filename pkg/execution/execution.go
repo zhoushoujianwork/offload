@@ -19,6 +19,7 @@ import (
 
 	"github.com/zhoushoujianwork/offload/internal/config"
 	"github.com/zhoushoujianwork/offload/internal/history"
+	"github.com/zhoushoujianwork/offload/internal/runevents"
 	"github.com/zhoushoujianwork/offload/internal/worker"
 )
 
@@ -72,6 +73,13 @@ type ProcessEnvironment struct {
 	Unset []string
 }
 
+// RunEvent is one sanitized structured run event. It is the same type and JSON
+// shape (including schema_version) as a line of the CLI -events-file NDJSON.
+// It carries correlation and allowlisted activity metadata only: never prompts,
+// model text, tool arguments or credentials. Unlike RawEvent it is safe to
+// persist or log. Event types are "start", "progress" and "final".
+type RunEvent = runevents.Event
+
 type Request struct {
 	// ProcessEnvironment optionally changes this run's child environment only.
 	// Nil leaves the environment unchanged.
@@ -106,7 +114,15 @@ type Request struct {
 	StartedAt             time.Time
 	AllowSalvage          bool // Explicit CLI compatibility; defaults to no additional model invocation.
 	OnEvent               func(RawEvent) error
-	Capture               Capture
+	// OnRunEvent receives sanitized RunEvents: start (run ID, backend and the
+	// requested session), one progress per native output line, and final. The
+	// native session ID appears once the backend reports it. It is independent
+	// of OnEvent and Capture and may be used with either. Like OnEvent it is
+	// called synchronously and in order, so a slow callback blocks the run. A
+	// returned error stops the invocation with error kind "events_io" and is
+	// retained in RunError.Cause. A start error prevents the native launch.
+	OnRunEvent func(RunEvent) error
+	Capture    Capture
 }
 
 // Result is execution evidence, never task acceptance. Missing usage/cost stays
@@ -339,7 +355,21 @@ func (c *Client) Run(ctx context.Context, req Request) (result Result, resultErr
 		}
 	}
 	var observerErr error
+	var runEvents *runevents.Writer
+	if req.OnRunEvent != nil {
+		runEvents = runevents.New(nil, func(e runevents.Event) error {
+			err := req.OnRunEvent(e)
+			observerErr = errors.Join(observerErr, err)
+			return err
+		}, history.Record{RunID: id, CallerRunID: req.CallerRunID, Caller: req.Caller,
+			Session: req.NativeSessionID, Backend: c.profile.BackendName(), Model: o.Model})
+		if err := runEvents.Emit("start", "", "", nil); err != nil {
+			return setupError("events_io", err)
+		}
+		o.OnLine = runEvents.Progress
+	}
 	if req.OnEvent != nil {
+		progress := o.OnLine
 		o.OnLine = func(line []byte) error {
 			protocol := ""
 			if native != nil && native.CodexAppServer {
@@ -347,10 +377,17 @@ func (c *Client) Run(ctx context.Context, req Request) (result Result, resultErr
 			}
 			err := req.OnEvent(RawEvent{RunID: id, CallerRunID: req.CallerRunID, Backend: c.profile.BackendName(), NativeProtocol: protocol, Data: bytes.Clone(line)})
 			observerErr = errors.Join(observerErr, err)
-			return err
+			if err != nil || progress == nil {
+				return err
+			}
+			return progress(line)
 		}
 	}
 	record, runErr := worker.Run(ctx, o)
+	if runEvents != nil {
+		// A sticky start/progress error is already recorded in observerErr.
+		_ = runEvents.Emit("final", "", "", &record)
+	}
 	if monitor != nil {
 		record.ResumedFrom = req.Monitor.ResumedFrom
 		if monitor.capture != nil {
