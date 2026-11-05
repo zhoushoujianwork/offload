@@ -103,6 +103,18 @@ func startCaller(t *testing.T) *crashedRun {
 	})
 	waitFor(t, "run ID in start event", func() bool { r.runID = readFile(filepath.Join(dir, "runid")); return r.runID != "" })
 	t.Cleanup(func() { _ = syscall.Kill(r.childPID, syscall.SIGKILL) })
+	// The caller may only crash once the slot records the process group. Before that, the
+	// slot is in its starting window, which reclaim reports as unconfirmed.
+	waitFor(t, "process group recorded in slot", func() bool {
+		files, _ := filepath.Glob(filepath.Join(slots.Dir(), "slot-*.lock"))
+		for _, f := range files {
+			var in slots.Info
+			if json.Unmarshal([]byte(readFile(f)), &in) == nil && in.RunID == r.runID && in.Group != nil && !in.Starting {
+				return true
+			}
+		}
+		return false
+	})
 	return r
 }
 
@@ -196,5 +208,65 @@ func TestReclaimRunDoesNotKillReusedProcessGroup(t *testing.T) {
 	case <-exited:
 		t.Fatal("unrelated process was killed")
 	default:
+	}
+}
+
+func writeSlotInfo(t *testing.T, in slots.Info) {
+	t.Helper()
+	if err := os.MkdirAll(slots.Dir(), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := json.Marshal(in)
+	if err := os.WriteFile(filepath.Join(slots.Dir(), "slot-0.lock"), raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// The owner died after marking the start but before recording the group. A process may be
+// running, so reclaim must stay unconfirmed on every call and Acquire must not reuse the slot.
+func TestReclaimRunStartingWithoutGroupIsUnconfirmed(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	writeSlotInfo(t, slots.Info{OwnerPID: 1 << 22, RunID: "starting-run", Starting: true, AcquiredAt: time.Now()})
+	for i := 0; i < 2; i++ {
+		out, err := ReclaimRun(context.Background(), "starting-run")
+		if !errors.Is(err, ErrRunStartUnrecorded) || out != ReclaimUnconfirmed {
+			t.Fatalf("call %d: outcome %q err %v", i, out, err)
+		}
+	}
+	if slotUsable(t) {
+		t.Fatal("slot with an unrecorded starting process must not be reused")
+	}
+}
+
+func TestReclaimRunAfterStartFailureOrNormalEndIsAlreadyEnded(t *testing.T) {
+	for _, name := range []string{"start failure", "normal end"} {
+		t.Run(name, func(t *testing.T) {
+			t.Setenv("XDG_STATE_HOME", t.TempDir())
+			s, err := slots.Acquire(context.Background(), slots.Options{Dir: slots.Dir(), Max: 1, RunID: "run-x"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			s.Starting()
+			if name == "start failure" {
+				s.StartFailed()
+			} else {
+				cmd := exec.Command("true")
+				proc.Prepare(cmd)
+				if err := cmd.Start(); err != nil {
+					t.Fatal(err)
+				}
+				s.Track(proc.Started(cmd))
+				_ = cmd.Wait()
+				s.Clear()
+			}
+			s.Release()
+			out, err := ReclaimRun(context.Background(), "run-x")
+			if err != nil || out != ReclaimAlreadyEnded {
+				t.Fatalf("outcome %q err %v", out, err)
+			}
+			if !slotUsable(t) {
+				t.Fatal("slot should be free")
+			}
+		})
 	}
 }
