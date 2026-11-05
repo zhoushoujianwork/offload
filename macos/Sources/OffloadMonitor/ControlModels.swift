@@ -10,6 +10,8 @@ final class ProfilesModel: ObservableObject {
     @Published private(set) var loadError: String?
     @Published private(set) var actionError: String?
     @Published private(set) var busy = false
+    /// Profiles whose re-test is running. A second test of the same profile is refused.
+    @Published private(set) var testing: Set<String> = []
     /// View-owned drafts report only their dirty bit, never credential contents.
     @Published var hasUnsavedEdits = false
 
@@ -117,6 +119,27 @@ final class ProfilesModel: ObservableObject {
             return false
         }
     }
+
+    /// Re-tests one profile. Success restores it; failure leaves it unavailable with the new reason.
+    @discardableResult
+    func test(_ name: String) async -> Bool {
+        guard let cli, !testing.contains(name) else { return false }
+        testing.insert(name)
+        defer { testing.remove(name) }
+        actionError = nil
+        do {
+            snapshot = try await cli.testProfile(name)
+            loadError = nil
+            lastLoad = Date()
+            return snapshot?.entry(name)?.isUnavailable == false
+        } catch {
+            actionError = message(error)
+            return false
+        }
+    }
+
+    /// Headless tests only.
+    func setTestingForTesting(_ names: Set<String>) { testing = names }
 
     func cancelAccountLogin() { accountLoginProcess?.terminate() }
 

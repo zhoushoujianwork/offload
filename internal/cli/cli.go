@@ -346,7 +346,7 @@ func cmdRunSaved(args []string, stdin io.Reader, stdout, stderr io.Writer, paren
 			resumedProfile = selected
 		}
 	}
-	selected = firstNonEmpty(selected, firstNonEmpty(os.Getenv("OFFLOAD_PROFILE"), cfg.Default))
+	selected = firstNonEmpty(selected, firstNonEmpty(os.Getenv("OFFLOAD_PROFILE"), cfg.EffectiveDefault()))
 	name, prof, err := cfg.Resolve(selected)
 	if resumedProfile != "" {
 		if _, exists := cfg.Profiles[resumedProfile]; !exists {
@@ -495,6 +495,9 @@ func cmdRunSaved(args []string, stdin io.Reader, stdout, stderr io.Writer, paren
 		rec = runExecution(ctx, o)
 	}
 	rec.ProfileAlias, rec.Transcript = profileAlias, transcriptState
+	if rec.Status != "ok" {
+		recordRunFailure(config.Path(), rec.Profile, rec.ErrorKind, rec.Error+"\n"+rec.Result)
+	}
 	if th != nil {
 		rec.Thread, rec.ThreadStart = th.key, th.start
 		if rec.Session != "" {
@@ -765,6 +768,9 @@ func cmdProfiles(stdout, stderr io.Writer) int {
 		tools := "tool-limits=no"
 		if p.SupportsToolRestrictions() {
 			tools = "tool-limits=yes"
+		}
+		if p.Unavailable != nil {
+			aliases += fmt.Sprintf(" [unavailable since %s: %s]", p.Unavailable.At, config.SanitizeReason(p.Unavailable.Reason))
 		}
 		fmt.Fprintf(stdout, "%s %-12s %-8s %-5s %-15s %-24s %s%s\n", mark, n, p.BackendName(), firstNonEmpty(p.Endpoint, "-"), tools, p.Model, p.BaseURL, aliases)
 	}

@@ -65,6 +65,7 @@ struct ProfilesSettingsView: View {
                     .font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(2).fixedSize(horizontal: false, vertical: true)
             }
             picker
+            availability
             Divider()
             form
             Spacer(minLength: 0)
@@ -84,7 +85,8 @@ struct ProfilesSettingsView: View {
             Picker("Profile", selection: Binding(get: { draft.isNew ? "" : selection }, set: { choose($0) })) {
                 if draft.isNew { Text("New profile").tag("") }
                 ForEach(snap?.profiles ?? []) { p in
-                    Text(p.model.isEmpty ? p.name : "\(p.name) — \(p.model)").lineLimit(1).truncationMode(.middle).tag(p.name)
+                    Text(ProfilePresentation.pickerTitle(p)).lineLimit(1).truncationMode(.middle).tag(p.name)
+                        .help(p.isUnavailable ? p.unavailableDetail : "")
                 }
             }
             .frame(maxWidth: 360)
@@ -244,6 +246,30 @@ struct ProfilesSettingsView: View {
                 .font(.system(size: 11)).lineLimit(3).fixedSize(horizontal: false, vertical: true)
         } else if let n = notice {
             Label(n, systemImage: "checkmark.circle.fill").foregroundStyle(.green).font(.system(size: 11)).lineLimit(2)
+        }
+    }
+
+    @ViewBuilder
+    private var availability: some View {
+        if let e = snap?.entry(selection), e.isUnavailable {
+            HStack(spacing: 6) {
+                Label(ProfilePresentation.testing(profiles.testing.contains(e.name)) ?? "Unavailable", systemImage: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.orange).font(.system(size: 11)).lineLimit(1)
+                    .help(e.unavailableDetail)
+                Spacer()
+                if profiles.testing.contains(e.name) { ProgressView().controlSize(.small) }
+                Button(ProfilePresentation.retestTitle(testing: profiles.testing.contains(e.name))) { retest(e.name) }
+                    .disabled(profiles.testing.contains(e.name))
+                    .help("Make one minimal real model call; success makes the profile available again")
+            }
+        }
+    }
+
+    private func retest(_ name: String) {
+        formError = nil
+        notice = nil
+        Task {
+            if await profiles.test(name) { notice = "\"\(name)\" is available again." }
         }
     }
 

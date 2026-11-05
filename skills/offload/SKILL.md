@@ -38,6 +38,7 @@ account's private home, credentials and sessions. Discover names with
 - This randomness is **agent-side selection**: a bare `offload "task"` still uses
   `OFFLOAD_PROFILE` or the saved default. The CLI has no automatic pool scheduler.
   Do not change the saved default merely to dispatch one task.
+- Profiles with `"available": false` (see `unavailable_reason` and `unavailable_at`) failed with an unrecoverable error such as bad credentials, exhausted quota or a missing model. Never pick them at random and never use them as the default; run `offload profile test <name>` to re-test one, which restores it on success. An explicit `-p` still runs the named profile.
 - The profile catalog proves configuration, not remaining quota. Exclude accounts
   already known to be exhausted until their reported reset, and accounts with
   unresolved authentication errors. Treat an untested account as unknown, not
@@ -56,7 +57,7 @@ random.SystemRandom().shuffle(profiles)
 seen = set()
 for p in profiles:
     account = p.get("codex_account")
-    if p["backend"] == "codex" and account and account not in seen:
+    if p["backend"] == "codex" and account and p.get("available", True) and account not in seen:
         seen.add(account)
         print(p["name"])
 '
