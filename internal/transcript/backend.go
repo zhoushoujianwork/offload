@@ -23,11 +23,22 @@ func (r *Recorder) Line(line []byte) {
 		return
 	}
 	var head struct {
-		Type      string `json:"type"`
-		SessionID string `json:"session_id"`
-		ThreadID  string `json:"thread_id"`
+		Type      string          `json:"type"`
+		SessionID string          `json:"session_id"`
+		ThreadID  string          `json:"thread_id"`
+		Method    string          `json:"method"`
+		ID        json.RawMessage `json:"id"`
 	}
-	if json.Unmarshal(line, &head) != nil || head.Type == "" {
+	if json.Unmarshal(line, &head) != nil {
+		r.gapLocked("unparseable_backend_line", len(line))
+		return
+	}
+	// codex app-server speaks JSON-RPC: notifications carry "method", responses carry "id".
+	if head.Type == "" && r.id.Backend == "codex" && (head.Method != "" || len(head.ID) > 0) {
+		r.appServerLine(head.Method, line)
+		return
+	}
+	if head.Type == "" {
 		r.gapLocked("unparseable_backend_line", len(line))
 		return
 	}
@@ -212,28 +223,7 @@ func (r *Recorder) codexLine(kind string, line []byte) {
 		Error   struct {
 			Message string `json:"message"`
 		} `json:"error"`
-		Item struct {
-			ID               string          `json:"id"`
-			Type             string          `json:"type"`
-			Text             string          `json:"text"`
-			Message          string          `json:"message"`
-			Command          string          `json:"command"`
-			AggregatedOutput string          `json:"aggregated_output"`
-			ExitCode         *int            `json:"exit_code"`
-			Status           string          `json:"status"`
-			Server           string          `json:"server"`
-			Tool             string          `json:"tool"`
-			Arguments        json.RawMessage `json:"arguments"`
-			Result           json.RawMessage `json:"result"`
-			Error            *struct {
-				Message string `json:"message"`
-			} `json:"error"`
-			Query   string `json:"query"`
-			Changes []struct {
-				Path string `json:"path"`
-				Kind string `json:"kind"`
-			} `json:"changes"`
-		} `json:"item"`
+		Item codexItem `json:"item"`
 	}
 	if json.Unmarshal(line, &e) != nil {
 		r.gapLocked("undecodable_backend_event", len(line))
@@ -247,7 +237,34 @@ func (r *Recorder) codexLine(kind string, line []byte) {
 		r.emitLocked(Event{Type: TypeBackendError, Text: e.Error.Message}, false)
 		return
 	}
-	it, done := e.Item, kind == "item.completed"
+	r.codexItemLocked(e.Item, kind == "item.completed")
+}
+
+type codexItem struct {
+	ID               string          `json:"id"`
+	Type             string          `json:"type"`
+	Text             string          `json:"text"`
+	Message          string          `json:"message"`
+	Command          string          `json:"command"`
+	AggregatedOutput string          `json:"aggregated_output"`
+	ExitCode         *int            `json:"exit_code"`
+	Status           string          `json:"status"`
+	Server           string          `json:"server"`
+	Tool             string          `json:"tool"`
+	Arguments        json.RawMessage `json:"arguments"`
+	Result           json.RawMessage `json:"result"`
+	Error            *struct {
+		Message string `json:"message"`
+	} `json:"error"`
+	Query   string `json:"query"`
+	Changes []struct {
+		Path string `json:"path"`
+		Kind string `json:"kind"`
+	} `json:"changes"`
+}
+
+// codexItemLocked maps one exec or app-server item state to transcript events.
+func (r *Recorder) codexItemLocked(it codexItem, done bool) {
 	switch it.Type {
 	case "agent_message":
 		if done && strings.TrimSpace(it.Text) != "" && !r.codexSeq["m:"+it.ID] {
@@ -318,4 +335,119 @@ func firstOf(a, b string) string {
 		return a
 	}
 	return b
+}
+
+// appServerLine maps one JSON-RPC line of the Codex app-server protocol. Responses (no method) and
+// streaming deltas produce nothing; the final text arrives on item/completed. Unknown methods are
+// counted, not written as gaps.
+func (r *Recorder) appServerLine(method string, line []byte) {
+	if method == "" {
+		return
+	}
+	var e struct {
+		Params struct {
+			ThreadID string `json:"threadId"`
+			Thread   struct {
+				ID string `json:"id"`
+			} `json:"thread"`
+			Turn struct {
+				Status string `json:"status"`
+				Error  *struct {
+					Message string `json:"message"`
+				} `json:"error"`
+			} `json:"turn"`
+			Error *struct {
+				Message string `json:"message"`
+			} `json:"error"`
+			Item struct {
+				ID               string          `json:"id"`
+				Type             string          `json:"type"`
+				Text             string          `json:"text"`
+				Command          string          `json:"command"`
+				AggregatedOutput string          `json:"aggregatedOutput"`
+				ExitCode         *int            `json:"exitCode"`
+				Status           string          `json:"status"`
+				Server           string          `json:"server"`
+				Tool             string          `json:"tool"`
+				Arguments        json.RawMessage `json:"arguments"`
+				Result           json.RawMessage `json:"result"`
+				Error            *struct {
+					Message string `json:"message"`
+				} `json:"error"`
+				Query   string `json:"query"`
+				Changes []struct {
+					Path string          `json:"path"`
+					Kind json.RawMessage `json:"kind"`
+				} `json:"changes"`
+			} `json:"item"`
+		} `json:"params"`
+	}
+	if json.Unmarshal(line, &e) != nil {
+		r.gapLocked("undecodable_backend_event", len(line))
+		return
+	}
+	p := e.Params
+	if p.Thread.ID != "" {
+		r.setSession(p.Thread.ID)
+	} else if p.ThreadID != "" {
+		r.setSession(p.ThreadID)
+	}
+	switch method {
+	case "item/started", "item/completed":
+		it := codexItem{ID: p.Item.ID, Text: p.Item.Text, Command: p.Item.Command,
+			AggregatedOutput: p.Item.AggregatedOutput, ExitCode: p.Item.ExitCode, Status: p.Item.Status,
+			Server: p.Item.Server, Tool: p.Item.Tool, Arguments: p.Item.Arguments, Result: p.Item.Result,
+			Error: p.Item.Error, Query: p.Item.Query}
+		switch p.Item.Type {
+		case "agentMessage":
+			it.Type = "agent_message"
+		case "reasoning":
+			it.Type = "reasoning"
+		case "commandExecution":
+			it.Type = "command_execution"
+		case "mcpToolCall":
+			it.Type = "mcp_tool_call"
+		case "fileChange":
+			it.Type = "file_change"
+			for _, c := range p.Item.Changes {
+				var kind struct {
+					Type string `json:"type"`
+				}
+				k := strings.Trim(string(c.Kind), `"`)
+				if json.Unmarshal(c.Kind, &kind) == nil && kind.Type != "" {
+					k = kind.Type
+				}
+				it.Changes = append(it.Changes, struct {
+					Path string `json:"path"`
+					Kind string `json:"kind"`
+				}{Path: c.Path, Kind: k})
+			}
+		case "webSearch":
+			it.Type = "web_search"
+		case "userMessage", "plan":
+			return
+		default:
+			it.Type = p.Item.Type
+		}
+		r.codexItemLocked(it, method == "item/completed")
+	case "turn/completed":
+		if p.Turn.Status == "failed" {
+			msg := p.Turn.Status
+			if p.Turn.Error != nil && p.Turn.Error.Message != "" {
+				msg = p.Turn.Error.Message
+			}
+			r.emitLocked(Event{Type: TypeBackendError, Text: msg}, false)
+		}
+	case "error":
+		msg := "error"
+		if p.Error != nil && p.Error.Message != "" {
+			msg = p.Error.Message
+		}
+		r.emitLocked(Event{Type: TypeBackendError, Text: msg}, false)
+	case "thread/started", "turn/started", "thread/status/changed", "thread/tokenUsage/updated", "turn/diff/updated", "turn/plan/updated":
+	default:
+		if !strings.HasPrefix(method, "item/") || !strings.Contains(method, "elta") {
+			r.sum.Unrecognized++
+		}
+	}
 }

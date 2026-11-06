@@ -32,6 +32,14 @@ struct TaskOutputEvent: Decodable, Identifiable, Equatable {
     var truncated: [String: Int]?
     var isError: Bool?
     var exitCode: Int?
+    var bytes: Int?
+    /// Number of consecutive gaps with the same reason folded into this row (display only).
+    var merged = 1
+    var mergedBytes = 0
+    enum CodingKeys: String, CodingKey {
+        case seq, type, role, text, toolName, toolCallId, origin, arguments, output, reason, status
+        case truncated, isError, exitCode, bytes
+    }
     var id: Int { seq }
     var title: String {
         switch type {
@@ -44,7 +52,10 @@ struct TaskOutputEvent: Decodable, Identifiable, Equatable {
         default: return type.replacingOccurrences(of: "_", with: " ").capitalized
         }
     }
-    var content: String { text ?? output ?? arguments ?? reason ?? status ?? "" }
+    var content: String {
+        if type == "gap", merged > 1 { return "\(reason ?? "") · \(merged) times · \(mergedBytes) bytes" }
+        return text ?? output ?? arguments ?? reason ?? status ?? ""
+    }
 }
 
 struct TaskTranscript: Decodable {
@@ -149,7 +160,15 @@ extension OffloadCLI {
         } else {
             for event in page.events where event.seq > lastSeq {
                 lastSeq = event.seq
-                if !event.content.isEmpty || event.type == "tool_call" || event.type == "tool_result" {
+                var event = event
+                if event.type == "gap" { event.mergedBytes = event.bytes ?? 0 }
+                if event.type == "gap", let last = events.last, last.type == "gap", last.reason == event.reason {
+                    var folded = last
+                    retainedBytes -= last.content.utf8.count
+                    folded.merged += 1; folded.mergedBytes += event.mergedBytes
+                    events[events.count - 1] = folded
+                    retainedBytes += folded.content.utf8.count
+                } else if !event.content.isEmpty || event.type == "tool_call" || event.type == "tool_result" {
                     events.append(event); retainedBytes += event.content.utf8.count
                 }
             }
