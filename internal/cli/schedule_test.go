@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/zhoushoujianwork/offload/internal/config"
+	"github.com/zhoushoujianwork/offload/internal/history"
 	"github.com/zhoushoujianwork/offload/internal/live"
 )
 
@@ -374,7 +375,6 @@ func TestScheduledRunsShareTheWorkerLimit(t *testing.T) {
 	if code := sched.wait(t); code != 0 {
 		t.Fatalf("scheduler: %d %s", code, sched.err.String())
 	}
-	waited := 0
 	for _, name := range []string{"a", "b"} {
 		var res struct {
 			Results []struct {
@@ -390,13 +390,22 @@ func TestScheduledRunsShareTheWorkerLimit(t *testing.T) {
 		}
 		if w := res.Results[0].Record.WaitMs; w != nil {
 			t.Logf("%s wait_ms=%d", name, *w)
-			if *w >= 500 {
-				waited++
-			}
 		}
 	}
-	if waited != 1 {
-		t.Errorf("exactly one scheduled run should have queued for a slot, got %d", waited)
+	// The constraint is mutual exclusion, not how long a run waited: on a slow machine both runs can
+	// wait while they start. The processing log records when each run really held a worker, so
+	// with one slot the two spans must not overlap.
+	plog, err := history.ReadProcessing(history.ProcessingPath(), time.Time{})
+	if err != nil || len(plog.Open) != 0 || plog.Unmatched != 0 || plog.Corrupt != 0 || len(plog.Closed) != 2 {
+		t.Fatalf("processing log: closed=%d open=%d unmatched=%d corrupt=%d err=%v", len(plog.Closed), len(plog.Open), plog.Unmatched, plog.Corrupt, err)
+	}
+	first, second := plog.Closed[0], plog.Closed[1]
+	if second.Start.Before(first.Start) {
+		first, second = second, first
+	}
+	if second.Start.Before(first.End) {
+		t.Errorf("scheduled runs held the single worker slot at the same time: first %s..%s, second %s..%s",
+			first.Start.Format(time.RFC3339Nano), first.End.Format(time.RFC3339Nano), second.Start.Format(time.RFC3339Nano), second.End.Format(time.RFC3339Nano))
 	}
 	if b, _ := os.ReadFile(mark); len(strings.Fields(string(b)))/2 != 2 {
 		t.Errorf("backend starts: %q", b)
