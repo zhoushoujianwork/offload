@@ -32,6 +32,25 @@ import XCTest
         XCTAssertEqual(events[2].exitCode, 1)
     }
 
+    func testConsecutiveGapsWithSameReasonMergeIntoOneRow() throws {
+        let data = Data("""
+        {"schema_version":1,"availability":"available","has_more":false,"events":[
+          {"seq":1,"type":"gap","reason":"unparseable_backend_line","bytes":100},
+          {"seq":2,"type":"gap","reason":"unparseable_backend_line","bytes":50},
+          {"seq":3,"type":"gap","reason":"unparseable_backend_line","bytes":25},
+          {"seq":4,"type":"message","role":"assistant","text":"hi"},
+          {"seq":5,"type":"gap","reason":"unparseable_backend_line","bytes":7},
+          {"seq":6,"type":"gap","reason":"other","bytes":1}
+        ]}
+        """.utf8)
+        let model = TaskDetailModel(runID: id, cli: nil)
+        model.ingest(try OffloadCLI.taskDecode(TaskTranscript.self, data))
+        XCTAssertEqual(model.events.map(\.seq), [1, 4, 5, 6])
+        XCTAssertEqual(model.events[0].content, "unparseable_backend_line · 3 times · 175 bytes")
+        XCTAssertEqual(model.events[1].content, "hi")
+        XCTAssertEqual(model.events[2].content, "unparseable_backend_line")
+    }
+
     func testToolRowsPairOnlyAdjacentMatchingEventsAndKeepEmptyResults() throws {
         let data = Data("""
         {"schema_version":1,"availability":"available","has_more":false,"events":[

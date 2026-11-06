@@ -736,3 +736,44 @@ func TestPruneCountsProtectedCaptureWhenTimestampsTie(t *testing.T) {
 		t.Fatal("older completed capture retained", err)
 	}
 }
+
+func TestAppServerLinesMapToExecEvents(t *testing.T) {
+	state(t)
+	r := open(t, runA, "", "codex")
+	r.BeginAttempt(AttemptKindRun, "task")
+	for _, l := range []string{
+		`{"id":1,"result":{"userAgent":"x"}}`,
+		`{"method":"thread/started","params":{"thread":{"id":"th-9"}}}`,
+		`{"method":"item/agentMessage/delta","params":{"threadId":"th-9","itemId":"m1","delta":"FI"}}`,
+		`{"method":"item/commandExecution/outputDelta","params":{"itemId":"c1","delta":"b"}}`,
+		`{"method":"item/started","params":{"threadId":"th-9","item":{"id":"c1","type":"commandExecution","command":"false","status":"inProgress"}}}`,
+		`{"method":"item/completed","params":{"threadId":"th-9","item":{"id":"c1","type":"commandExecution","command":"false","aggregatedOutput":"boom","exitCode":1,"status":"failed"}}}`,
+		`{"method":"item/completed","params":{"item":{"id":"t1","type":"mcpToolCall","server":"srv","tool":"look","arguments":{"a":1},"result":{"ok":true},"status":"completed"}}}`,
+		`{"method":"item/completed","params":{"item":{"id":"r1","type":"reasoning","summary":["secret thoughts"]}}}`,
+		`{"method":"item/completed","params":{"item":{"id":"m1","type":"agentMessage","text":"FINAL"}}}`,
+		`{"method":"some/newThing","params":{}}`,
+		`{"method":"turn/completed","params":{"threadId":"th-9","turn":{"status":"failed","error":{"message":"model exploded"}}}}`,
+	} {
+		r.Line([]byte(l))
+	}
+	r.Line([]byte(`not json at all`))
+	end(r)
+	resp := read(t, ReadOptions{RunID: runA})
+	got := strings.Join(types(t, resp), ",")
+	if got != "capture_start,attempt_start,message,tool_call,tool_result,tool_call,tool_result,message,backend_error,gap,execution_end" {
+		t.Fatal(got)
+	}
+	ev := decode(t, resp)
+	if ev[4].Output != "boom" || ev[4].IsError == nil || !*ev[4].IsError || ev[3].Arguments != "false" {
+		t.Fatalf("%+v %+v", ev[3], ev[4])
+	}
+	if ev[5].ToolName != "srv.look" || ev[5].ToolCategory != "mcp" || ev[7].Text != "FINAL" || ev[8].Text != "model exploded" {
+		t.Fatalf("%+v %+v %+v", ev[5], ev[7], ev[8])
+	}
+	if ev[9].Reason != "unparseable_backend_line" || resp.Run.Session != "th-9" {
+		t.Fatalf("%+v session=%q", ev[9], resp.Run.Session)
+	}
+	if strings.Contains(strings.Join(rawStrings(resp), ""), "secret thoughts") {
+		t.Fatal("reasoning stored")
+	}
+}
