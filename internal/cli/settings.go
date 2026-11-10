@@ -299,12 +299,12 @@ func settingsProfile(p settingsPrompt, cfg *config.Config) error {
 // settingsFast asks for the Fast switch of a Codex profile and returns the service tier to save.
 // Off saves the standard tier explicitly and On saves the priority tier. A saved profile that never
 // set a tier (inherited) gets a third choice that keeps it unset, preselected, so that opening the
-// settings and confirming does not rewrite it. New profiles start on Off.
+// settings and confirming does not rewrite it. New profiles start on On.
 func settingsFast(p settingsPrompt, current string, add bool) (string, error) {
 	tiers := []string{"default", "priority"}
 	labels := []string{"Off (standard service)", "On (Fast service)"}
 	cursor := 0
-	if current == "priority" {
+	if current == "priority" || (add && current == "") {
 		cursor = 1
 	}
 	if current == "" && !add {

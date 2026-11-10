@@ -225,6 +225,71 @@ func TestProfileSaveCreateAndEdit(t *testing.T) {
 	}
 }
 
+func TestProfileSaveCodexFastDefaultAndExplicitTiers(t *testing.T) {
+	for _, tc := range []struct {
+		name, field, want string
+	}{
+		{"omitted", "", "priority"},
+		{"off", `,"service_tier":"default"`, "default"},
+		{"inherit", `,"service_tier":""`, ""},
+		{"on", `,"service_tier":"priority"`, "priority"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := profileCfg(t, "")
+			code, out, errb := runProfileCLI([]string{"profile", "save", "--json"},
+				`{"name":"cx","create":true,"backend":"codex"`+tc.field+`}`)
+			if code != 0 || errb != "" {
+				t.Fatal(code, errb)
+			}
+			if got := decodeSnap(t, out).Profiles[0].ServiceTier; got != tc.want {
+				t.Fatalf("tier = %q, want %q", got, tc.want)
+			}
+			raw, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var cfg struct {
+				Profiles map[string]struct {
+					ServiceTier string `json:"service_tier"`
+				} `json:"profiles"`
+			}
+			if err := json.Unmarshal(raw, &cfg); err != nil {
+				t.Fatal(err)
+			}
+			if got := cfg.Profiles["cx"].ServiceTier; got != tc.want {
+				t.Fatalf("saved tier = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestProfileSaveCodexEditPreservesTier(t *testing.T) {
+	for _, tier := range []string{"", "default", "priority"} {
+		t.Run("tier_"+tier, func(t *testing.T) {
+			field := ""
+			if tier != "" {
+				field = `,"service_tier":"` + tier + `"`
+			}
+			path := profileCfg(t, `{"default":"cx","profiles":{"cx":{"backend":"codex"`+field+`}}}`)
+			code, out, errb := runProfileCLI([]string{"profile", "save", "--json"},
+				`{"name":"cx","backend":"codex","model":"changed-model"}`)
+			if code != 0 || errb != "" {
+				t.Fatal(code, errb)
+			}
+			if got := decodeSnap(t, out).Profiles[0].ServiceTier; got != tier {
+				t.Fatalf("edited tier = %q, want %q", got, tier)
+			}
+			raw, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tier == "" && bytes.Contains(raw, []byte(`"service_tier"`)) {
+				t.Fatal("editing a legacy profile must not write a service tier")
+			}
+		})
+	}
+}
+
 func TestProfileSaveCodexAndAuthRules(t *testing.T) {
 	path := profileCfg(t, `{"default":"a","profiles":{"a":{"base_url":"https://gw.example.com","model":"m","token":"`+pjToken+`"}}}`)
 	code, out, errb := runProfileCLI([]string{"profile", "save", "--json"},
