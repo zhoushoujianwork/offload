@@ -8,7 +8,9 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
 	"path/filepath"
+	"syscall"
 	"time"
 
 	"github.com/zhoushoujianwork/offload/internal/config"
@@ -83,10 +85,10 @@ func retestProfile(ctx context.Context, path, name string) (probeOutcome, error)
 	defer lock.Release()
 	out := probeProfile(ctx, path, canonical)
 	switch {
+	case out.ErrorKind == "canceled" || ctx.Err() != nil:
+		return probeOutcome{ErrorKind: "canceled", Message: "profile test canceled"}, nil
 	case out.OK:
 		return out, config.MarkAvailable(path, canonical)
-	case out.ErrorKind == "canceled" || ctx.Err() != nil:
-		return out, nil
 	}
 	permanent, category := config.ClassifyFailure(out.ErrorKind, out.Message)
 	if permanent || !p.Available() {
@@ -119,7 +121,9 @@ func cmdProfileTest(args []string, stdout, stderr io.Writer) int {
 	if len(args) != 1 {
 		return fail(stderr, errors.New("usage: offload profile test <profile>"))
 	}
-	out, err := retestProfile(context.Background(), config.Path(), args[0])
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	out, err := retestProfile(ctx, config.Path(), args[0])
 	if err != nil {
 		return fail(stderr, err)
 	}

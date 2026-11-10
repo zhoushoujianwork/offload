@@ -4,9 +4,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -135,5 +140,123 @@ func TestRecordRunFailureAndListing(t *testing.T) {
 	cmdProfiles(&out, &out)
 	if !strings.Contains(out.String(), "unavailable since") {
 		t.Fatalf("text listing: %s", out.String())
+	}
+}
+
+// The helper runs cmdProfileTest in a separate process so signals never reach the test host.
+// Its injected probe starts a local child in place of an actual model worker.
+func TestProfileTestSignalHelper(t *testing.T) {
+	if os.Getenv("OFFLOAD_TEST_SIGNAL_HELPER") != "1" {
+		return
+	}
+	probeProfile = func(ctx context.Context, _, _ string) probeOutcome {
+		child := exec.CommandContext(ctx, "/bin/sleep", "30")
+		if err := child.Start(); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(os.Getenv("OFFLOAD_TEST_CHILD_PID"), []byte(strconv.Itoa(child.Process.Pid)), 0o600); err != nil {
+			_ = child.Process.Kill()
+			_ = child.Wait()
+			t.Fatal(err)
+		}
+		<-ctx.Done()
+		if err := child.Wait(); err == nil {
+			t.Fatal("canceled probe child unexpectedly succeeded")
+		}
+		// Deliberately return a permanent error: ctx cancellation must override it.
+		return probeOutcome{ErrorKind: "execution", Message: "HTTP 401 Unauthorized"}
+	}
+	os.Exit(cmdProfileTest([]string{"a"}, os.Stdout, os.Stderr))
+}
+
+func TestProfileTestSignalsCancelProbeAndReapChild(t *testing.T) {
+	for _, sig := range []os.Signal{os.Interrupt, syscall.SIGTERM} {
+		for _, unavailable := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/unavailable=%t", sig, unavailable), func(t *testing.T) {
+				path := setupRetest(t)
+				if unavailable {
+					if err := config.SetUnavailable(path, "a", "original reason", time.Unix(1, 0)); err != nil {
+						t.Fatal(err)
+					}
+				}
+				before, err := os.ReadFile(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				pidFile := filepath.Join(t.TempDir(), "child.pid")
+				cmd := exec.Command(os.Args[0], "-test.run=^TestProfileTestSignalHelper$")
+				cmd.Env = append(os.Environ(), "OFFLOAD_TEST_SIGNAL_HELPER=1", "OFFLOAD_TEST_CHILD_PID="+pidFile)
+				var output bytes.Buffer
+				cmd.Stdout, cmd.Stderr = &output, &output
+				if err := cmd.Start(); err != nil {
+					t.Fatal(err)
+				}
+				done := make(chan error, 1)
+				go func() { done <- cmd.Wait() }()
+				childPID := 0
+				t.Cleanup(func() {
+					_ = cmd.Process.Kill()
+					if childPID != 0 && syscall.Kill(childPID, 0) == nil {
+						_ = syscall.Kill(childPID, syscall.SIGKILL)
+					}
+				})
+				deadline := time.Now().Add(5 * time.Second)
+				for time.Now().Before(deadline) {
+					if raw, err := os.ReadFile(pidFile); err == nil {
+						childPID, _ = strconv.Atoi(string(raw))
+						if childPID > 1 {
+							break
+						}
+					}
+					time.Sleep(10 * time.Millisecond)
+				}
+				if childPID <= 1 {
+					t.Fatal("probe child did not start")
+				}
+				if err := cmd.Process.Signal(sig); err != nil {
+					t.Fatal(err)
+				}
+				select {
+				case err := <-done:
+					var exit *exec.ExitError
+					if !errors.As(err, &exit) || exit.ExitCode() != 1 || !strings.Contains(output.String(), "profile test canceled") {
+						t.Fatalf("expected handled cancellation: err=%v output=%s", err, output.String())
+					}
+				case <-time.After(5 * time.Second):
+					t.Fatal("signal did not cancel and finish the probe")
+				}
+				if err := syscall.Kill(childPID, 0); err != syscall.ESRCH {
+					t.Fatalf("probe child remains after cancellation: pid=%d err=%v", childPID, err)
+				}
+				childPID = 0 // Already reaped; cleanup must never signal a reused pid.
+				after, err := os.ReadFile(path)
+				if err != nil || !bytes.Equal(before, after) {
+					t.Fatalf("cancellation changed profile config: err=%v", err)
+				}
+			})
+		}
+	}
+}
+
+func TestRetestCanceledContextOverridesLateSuccess(t *testing.T) {
+	path := setupRetest(t)
+	if err := config.SetUnavailable(path, "a", "original reason", time.Unix(1, 0)); err != nil {
+		t.Fatal(err)
+	}
+	before, _ := os.ReadFile(path)
+	ctx, cancel := context.WithCancel(context.Background())
+	old := probeProfile
+	t.Cleanup(func() { probeProfile = old })
+	probeProfile = func(context.Context, string, string) probeOutcome {
+		cancel()
+		return probeOutcome{OK: true}
+	}
+	out, err := retestProfile(ctx, path, "a")
+	if err != nil || out.OK || out.ErrorKind != "canceled" {
+		t.Fatalf("cancellation must override late success: out=%+v err=%v", out, err)
+	}
+	after, err := os.ReadFile(path)
+	if err != nil || !bytes.Equal(before, after) {
+		t.Fatalf("cancellation cleared availability: err=%v", err)
 	}
 }
