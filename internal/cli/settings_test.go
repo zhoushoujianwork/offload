@@ -55,12 +55,14 @@ func TestSettingsLineFitsTerminalRow(t *testing.T) {
 // is actually invoked next consumes it; err, when set, is returned instead of
 // a value (io.EOF/ErrInterrupt simulate cancellation).
 type step struct {
-	index int
-	text  string
-	err   error
+	index         int
+	text          string
+	err           error
+	acceptDefault bool
 }
 
 func choose(index int) step   { return step{index: index} }
+func enterChoice() step       { return step{acceptDefault: true} }
 func ask(text string) step    { return step{text: text} }
 func failStep(err error) step { return step{err: err} }
 
@@ -90,6 +92,9 @@ func (f *fakePrompt) Choose(label string, choices []string, cursor int) (int, er
 	f.pos++
 	if s.err != nil {
 		return 0, s.err
+	}
+	if s.acceptDefault {
+		return cursor, nil
 	}
 	return s.index, nil
 }
@@ -703,8 +708,8 @@ func TestSettingsFastSwitchSerializesOnAndOff(t *testing.T) {
 				t.Fatalf("%d %s", code, errOut)
 			}
 			call := fastCall(t, f)
-			if !slices.Equal(call.choices, []string{"Off (standard service)", "On (Fast service)"}) || call.cursor != 0 {
-				t.Fatalf("a new profile must offer exactly Off/On and default to Off: %+v", call)
+			if !slices.Equal(call.choices, []string{"Off (standard service)", "On (Fast service)"}) || call.cursor != 1 {
+				t.Fatalf("a new profile must offer exactly Off/On and default to On: %+v", call)
 			}
 			if !strings.Contains(call.label, "does not guarantee a shorter task time") || strings.Contains(call.label, "service_tier") {
 				t.Fatal(call.label)
@@ -721,16 +726,39 @@ func TestSettingsFastSwitchSerializesOnAndOff(t *testing.T) {
 	}
 }
 
-func TestSettingsFastNewProfileDefaultIsOff(t *testing.T) {
+func TestSettingsFastNewProfileDefaultIsOn(t *testing.T) {
 	settingsEnv(t)
-	// Accepting every default (choice 0) must never opt a new profile into Fast.
-	f := &fakePrompt{steps: []step{choose(0), ask("quick"), choose(0), ask(""), choose(0), choose(0), ask(""), choose(2)}}
+	// Enter confirms the Fast prompt's actual initial cursor.
+	f := &fakePrompt{steps: []step{choose(0), ask("quick"), choose(0), ask(""), choose(0), enterChoice(), ask(""), choose(2)}}
 	if code, _, errOut := runSettingsTest(f); code != 0 || errOut != "" {
 		t.Fatalf("%d %s", code, errOut)
 	}
 	cfg, err := config.Load(config.Path())
-	if err != nil || cfg.Profiles["quick"].ServiceTier != "default" {
+	if err != nil || cfg.Profiles["quick"].ServiceTier != "priority" {
 		t.Fatalf("%v %+v", err, cfg.Profiles["quick"])
+	}
+}
+
+func TestSettingsFastEnterPreservesExplicitAndInheritedChoices(t *testing.T) {
+	for _, tc := range []struct {
+		name, current, want string
+		add                 bool
+		cursor              int
+	}{
+		{"new unspecified", "", "priority", true, 1},
+		{"new explicit off", "default", "default", true, 0},
+		{"new explicit on", "priority", "priority", true, 1},
+		{"existing off", "default", "default", false, 0},
+		{"existing on", "priority", "priority", false, 1},
+		{"existing not set", "", "", false, 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := &fakePrompt{steps: []step{enterChoice()}}
+			got, err := settingsFast(f, tc.current, tc.add)
+			if err != nil || got != tc.want || fastCall(t, f).cursor != tc.cursor {
+				t.Fatalf("got tier %q, error %v, calls %+v; want tier %q, cursor %d", got, err, f.calls, tc.want, tc.cursor)
+			}
+		})
 	}
 }
 

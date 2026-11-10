@@ -256,6 +256,9 @@ func applyProfileRequest(p config.Profile, req profileSaveRequest) (config.Profi
 	}
 	if req.ServiceTier != nil {
 		p.ServiceTier = *req.ServiceTier
+	} else if req.Create && p.BackendName() == "codex" {
+		// Default only new requests; explicit Off/inheritance and saved profiles stay intact.
+		p.ServiceTier = "priority"
 	}
 	if req.CodexAccount != nil {
 		p.CodexAccount = *req.CodexAccount

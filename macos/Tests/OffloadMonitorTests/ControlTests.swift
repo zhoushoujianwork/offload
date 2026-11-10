@@ -125,6 +125,7 @@ final class ProfileDraftTests: XCTestCase {
         XCTAssertEqual(j["secret"] as? String, "sk-123")
         XCTAssertEqual(j["base_url"] as? String, "https://gw.example")
         XCTAssertNil(j["endpoint"], "unset endpoint is omitted")
+        XCTAssertNil(j["service_tier"], "Claude omits the new Codex Fast default")
     }
 
     func testNewProfileValidation() {
@@ -211,22 +212,24 @@ final class ProfileDraftTests: XCTestCase {
         try ProfilesSnapshot.decode(Data(Fixtures.profiles([Fixtures.profile(name: "cx", backend: "codex", model: "m", effort: "high", tier: tier, auth: "none")]).utf8)).profiles[0]
     }
 
-    func testFastSwitchNewProfileIsOffAndSerializesExplicitly() throws {
+    func testFastSwitchNewProfileIsOnAndSerializesExplicitly() throws {
         var d = ProfileDraft.new()
         d.name = "cx"; d.backend = "codex"
-        XCTAssertEqual(d.fast, .off, "a new profile never opts into Fast")
+        XCTAssertEqual(d.fast, .on, "a new Codex profile defaults to Fast")
         XCTAssertEqual(d.fastChoices, [.off, .on])
-        XCTAssertEqual(try json(d.request(existingNames: []))["service_tier"] as? String, "default")
-        d.fast = .on
         XCTAssertEqual(try json(d.request(existingNames: []))["service_tier"] as? String, "priority")
         XCTAssertEqual(d.fast.title, "On")
+        d.fast = .off
+        XCTAssertEqual(try json(d.request(existingNames: []))["service_tier"] as? String, "default")
     }
 
     func testFastSwitchOpeningAnExistingProfileSendsNothing() throws {
         for tier in ["", "default", "priority"] {
-            let d = ProfileDraft(editing: try codexEntry(tier: tier))
+            var d = ProfileDraft(editing: try codexEntry(tier: tier))
             XCTAssertNil(try json(d.request(existingNames: ["cx"]))["service_tier"], "tier \(tier) must not be rewritten on open")
             XCTAssertEqual(d.fast, tier == "priority" ? .on : tier == "default" ? .off : .notSet)
+            d.model = "changed-model"
+            XCTAssertNil(try json(d.request(existingNames: ["cx"]))["service_tier"], "editing another field must preserve tier \(tier)")
         }
         XCTAssertEqual(ProfileDraft(editing: try codexEntry(tier: "")).fastChoices, [.off, .on, .notSet])
         XCTAssertEqual(ProfileDraft(editing: try codexEntry(tier: "default")).fastChoices, [.off, .on])

@@ -170,8 +170,8 @@ struct ProfileDraft: Equatable {
 
     var isNew: Bool { original == nil }
 
-    /// A new profile starts with Fast off (the standard service tier), never inheriting Fast from the native CLI.
-    static func new() -> ProfileDraft { var d = ProfileDraft(); d.tier = "default"; return d }
+    /// A new Codex profile starts with Fast on; Claude requests omit the service tier.
+    static func new() -> ProfileDraft { var d = ProfileDraft(); d.tier = "priority"; return d }
 
     /// The explicit Fast choices. `notSet` is only offered while editing a profile that has no saved tier, so
     /// the form can show that state honestly instead of guessing On or Off.
