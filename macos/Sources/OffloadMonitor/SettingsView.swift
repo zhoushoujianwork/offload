@@ -53,6 +53,12 @@ struct ProfilesSettingsView: View {
     /// A background refresh found the stored profile different while the form has unsaved edits.
     @State private var changedOnDisk = false
 
+    init(profiles: ProfilesModel, initialDraft: ProfileDraft = .new()) {
+        self.profiles = profiles
+        _draft = State(initialValue: initialDraft)
+        _selection = State(initialValue: initialDraft.isNew ? "" : initialDraft.name)
+    }
+
     private var snap: ProfilesSnapshot? { profiles.snapshot }
     private var names: [String] { snap?.profiles.map(\.name) ?? [] }
 
@@ -174,13 +180,18 @@ struct ProfilesSettingsView: View {
     @ViewBuilder private var codexRows: some View {
         GridRow {
             label("Account")
-            Picker("Account", selection: $draft.codexAccount) {
-                Text("System Codex account").tag("")
-                ForEach(snap?.managedAccounts ?? [], id: \.self) { Text($0).tag($0) }
-                if !draft.codexAccount.isEmpty && !(snap?.managedAccounts ?? []).contains(draft.codexAccount) {
-                    Text(draft.codexAccount + " (unavailable)").tag(draft.codexAccount)
-                }
-            }.labelsHidden()
+            HStack {
+                Picker("Account", selection: $draft.codexAccount) {
+                    Text("System Codex account").tag("")
+                    ForEach(snap?.managedAccounts ?? [], id: \.self) { Text($0).tag($0) }
+                    if !draft.codexAccount.isEmpty && !(snap?.managedAccounts ?? []).contains(draft.codexAccount) {
+                        Text(draft.codexAccount + " (unavailable)").tag(draft.codexAccount)
+                    }
+                }.labelsHidden()
+                Button("Link…") { linkAccount() }
+                    .disabled(profiles.busy || profiles.accountLoginRunning || (accountName.isEmpty && draft.codexAccount.isEmpty))
+                    .help("Link the named account, or the selected account when the name is empty, to a shared auth.json.")
+            }
         }
         GridRow {
             label("Add account")
@@ -348,6 +359,26 @@ struct ProfilesSettingsView: View {
         case .reload(let e): draft = ProfileDraft(editing: e); changedOnDisk = false
         case .keepEdits: changedOnDisk = true
         case .removed: draft = ProfileDraft.new(); selection = ""; changedOnDisk = false
+        }
+    }
+
+    private func linkAccount() {
+        let name = accountName.isEmpty ? draft.codexAccount : accountName
+        let panel = NSOpenPanel()
+        panel.title = "Link Codex auth.json"
+        panel.message = "Link \(name) to a private OAuth auth.json. Refreshes share this file; configuration and sessions stay separate. Existing authentication is backed up."
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.begin { response in
+            guard response == .OK, let url = panel.url else { return }
+            Task { @MainActor in
+                formError = nil
+                notice = nil
+                if await profiles.linkAccount(name: name, authURL: url) {
+                    accountName = ""
+                    notice = "Account \(name) linked. Select it and save to change the profile account."
+                }
+            }
         }
     }
 

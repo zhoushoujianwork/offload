@@ -10,7 +10,58 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/zhoushoujianwork/offload/internal/config"
 )
+
+func TestLinkedManagedAccountExecution(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("OFFLOAD_MAX_WORKERS", "-1")
+	external := filepath.Join(t.TempDir(), "auth.json")
+	if err := os.WriteFile(external, []byte(`{"tokens":{"access_token":"fake-access","refresh_token":"fake-refresh","account_id":"fake-account"}}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	home, err := config.LinkManagedAccount("linked", external)
+	if err != nil {
+		t.Fatal(err)
+	}
+	binary := filepath.Join(t.TempDir(), "codex")
+	script := `#!/bin/sh
+test -L "$CODEX_HOME/auth.json" || exit 81
+cat >/dev/null
+printf '%s\n' '{"type":"thread.started","thread_id":"linked-session"}' '{"type":"item.completed","item":{"id":"m","type":"agent_message","text":"LINKED_OK"}}' '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}'
+`
+	if err := os.WriteFile(binary, []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("OFFLOAD_CODEX", binary)
+	client, err := New(Config{ProfileName: "fixture", Profile: Profile{Backend: "codex", Model: "fixture", CodexAccount: "linked"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	env, err := NewEnvironment()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(env.Root) })
+	for _, isolated := range []bool{false, true} {
+		request := Request{Directory: t.TempDir(), Task: "fake linked account task"}
+		expectedHome := home
+		if isolated {
+			request.Directory, request.EnvironmentDirectory = env.Workspace, env.Root
+			expectedHome = filepath.Join(env.Root, "codex")
+		}
+		result, err := client.Run(context.Background(), request)
+		if err != nil || result.Report != "LINKED_OK" {
+			t.Fatalf("isolated=%v status=%s err=%v", isolated, result.Status, err)
+		}
+		got, err := filepath.EvalSymlinks(filepath.Join(expectedHome, "auth.json"))
+		want, _ := filepath.EvalSymlinks(external)
+		if err != nil || got != want {
+			t.Fatal("execution did not retain shared authentication")
+		}
+	}
+}
 
 func TestEnvironmentUsesSeparateClaudeConfiguration(t *testing.T) {
 	env, err := NewEnvironment()

@@ -138,3 +138,92 @@ func TestCodexAppServerEnvironmentBindsExactSkillManifest(t *testing.T) {
 		t.Fatalf("changed exact Skill manifest reused weaker binding: %v", err)
 	}
 }
+
+func TestLinkedIsolatedAuthenticationMigration(t *testing.T) {
+	for _, existing := range []bool{false, true} {
+		t.Run(map[bool]string{false: "new", true: "existing"}[existing], func(t *testing.T) {
+			root, err := NewEnvironment()
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { os.RemoveAll(root) })
+			source := t.TempDir()
+			external := filepath.Join(t.TempDir(), "auth.json")
+			auth := []byte(`{"tokens":{"access_token":"fake-access","refresh_token":"fake-refresh","account_id":"same-account"}}`)
+			if err := os.WriteFile(external, auth, 0600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(external, filepath.Join(source, "auth.json")); err != nil {
+				t.Fatal(err)
+			}
+			target := filepath.Join(root, "codex", "auth.json")
+			if existing {
+				if err := os.WriteFile(target, auth, 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			o := Opts{ProfileName: "linked", Profile: config.Profile{Backend: "codex"}, Dir: filepath.Join(root, "workspace"), EnvironmentDirectory: root}
+			for i := 0; i < 2; i++ {
+				if _, err := o.prepareEnvironment(source); err != nil {
+					t.Fatal(err)
+				}
+			}
+			got, err := filepath.EvalSymlinks(target)
+			want, _ := filepath.EvalSymlinks(external)
+			if err != nil || got != want {
+				t.Fatal("isolated auth copied or misrouted")
+			}
+			backups, _ := filepath.Glob(filepath.Join(root, "codex", ".auth-link-backup-*"))
+			if (existing && len(backups) != 1) || (!existing && len(backups) != 0) {
+				t.Fatalf("backups: %v", backups)
+			}
+			other := filepath.Join(t.TempDir(), "auth.json")
+			if err := os.WriteFile(other, auth, 0600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Remove(filepath.Join(source, "auth.json")); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(other, filepath.Join(source, "auth.json")); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := o.prepareEnvironment(source); err == nil {
+				t.Fatal("silently changed isolated source")
+			}
+			got, _ = filepath.EvalSymlinks(target)
+			if got != want {
+				t.Fatal("source mismatch changed auth")
+			}
+		})
+	}
+}
+
+func TestLinkedIsolatedAuthenticationRejectsDifferentAccount(t *testing.T) {
+	root, err := NewEnvironment()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(root) })
+	source := t.TempDir()
+	external := filepath.Join(t.TempDir(), "auth.json")
+	auth := []byte(`{"tokens":{"access_token":"fake","refresh_token":"fake","account_id":"new"}}`)
+	if err := os.WriteFile(external, auth, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(external, filepath.Join(source, "auth.json")); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(root, "codex", "auth.json")
+	original := []byte(strings.ReplaceAll(string(auth), `"new"`, `"old"`))
+	if err := os.WriteFile(target, original, 0600); err != nil {
+		t.Fatal(err)
+	}
+	o := Opts{ProfileName: "linked", Profile: config.Profile{Backend: "codex"}, Dir: filepath.Join(root, "workspace"), EnvironmentDirectory: root}
+	if _, err := o.prepareEnvironment(source); err == nil {
+		t.Fatal("accepted a different account")
+	}
+	got, _ := os.ReadFile(target)
+	if string(got) != string(original) {
+		t.Fatal("mismatched auth overwritten")
+	}
+}

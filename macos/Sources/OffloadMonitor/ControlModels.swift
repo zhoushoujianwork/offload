@@ -280,6 +280,20 @@ final class ProfilesModel: ObservableObject {
         }
     }
 
+    func linkAccount(name: String, authURL: URL) async -> Bool {
+        guard let cli, !busy, !accountLoginRunning else { return false }
+        busy = true
+        defer { busy = false }
+        actionError = nil
+        do {
+            _ = try await cli.run(["accounts", "link", name, authURL.path])
+            return await fetch(cli)
+        } catch {
+            actionError = message(error)
+            return false
+        }
+    }
+
     func clearActionError() { actionError = nil }
 
     private func message(_ e: Error) -> String { (e as? LocalizedError)?.errorDescription ?? "The offload command failed." }
