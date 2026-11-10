@@ -98,7 +98,7 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return fail(stderr, err)
 	}
 	if disabled {
-		*mode = "off"
+		*mode = modeOff
 	}
 	files, err := planAgentInstallMode(targets, skills.Offload, *mode)
 	if err != nil {

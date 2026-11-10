@@ -8,6 +8,9 @@ import (
 	"github.com/zhoushoujianwork/offload/internal/config"
 )
 
+// modeOff renders the managed instructions of a globally disabled Offload. It is never a saved delegation mode.
+const modeOff = "off"
+
 // RunMode changes the saved delegation policy and updates both user agent homes.
 func RunMode(args []string, stdout, stderr io.Writer) int {
 	if len(args) > 1 || len(args) == 1 && !config.ValidMode(args[0]) {
@@ -34,7 +37,7 @@ func RunMode(args []string, stdout, stderr io.Writer) int {
 }
 
 func policyForMode(mode string) string {
-	if mode == "off" {
+	if mode == modeOff {
 		return offloadPolicyBegin + "\n## Offload disabled\n\nOffload is globally disabled. Complete work directly; do not launch or resume offload workers. This overrides project delegation modes and older instructions. Only an explicit user request to enable offload should change this setting.\n" + offloadPolicyEnd
 	}
 	if mode == config.ModeProactive {
@@ -58,7 +61,7 @@ func policyForMode(mode string) string {
 }
 
 func skillForMode(skill []byte, mode string) []byte {
-	if mode == "off" {
+	if mode == modeOff {
 		return []byte("---\nname: offload\ndescription: Offload is globally disabled; complete work directly.\n---\n\n" + policyForMode(mode))
 	}
 	if mode == config.ModeProactive {
@@ -67,17 +70,32 @@ func skillForMode(skill []byte, mode string) []byte {
 	return []byte(strings.Replace(string(skill), "Delegation mode: proactive", "Delegation mode: basic", 1))
 }
 
-// RunSwitch saves the gate first so instruction update failures cannot undo a disable.
+// ApplySwitch saves the gate first so an instruction update failure cannot undo a disable, then
+// reconciles the managed agent instructions. saved reports whether the switch was persisted; code is
+// the exit code of the whole operation. onSaved runs between the save and the instruction update.
+func ApplySwitch(disabled bool, stdout, stderr io.Writer, onSaved func()) (saved bool, code int) {
+	if err := config.SetDisabled(config.Path(), disabled); err != nil {
+		return false, fail(stderr, err)
+	}
+	if onSaved != nil {
+		onSaved()
+	}
+	return true, Run(nil, stdout, stderr)
+}
+
+// RunSwitch implements the text form of `offload disable` and `offload enable`.
 func RunSwitch(args []string, stdout, stderr io.Writer) int {
 	if len(args) != 1 || (args[0] != "disable" && args[0] != "enable") {
 		return fail(stderr, fmt.Errorf("usage: offload disable | enable"))
 	}
 	disabled := args[0] == "disable"
-	if err := config.SetDisabled(config.Path(), disabled); err != nil {
-		return fail(stderr, err)
+	saved, code := ApplySwitch(disabled, stdout, stderr, func() {
+		fmt.Fprintf(stdout, "Offload globally disabled: %t\n", disabled)
+	})
+	if !saved {
+		return code
 	}
-	fmt.Fprintf(stdout, "Offload globally disabled: %t\n", disabled)
-	if code := Run(nil, stdout, stderr); code != 0 {
+	if code != 0 {
 		fmt.Fprintln(stderr, "Global switch saved; agent instructions could not be fully updated. Fix the reported conflict and retry install-agent.")
 		return code
 	}

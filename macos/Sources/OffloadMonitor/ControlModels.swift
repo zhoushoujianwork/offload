@@ -25,6 +25,16 @@ final class ProfilesModel: ObservableObject {
     private var testControl: ProcessControl?
     private var batchCancelled = false
     private var lastAttempt: [String: Date] = [:]
+    /// True while Offload is off. Profile checks make real model calls, so none start while it is true. The CLI
+    /// refuses them as well; this keeps the App from even launching the command or showing a failure.
+    var checksBlocked: () -> Bool = { false } {
+        didSet { checksPaused = checksBlocked() }
+    }
+    /// Mirrors `checksBlocked` for views. `syncChecksPaused()` refreshes it when the switch changes.
+    @Published private(set) var checksPaused = false
+    func syncChecksPaused() { checksPaused = checksBlocked() }
+    /// Shown when a check is refused because Offload is off.
+    @Published private(set) var blockedNotice: String?
     private let now: () -> Date
     private let recoveryInterval: TimeInterval
     @Published private(set) var batchRunning = false
@@ -88,7 +98,10 @@ final class ProfilesModel: ObservableObject {
         testControl?.cancel()
     }
 
+    static let offNotice = "Offload is off, so profile checks are paused. Turn Offload on in Settings > Offload to check profiles."
+
     func startUnavailableTests() {
+        if checksBlocked() { blockedNotice = Self.offNotice; return }
         guard !busy, !batchRunning, batchTask == nil else { return }
         batchTask = Task { [weak self] in
             await self?.testUnavailable()
@@ -98,6 +111,10 @@ final class ProfilesModel: ObservableObject {
 
     /// Shared serial lane for automatic and manual batches, single tests, reads and writes.
     func testUnavailable(automatic: Bool = false) async {
+        if checksBlocked() {
+            if !automatic { blockedNotice = Self.offNotice }
+            return
+        }
         guard cli != nil, !busy, !batchRunning, !Task.isCancelled else { return }
         let names = (snapshot?.profiles ?? []).filter { entry in
             guard entry.isUnavailable else { return false }
@@ -187,6 +204,7 @@ final class ProfilesModel: ObservableObject {
     /// Manual checks can test healthy profiles and bypass the automatic retry interval.
     @discardableResult
     func test(_ name: String) async -> Bool {
+        if checksBlocked() { blockedNotice = Self.offNotice; return false }
         guard cli != nil, !busy, !batchRunning, !Task.isCancelled else { return false }
         busy = true
         defer { busy = false }
@@ -195,6 +213,8 @@ final class ProfilesModel: ObservableObject {
     }
 
     private func performTest(_ name: String) async -> Bool {
+        // Re-check per profile: the switch can turn off in the middle of a batch.
+        if checksBlocked() { return false }
         guard let cli, !testing.contains(name), !Task.isCancelled else { return false }
         let control = ProcessControl(intGrace: 1, termGrace: 1)
         testControl = control
@@ -294,7 +314,7 @@ final class ProfilesModel: ObservableObject {
         }
     }
 
-    func clearActionError() { actionError = nil }
+    func clearActionError() { actionError = nil; blockedNotice = nil }
 
     private func message(_ e: Error) -> String { (e as? LocalizedError)?.errorDescription ?? "The offload command failed." }
 }
@@ -360,6 +380,131 @@ final class AgentSkillsModel: ObservableObject {
         _ = await fetch(cli) // show the real state either way
         return ok
     }
+
+    private func message(_ e: Error) -> String { (e as? LocalizedError)?.errorDescription ?? "The offload command failed." }
+}
+
+/// The persisted Offload on/off switch, shared with the CLI and every other front end. The state lives in the
+/// CLI's configuration file, never here, so a change made anywhere shows up on the next read.
+///
+/// Turning the switch off never stops a running task. Stopping running tasks is a separate, explicit action.
+@MainActor
+final class OffloadSwitchModel: ObservableObject {
+    @Published private(set) var current: OffloadSwitch?
+    @Published private(set) var loadError: String?
+    @Published private(set) var actionError: String?
+    @Published private(set) var busy = false
+    /// Set after a change whose agent instructions could not be updated; the switch itself was saved.
+    @Published private(set) var instructionsNote: String?
+    @Published private(set) var stopping = false
+    @Published private(set) var stopResult: String?
+
+    private let cli: OffloadCLI?
+    private var poller: Task<Void, Never>?
+    /// Callbacks run when the switch turns off, so background work can stop at once.
+    var onDisabled: () -> Void = {}
+    /// Runs after every applied state, so dependent models can refresh what they show.
+    var onChanged: () -> Void = {}
+
+    init(cli: OffloadCLI?, autoLoad: Bool = true, refreshInterval: TimeInterval = 3) {
+        self.cli = cli
+        if cli == nil { loadError = CLIError.unavailable.errorDescription }
+        if autoLoad && cli != nil { startPolling(every: refreshInterval) }
+    }
+
+    /// Headless layout tests: shows the given state and never runs a command.
+    init(testing: OffloadSwitch?, error: String? = nil) {
+        cli = nil
+        current = testing
+        loadError = error
+    }
+
+    deinit { poller?.cancel() }
+
+    var isAvailable: Bool { cli != nil }
+
+    /// Nil until the first successful read. Callers that start model work must treat nil as "not known to be on"
+    /// only for display; the CLI refuses the execution on its own either way.
+    var isOff: Bool { current?.enabled == false }
+
+    private func startPolling(every interval: TimeInterval) {
+        poller = Task { [weak self] in
+            while !Task.isCancelled {
+                guard self != nil else { return }
+                _ = await self?.reload()
+                try? await Task.sleep(nanoseconds: UInt64(max(0.05, interval) * 1_000_000_000))
+            }
+        }
+    }
+
+    func stopPolling() { poller?.cancel(); poller = nil }
+
+    func refresh() { Task { _ = await reload() } }
+
+    @discardableResult
+    func reload() async -> Bool {
+        guard let cli, !busy else { return false }
+        do {
+            apply(try await cli.switchStatus())
+            loadError = nil
+            return true
+        } catch is CancellationError {
+            return false
+        } catch {
+            loadError = message(error)
+            return false
+        }
+    }
+
+    private func apply(_ next: OffloadSwitch) {
+        let wasOn = current?.enabled != false
+        current = next
+        onChanged()
+        if !next.enabled && wasOn { onDisabled() }
+        if next.enabled { instructionsNote = nil }
+    }
+
+    @discardableResult
+    func setEnabled(_ enabled: Bool) async -> Bool {
+        guard let cli, !busy else { return false }
+        busy = true
+        defer { busy = false }
+        actionError = nil
+        stopResult = nil
+        do {
+            let next = try await cli.setOffloadEnabled(enabled)
+            apply(next)
+            loadError = nil
+            instructionsNote = next.instructions.flatMap { $0.updated ? nil : $0.error }
+            return next.enabled == enabled
+        } catch {
+            actionError = message(error)
+            _ = await fetchQuietly(cli) // show the real state either way
+            return false
+        }
+    }
+
+    private func fetchQuietly(_ cli: OffloadCLI) async -> Bool {
+        do { apply(try await cli.switchStatus()); loadError = nil; return true } catch { return false }
+    }
+
+    /// Explicit, separate from turning the switch off: asks each running task to stop, the same request as the
+    /// task window's Stop button. Queued tasks are not started in any case while the switch is off.
+    func stopRunning(runIDs: [String]) async {
+        guard let cli, !stopping else { return }
+        stopping = true
+        defer { stopping = false }
+        stopResult = nil
+        var stopped = 0, failed = 0
+        for id in runIDs {
+            do { _ = try await cli.task("stop", id: id); stopped += 1 } catch { failed += 1 }
+        }
+        stopResult = failed == 0 ? "Asked \(stopped) task\(stopped == 1 ? "" : "s") to stop."
+                                 : "Asked \(stopped) to stop; \(failed) could not be stopped."
+        _ = await fetchQuietly(cli)
+    }
+
+    func clearActionError() { actionError = nil }
 
     private func message(_ e: Error) -> String { (e as? LocalizedError)?.errorDescription ?? "The offload command failed." }
 }

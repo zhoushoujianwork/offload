@@ -10,6 +10,7 @@ final class AppState {
     let updates = UpdateManager()
     let profiles: ProfilesModel
     let skills: AgentSkillsModel
+    let offloadSwitch: OffloadSwitchModel
     let history: HistoryModel
     let chats: ChatStore
     let motion: MotionController
@@ -22,15 +23,20 @@ final class AppState {
         let cli = StatsClient.locateCLI().map { OffloadCLI(executable: $0) }
         profiles = ProfilesModel(cli: cli)
         skills = AgentSkillsModel(cli: cli)
+        offloadSwitch = OffloadSwitchModel(cli: cli)
         history = HistoryModel(cli: cli)
         motion = MotionController(monitor: model)
-        chats = ChatStore(env: ChatEnv(cli: cli, profiles: profiles, monitor: model, history: history))
+        chats = ChatStore(env: ChatEnv(cli: cli, profiles: profiles, monitor: model, history: history, offloadSwitch: offloadSwitch))
+        // Profile checks are real model calls: none start while Offload is off, and a running batch stops at once.
+        profiles.checksBlocked = { [offloadSwitch] in offloadSwitch.isOff }
+        offloadSwitch.onDisabled = { [weak profiles] in profiles?.cancelTests() }
+        offloadSwitch.onChanged = { [weak profiles] in profiles?.syncChecksPaused() }
         updates.configureLifecycle(blocker: { [weak self] in
             guard let self else { return "Waiting for the app lifecycle." }
             return self.restartBlockReason
         }, refreshCLI: { [weak self] in
             guard let self else { return }
-            self.model.refreshNow(); self.profiles.refresh(); self.skills.refresh()
+            self.model.refreshNow(); self.profiles.refresh(); self.skills.refresh(); self.offloadSwitch.refresh()
             Task { await self.history.reload() }
         }, requestTermination: { NSApp.terminate(nil) })
     }
@@ -46,7 +52,7 @@ final class AppState {
     /// Shows the dashboard window, creating it on first use. Closing it leaves the menu bar app running.
     func showDashboard() {
         if window == nil {
-            let hosting = NSHostingController(rootView: PopoverView(model: model, updates: updates, profiles: profiles, motion: motion, isDashboard: true))
+            let hosting = NSHostingController(rootView: PopoverView(model: model, updates: updates, profiles: profiles, motion: motion, offloadSwitch: offloadSwitch, isDashboard: true))
             let w = NSWindow(contentViewController: hosting)
             w.title = "Offload Monitor"
             w.styleMask = [.titled, .closable, .miniaturizable]
@@ -98,7 +104,7 @@ extension AppState {
     /// The Settings window is created once, so edits in progress survive closing and reopening it.
     func showSettings() {
         if settingsWindow == nil {
-            let hosting = NSHostingController(rootView: SettingsView(profiles: profiles, skills: skills, updates: updates, motion: motion))
+            let hosting = NSHostingController(rootView: SettingsView(profiles: profiles, skills: skills, updates: updates, motion: motion, offloadSwitch: offloadSwitch, monitor: model))
             let w = NSWindow(contentViewController: hosting)
             w.title = "Offload Monitor Settings"
             w.styleMask = [.titled, .closable]
@@ -109,6 +115,7 @@ extension AppState {
         } else {
             profiles.refreshIfStale()
         }
+        offloadSwitch.refresh()
         NSApp.activate(ignoringOtherApps: true)
         settingsWindow?.makeKeyAndOrderFront(nil)
     }
@@ -135,7 +142,7 @@ extension AppState {
 
     func showDetails() { showAux("details", title: "Token and cost detail", size: NSSize(width: 480, height: 460)) { DetailsView(model: self.model) } }
     func showNotes() { showAux("notes", title: "Data coverage and notes", size: NSSize(width: 380, height: 260)) { NotesView(model: self.model) } }
-    func showNotices() { showAux("notices", title: "Status and updates", size: NSSize(width: 380, height: 260)) { NoticesView(model: self.model, updates: self.updates) } }
+    func showNotices() { showAux("notices", title: "Status and updates", size: NSSize(width: 380, height: 260)) { NoticesView(model: self.model, updates: self.updates, offloadSwitch: self.offloadSwitch) } }
     func openTask(_ id: String) {
         showAux("task-" + id, title: "Task output", size: NSSize(width: 680, height: 560)) {
             TaskDetailView(runID: id)
@@ -178,6 +185,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationWillTerminate(_ notification: Notification) {
         MainActor.assumeIsolated {
             AppState.shared.profiles.stopPolling()
+            AppState.shared.offloadSwitch.stopPolling()
         }
     }
 

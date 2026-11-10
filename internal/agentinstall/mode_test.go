@@ -336,3 +336,68 @@ func TestDisableRemainsSavedWhenInstructionsConflict(t *testing.T) {
 		t.Fatal(errOut.String())
 	}
 }
+
+// While Offload is globally disabled, the agent control commands must not write delegation
+// instructions back, and status must describe the disabled instructions as current.
+func TestAgentControlFollowsGlobalSwitch(t *testing.T) {
+	home := modeHome(t)
+	policy := filepath.Join(home, ".codex", "AGENTS.md")
+	if err := os.MkdirAll(filepath.Dir(policy), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	custom := "My own instructions.\n"
+	if err := os.WriteFile(policy, []byte(custom), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := config.SetMode(config.Path(), "basic"); err != nil {
+		t.Fatal(err)
+	}
+	var out, errOut bytes.Buffer
+	if code := RunSwitch([]string{"disable"}, &out, &errOut); code != 0 {
+		t.Fatal(errOut.String())
+	}
+	st := controlState(t, "status")
+	if !st.GloballyDisabled || st.Mode != "basic" {
+		t.Fatalf("status must report the switch and keep the saved mode: %+v", st)
+	}
+	for _, a := range st.Agents {
+		if a.Status != "enabled" || !a.SkillCurrent || !a.PolicyCurrent || a.Mode != modeOff || a.CanEnable {
+			t.Fatalf("disabled instructions must be current: %+v", a)
+		}
+		if !strings.Contains(a.Message, "globally disabled") {
+			t.Fatalf("message must explain the disabled instructions: %q", a.Message)
+		}
+	}
+	// A skill removed behind our back is restored in the disabled form, never as delegation.
+	if err := os.RemoveAll(filepath.Join(home, ".agents", "skills", "offload")); err != nil {
+		t.Fatal(err)
+	}
+	st = controlState(t, "enable", "--agent", "codex")
+	if st.Agents[0].Status != "enabled" || st.Agents[0].Mode != modeOff {
+		t.Fatalf("agent enable while disabled: %+v", st.Agents[0])
+	}
+	got := string(installTestRead(t, policy))
+	if strings.Contains(got, "Delegation mode") || !strings.Contains(got, "globally disabled") || !strings.HasPrefix(got, custom) {
+		t.Fatalf("policy while disabled:\n%s", got)
+	}
+	if !bytes.Equal(installTestRead(t, filepath.Join(home, ".agents", "skills", "offload", "SKILL.md")), skillForMode(skills.Offload, modeOff)) {
+		t.Fatal("skill restored in a delegating form while disabled")
+	}
+
+	// Enabling restores the saved mode and keeps the user's own text.
+	if code := RunSwitch([]string{"enable"}, &out, &errOut); code != 0 {
+		t.Fatal(errOut.String())
+	}
+	st = controlState(t, "status")
+	if st.GloballyDisabled {
+		t.Fatal("still disabled")
+	}
+	for _, a := range st.Agents {
+		if a.Mode != "basic" || !a.PolicyCurrent {
+			t.Fatalf("saved mode not restored: %+v", a)
+		}
+	}
+	if got := string(installTestRead(t, policy)); !strings.HasPrefix(got, custom) || strings.Contains(got, "globally disabled") {
+		t.Fatalf("policy after enable:\n%s", got)
+	}
+}

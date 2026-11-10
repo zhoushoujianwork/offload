@@ -26,6 +26,8 @@ struct PopoverView: View {
     @ObservedObject var profiles: ProfilesModel
     /// Motion for the header status symbol.
     @ObservedObject var motion: MotionController
+    /// Nil in tests that do not exercise the switch.
+    var offloadSwitch: OffloadSwitchModel? = nil
     var isDashboard = false
     /// Layout tests measure the natural height instead of forcing the fixed one.
     var measuring = false
@@ -35,6 +37,7 @@ struct PopoverView: View {
             header
             Divider()
             VStack(alignment: .leading, spacing: 8) {
+                if let offloadSwitch { OffNoticeRow(model: offloadSwitch) }
                 NoticeRow(model: model, updates: updates)
                 content
                 Spacer(minLength: 0)
@@ -383,6 +386,30 @@ enum Notices {
         case .failed(let m): out.append(NoticeItem(symbol: "exclamationmark.triangle.fill", tint: .red, title: "Update problem", message: m))
         }
         return out
+    }
+}
+
+/// One row, only while Offload is off. It says what is blocked and, separately, what is still running, so a
+/// blocked button is never the only sign. Same height as a notice, so the fixed layout does not move.
+struct OffNoticeRow: View {
+    @ObservedObject var model: OffloadSwitchModel
+
+    var body: some View {
+        if let s = model.current, let banner = SwitchPresentation.banner(s) {
+            HStack(spacing: 6) {
+                Image(systemName: "power").foregroundStyle(.orange).font(.system(size: 12))
+                VStack(alignment: .leading, spacing: 0) {
+                    Text(banner.title).font(.system(size: 10.5, weight: .semibold)).lineLimit(1)
+                    Text(banner.message).font(.system(size: 9.5)).foregroundStyle(.secondary).lineLimit(1)
+                }
+                Spacer(minLength: 4)
+                Button("Settings") { AppState.shared.showSettings() }.controlSize(.mini)
+            }
+            .padding(.horizontal, 8)
+            .frame(height: Layout.notice)
+            .background(Color.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
+            .accessibilityElement(children: .combine)
+        }
     }
 }
 

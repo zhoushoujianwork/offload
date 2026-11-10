@@ -112,7 +112,7 @@ var (
 // rate limits and capacity errors never qualify. category is a short human label.
 func ClassifyFailure(errorKind, message string) (permanent bool, category string) {
 	switch errorKind {
-	case "rate_limit", "capacity", "canceled", "timeout", "idle_timeout", "events_io", "configuration", "interrupted", "monitor":
+	case "rate_limit", "capacity", "canceled", "timeout", "idle_timeout", "events_io", "configuration", "interrupted", "monitor", DisabledErrorKind:
 		return false, ""
 	}
 	switch {

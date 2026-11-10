@@ -87,10 +87,12 @@ struct NotesView: View {
 struct NoticesView: View {
     @ObservedObject var model: MonitorModel
     @ObservedObject var updates: UpdateManager
+    var offloadSwitch: OffloadSwitchModel? = nil
 
     var body: some View {
         ScrollView(showsIndicators: false) {
             VStack(alignment: .leading, spacing: 10) {
+                if let offloadSwitch { OffDetails(model: offloadSwitch) }
                 if let err = model.lastError {
                     Banner(symbol: "exclamationmark.triangle.fill", tint: .orange,
                            title: model.snapshot == nil ? "Cannot read stats" : "Stats refresh problem", message: err)
@@ -99,6 +101,17 @@ struct NoticesView: View {
             }
             .padding(16)
             .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+}
+
+struct OffDetails: View {
+    @ObservedObject var model: OffloadSwitchModel
+
+    var body: some View {
+        if let s = model.current, s.blocksNewExecutions {
+            Banner(symbol: "power", tint: .orange, title: "Offload is off",
+                   message: SwitchPresentation.newExecutionsLine(s) + " " + SwitchPresentation.runningLine(s))
         }
     }
 }

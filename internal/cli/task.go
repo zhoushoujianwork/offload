@@ -113,6 +113,14 @@ func taskSnapshot(id string) (taskDocument, error) {
 		d.CanResume = true
 		d.ResumeReason = "Resume creates a new execution in the existing compatible native session."
 	}
+	// A resume starts a worker, so the global switch decides it. The reason is stable and names the switch,
+	// so a client shows why instead of a disabled button.
+	if d.CanResume {
+		if err := config.CheckEnabled(); err != nil {
+			d.CanResume = false
+			d.ResumeReason = err.Error()
+		}
+	}
 	return d, nil
 }
 
@@ -163,6 +171,10 @@ func writeTaskJSON(stdout, stderr io.Writer, value any) int {
 }
 
 func resumeTask(id string, stdout, stderr io.Writer) int {
+	// Refuse before leasing the run or launching the saved resume entry point.
+	if err := config.CheckEnabled(); err != nil {
+		return fail(stderr, err)
+	}
 	release, err := runcontrol.Lease(id)
 	if err != nil {
 		return fail(stderr, errors.New("another resume request owns this run"))

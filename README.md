@@ -130,4 +130,4 @@ force-kills the app. [Development updates →](docs/guide.md#fast-local-developm
 
 [MIT License](LICENSE)
 
-macOS App 运行期间会自动串行复测失效的 profile：启动时先刷新列表，失效至少 30 分钟后才尝试，此后每项至少间隔 30 分钟。关闭设置窗口不影响复测；没有失效项时不会发起模型调用。设置中的 **Check profile** 可检查任意 profile，**Check all unavailable** 可立即检查所有失效项（会产生最小真实模型调用），并显示进度及取消按钮；取消不会由 App 改写可用状态。
+macOS App 运行期间会自动串行复测失效的 profile：启动时先刷新列表，失效至少 30 分钟后才尝试，此后每项至少间隔 30 分钟。关闭设置窗口不影响复测；没有失效项时不会发起模型调用。**Offload 总开关关闭时（设置 > Offload，或 `offload disable`）自动复测和手动 Check profile 都不会启动，也不会产生模型调用；重新开启后恢复。**仅关闭设置窗口、退出界面或停用 Agent 技能都不能代替总开关。设置中的 **Check profile** 可检查任意 profile，**Check all unavailable** 可立即检查所有失效项（会产生最小真实模型调用），并显示进度及取消按钮；取消不会由 App 改写可用状态。

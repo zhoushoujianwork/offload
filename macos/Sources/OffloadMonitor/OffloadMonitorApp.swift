@@ -6,7 +6,7 @@ struct OffloadMonitorApp: App {
 
     var body: some Scene {
         MenuBarExtra {
-            PopoverView(model: state.model, updates: state.updates, profiles: state.profiles, motion: state.motion)
+            PopoverView(model: state.model, updates: state.updates, profiles: state.profiles, motion: state.motion, offloadSwitch: state.offloadSwitch)
         } label: {
             MenuBarLabel(model: state.model, updates: state.updates, motion: state.motion.menuBar)
         }

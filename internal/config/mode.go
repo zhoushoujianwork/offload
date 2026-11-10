@@ -88,6 +88,9 @@ func writeSettings(path string, fields map[string]json.RawMessage) error {
 // ErrDisabled is stable across profiles and delegation modes.
 var ErrDisabled = errors.New("offload is globally disabled; complete work directly or run offload enable")
 
+// DisabledErrorKind is the error_kind of every execution refused by the global switch.
+const DisabledErrorKind = "globally_disabled"
+
 func LoadDisabled(path string) (bool, error) {
 	fields, err := modeSettings(path)
 	if err != nil {
@@ -102,8 +105,11 @@ func LoadDisabled(path string) (bool, error) {
 	return disabled, nil
 }
 
-func CheckEnabled() error {
-	disabled, err := LoadDisabled(Path())
+func CheckEnabled() error { return CheckEnabledAt(Path()) }
+
+// CheckEnabledAt reads the switch from the given configuration file.
+func CheckEnabledAt(path string) error {
+	disabled, err := LoadDisabled(path)
 	if err != nil {
 		return err
 	}
