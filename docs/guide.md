@@ -483,7 +483,7 @@ scripts/build-macos-app.sh
 open "dist/Offload Monitor.app"
 ```
 
-The app's menu bar item has an active-profile menu: choosing a profile saves it as the default (`offload default`), which applies to new runs only; running workers and `-p` or `OFFLOAD_PROFILE` overrides are unaffected. Its settings window has **Profiles**, **Agent skills** and **App** tabs, and the header shows a small "O with an outward arrow" mark beside the wordmark. **Profiles** creates and edits profiles (creating one selects it as the default). Saved credentials are shown only as masked; keeping them needs no input, replacing them takes an explicit new value, and the value goes to the CLI on stdin only. An existing private base URL is kept unless you change it. Opening settings never runs a token command. **Agent skills** enables or disables the Codex and Claude Code integration at user scope through `offload agent`; there is no project-scope or arbitrary skill management. Skill status reflects files on disk, so restart the agent session for a change to take effect.
+The app's menu bar item has an active-profile menu: choosing a profile saves it as the default (`offload default`), which applies to new runs only; running workers and `-p` or `OFFLOAD_PROFILE` overrides are unaffected. Its settings window has **Offload**, **Profiles**, **Agent skills** and **App** tabs, and the header shows a small "O with an outward arrow" mark beside the wordmark. **Profiles** creates and edits profiles (creating one selects it as the default). Saved credentials are shown only as masked; keeping them needs no input, replacing them takes an explicit new value, and the value goes to the CLI on stdin only. An existing private base URL is kept unless you change it. Opening settings never runs a token command. **Agent skills** enables or disables the Codex and Claude Code integration at user scope through `offload agent`; there is no project-scope or arbitrary skill management. Skill status reflects files on disk, so restart the agent session for a change to take effect.
 
 The app shows the output of `offload stats --json`. Its compact panel has no scrolling: task, history, project and model lists use pages. Trend bars can be selected for exact values and coverage. Token details, accounting notes and full run reports open in separate windows; long text there scrolls with indicators hidden. The script creates `dist/Offload Monitor.app`; you can copy it to `~/Applications` for daily use. Nothing is published. On its first launch it opens a native dashboard window. Later launches show only the menu bar item, and the menu's **Open Dashboard** action opens the dashboard again. Closing the dashboard leaves the menu bar item running. Launching with `--dashboard` opens the dashboard on any launch, for example `open "dist/Offload Monitor.app" --args --dashboard`. Its update check queries the stable GitHub release every 6 hours. A new release shows a red dot and requires explicit confirmation before download and installation; the release must provide a digest to verify. A local build publishes no release.
 
@@ -745,16 +745,41 @@ The supervisor must parse the final record even when the process exits nonzero.
 ### 全局暂停 offload
 
 运行 `offload disable` 持久关闭所有新任务和 resume；运行 `offload enable` 恢复。
+macOS App 在 **设置 > Offload** 提供同一个开关（「Enable Offload」），读写同一份配置，
+所以任一端的改动会在另一端下一次读取（App 约每 3 秒）时显示并生效。
 开关保存在同一全局配置目录（`$XDG_CONFIG_HOME/offload`，默认
 `~/.config/offload`），优先于 profile、项目 delegation mode 和旧会话指令。
 不同配置目录属于独立配置。关闭时 CLI 返回退出码 2，JSON 的
 `error_kind` 为 `globally_disabled`。排队任务在等待期间和启动前复查开关；
 已运行的 worker 继续完成，不会被关闭操作终止。
 
+**覆盖范围。** 每个会启动 worker 或发起模型调用的入口都在执行前检查开关：新任务、
+`offload resume`、`offload task resume`、排队任务（获得槽位前后各查一次）、自动 salvage、
+`offload schedule start` 的定时触发（记录为 `skipped`），以及 `offload profile test`
+（App 的自动复测、Check profile、Check all unavailable 都经过它，也在 App 内先行暂停）。
+被拒绝的 profile 检查不会改写 profile 的可用状态。`offload task show` 在关闭时给出
+`can_resume=false`，`resume_reason` 为拒绝原因。
+
+**状态与开关的 JSON。** `offload status --json`、`offload enable --json` 和
+`offload disable --json` 输出同一份文档（`schema_version` 1）：
+`enabled`、`new_executions`（`allowed`/`blocked`）、关闭时的 `error_kind`
+（`globally_disabled`）和 `reason`、`config_path`，以及 `running`：`status`
+（`ok`/`partial`/`unavailable`）、`processing`、`queued`、`cleaning`、`unresolved`、`lost`、
+`active`，关闭时 `handling` 为 `not_stopped`。无法读取的计数为 `null`，不是 0。
+`enable`/`disable` 的文档另含 `instructions`：`updated`、`new_session_required`，更新失败时
+有 `error`；此时开关已保存，退出码为 2。不带 `--json` 的文本输出不变。
+
+**运行中的任务。** 关闭只禁止新执行，不会终止运行中的任务；App 显示「禁止新执行」
+与「仍有 N 个任务运行」两行，并提供单独的「Stop running tasks…」按钮（需确认，
+等同于任务窗口的 Stop）。
+
 切换保留 profiles、默认 profile、凭据、历史及原 basic/proactive mode。
 `offload status` 和交互配置界面显示全局开关；历史和管理命令仍可使用。
 切换会更新用户级 Codex、Claude Code 的受管理策略区块和 offload 技能，
-保留自定义指令。两种宿主都需要新建会话加载更新；旧会话仍受 CLI 拒绝检查保护。
+保留自定义指令，并明确要求宿主直接完成工作。关闭期间 `offload agent enable` 只会写入
+这份「已关闭」的指令，不会恢复委派内容；`offload agent status --json` 的
+`globally_disabled` 为 `true`，保存的 delegation mode 原样保留。
+两种宿主都需要新建会话加载更新；旧会话仍受 CLI 拒绝检查保护。
 已有项目级指令不会被遍历改写，可在项目内执行
 `offload install-agent -scope project` 刷新受管理区块。
 若技能所有权或文件权限导致指令更新失败，开关仍已保存，CLI 会明确报错；

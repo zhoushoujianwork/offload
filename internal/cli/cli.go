@@ -51,7 +51,7 @@ usage:
                                 inspect, stop or explicitly resume a registered task
   offload transcript read|list|capabilities --json
                                 read-only access to transcripts recorded with -capture-transcript
-  offload status                what each worker is doing right now
+  offload status [--json]       whether offload is enabled, and what each worker is doing right now
   offload stats [--json] [--period today|week|month|all]
                                 run, token and cost totals for a period (default today)
   offload accounting repair [--apply] [--json]
@@ -63,7 +63,8 @@ usage:
   offload profiles [--json]     list profiles (* = the one a run would use)
   offload profile save --json   create or edit a profile from a JSON request on stdin
   offload default [profile]     show or set the saved default profile
-  offload disable / enable     persistently stop / allow new workers
+  offload disable / enable [--json]
+                                persistently block / allow every new worker and model call (running tasks are not stopped)
   offload mode [basic|proactive] show or switch delegation mode and agent rules
   offload install-agent [flags] install delegation instructions for a host agent
   offload agent status|enable|disable [--agent codex|claude|all] [--json]
@@ -96,7 +97,7 @@ func Run(version string, args []string, stdin io.Reader, stdout, stderr io.Write
 		case "transcript":
 			return cmdTranscript(args[1:], stdout, stderr)
 		case "status":
-			return cmdStatus(stdout, stderr)
+			return cmdStatusArgs(args[1:], stdout, stderr)
 		case "watch":
 			fs := flag.NewFlagSet("offload watch", flag.ContinueOnError)
 			fs.SetOutput(stderr)
@@ -130,7 +131,7 @@ func Run(version string, args []string, stdin io.Reader, stdout, stderr io.Write
 		case "default":
 			return cmdDefault(args[1:], stdout, stderr)
 		case "disable", "enable":
-			return agentinstall.RunSwitch(args, stdout, stderr)
+			return cmdSwitch(args[0] == "disable", args[1:], stdout, stderr)
 		case "mode":
 			return agentinstall.RunMode(args[1:], stdout, stderr)
 		case "install-agent":

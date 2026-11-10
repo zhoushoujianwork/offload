@@ -41,11 +41,22 @@ type ControlAgent struct {
 
 // ControlStatus is the JSON document printed by `offload agent status|enable|disable --json`.
 type ControlStatus struct {
-	SchemaVersion int            `json:"schema_version"`
-	Scope         string         `json:"scope"`
-	Mode          string         `json:"mode"`
-	Agents        []ControlAgent `json:"agents"`
-	Warnings      []string       `json:"warnings"`
+	SchemaVersion int    `json:"schema_version"`
+	Scope         string `json:"scope"`
+	// Mode is the saved delegation mode. It is kept while Offload is globally disabled.
+	Mode string `json:"mode"`
+	// GloballyDisabled means the managed instructions tell the agent to work directly, whatever Mode is.
+	GloballyDisabled bool           `json:"globally_disabled"`
+	Agents           []ControlAgent `json:"agents"`
+	Warnings         []string       `json:"warnings"`
+}
+
+// renderMode is the mode the managed files are written in.
+func (s ControlStatus) renderMode() string {
+	if s.GloballyDisabled {
+		return modeOff
+	}
+	return s.Mode
 }
 
 var controlAgentNames = []string{"codex", "claude"}
@@ -108,7 +119,7 @@ func RunControl(args []string, stdout, stderr io.Writer) int {
 			}
 		}
 		if action == "enable" {
-			err = controlEnable(selected, targets, status.Mode)
+			err = controlEnable(selected, targets, status.renderMode())
 		} else {
 			err = controlDisable(selected, targets)
 		}
@@ -131,6 +142,9 @@ func RunControl(args []string, stdout, stderr io.Writer) int {
 
 func writeControlText(w io.Writer, st ControlStatus, changed bool) {
 	fmt.Fprintln(w, "Delegation mode:", st.Mode)
+	if st.GloballyDisabled {
+		fmt.Fprintln(w, "Offload is globally disabled: managed instructions tell the agent to work directly (offload enable restores delegation).")
+	}
 	for _, a := range st.Agents {
 		fmt.Fprintf(w, "%s: %s (%s)\n", a.Agent, a.Status, a.Message)
 	}
@@ -149,13 +163,17 @@ func controlSnapshot() (ControlStatus, []agentInstallTarget, error) {
 	if err != nil {
 		return ControlStatus{}, nil, err
 	}
+	disabled, err := config.LoadDisabled(config.Path())
+	if err != nil {
+		return ControlStatus{}, nil, err
+	}
 	targets, err := agentInstallTargets("all", "user", "")
 	if err != nil {
 		return ControlStatus{}, nil, err
 	}
-	st := ControlStatus{SchemaVersion: 1, Scope: "user", Mode: mode, Agents: []ControlAgent{}, Warnings: []string{}}
+	st := ControlStatus{SchemaVersion: 1, Scope: "user", Mode: mode, GloballyDisabled: disabled, Agents: []ControlAgent{}, Warnings: []string{}}
 	for i, target := range targets {
-		a, warnings := controlAgentStatus(controlAgentNames[i], target, mode)
+		a, warnings := controlAgentStatus(controlAgentNames[i], target, st.renderMode())
 		st.Agents = append(st.Agents, a)
 		st.Warnings = append(st.Warnings, warnings...)
 	}
@@ -273,7 +291,7 @@ func inspectSkill(dir string) (string, []byte) {
 }
 
 func modeOfBytes(data []byte, render func(string) []byte) string {
-	for _, m := range []string{config.ModeBasic, config.ModeProactive} {
+	for _, m := range []string{config.ModeBasic, config.ModeProactive, modeOff} {
 		if bytes.Equal(data, render(m)) {
 			return m
 		}
@@ -321,6 +339,9 @@ func controlAgentStatus(name string, target agentInstallTarget, mode string) (Co
 	case skillManaged && policyManaged:
 		a.Status, a.Enabled = "enabled", true
 		a.Message = "installed and current"
+		if mode == modeOff {
+			a.Message = "installed and current; Offload is globally disabled, so the agent is told to work directly"
+		}
 		if !a.SkillCurrent || !a.PolicyCurrent {
 			a.Message = "installed; update available"
 		}

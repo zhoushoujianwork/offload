@@ -34,7 +34,7 @@ type configError struct {
 func (e *configError) Error() string { return e.err.Error() }
 func ErrorKind(err error) string {
 	if errors.Is(err, config.ErrDisabled) {
-		return "globally_disabled"
+		return config.DisabledErrorKind
 	}
 	var e *configError
 	if errors.As(err, &e) {

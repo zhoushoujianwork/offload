@@ -58,6 +58,9 @@ func cmdStatus(stdout, stderr io.Writer) int {
 		return fail(stderr, err)
 	}
 	fmt.Fprintf(stdout, "Offload globally disabled: %t\n", disabled)
+	if disabled {
+		fmt.Fprintf(stdout, "New executions are blocked (error_kind=%s). Tasks already running are not stopped.\n", config.DisabledErrorKind)
+	}
 	states, err := live.List()
 	if err != nil {
 		return fail(stderr, err)

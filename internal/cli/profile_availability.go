@@ -70,6 +70,10 @@ func recordRunFailure(path, profile, errorKind, message string) {
 // failure keeps an unavailable profile unavailable with the new reason and time, and marks an
 // available one unavailable only for unrecoverable errors.
 func retestProfile(ctx context.Context, path, name string) (probeOutcome, error) {
+	// The probe is a real model call. Refuse before any lock, probe or availability write.
+	if err := config.CheckEnabledAt(path); err != nil {
+		return probeOutcome{}, err
+	}
 	cfg, err := config.Load(path)
 	if err != nil {
 		return probeOutcome{}, errConfigUnreadable
@@ -83,7 +87,15 @@ func retestProfile(ctx context.Context, path, name string) (probeOutcome, error)
 		return probeOutcome{}, err
 	}
 	defer lock.Release()
+	// The switch may have been turned off while waiting for the lock.
+	if err := config.CheckEnabledAt(path); err != nil {
+		return probeOutcome{}, err
+	}
 	out := probeProfile(ctx, path, canonical)
+	// A refusal by the worker is not a probe result: keep the stored availability and reason as they are.
+	if out.ErrorKind == config.DisabledErrorKind {
+		return probeOutcome{}, config.ErrDisabled
+	}
 	switch {
 	case out.ErrorKind == "canceled" || ctx.Err() != nil:
 		return probeOutcome{ErrorKind: "canceled", Message: "profile test canceled"}, nil
@@ -125,6 +137,9 @@ func cmdProfileTest(args []string, stdout, stderr io.Writer) int {
 	defer stop()
 	out, err := retestProfile(ctx, config.Path(), args[0])
 	if err != nil {
+		if errors.Is(err, config.ErrDisabled) {
+			fmt.Fprintf(stdout, "profile test not run: error_kind=%s\n", config.DisabledErrorKind)
+		}
 		return fail(stderr, err)
 	}
 	if out.OK {

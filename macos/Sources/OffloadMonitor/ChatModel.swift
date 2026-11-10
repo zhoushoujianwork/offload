@@ -41,11 +41,15 @@ final class ChatEnv {
     let profiles: ProfilesModel
     let monitor: MonitorModel
     let history: HistoryModel
+    /// Nil in tests that do not exercise the switch; nil never blocks a send (the CLI still refuses it).
+    let offloadSwitch: OffloadSwitchModel?
     var prefs: Preferences
     var generalWorkspace: URL
 
     init(cli: OffloadCLI?, profiles: ProfilesModel, monitor: MonitorModel, history: HistoryModel,
+         offloadSwitch: OffloadSwitchModel? = nil,
          prefs: Preferences = Preferences(), generalWorkspace: URL = Workspaces.general()) {
+        self.offloadSwitch = offloadSwitch
         self.cli = cli
         self.profiles = profiles
         self.monitor = monitor
@@ -93,6 +97,7 @@ final class ChatModel: ObservableObject, Identifiable {
     private var canonicalRuns = 0
     private var cancellable: AnyCancellable?
     private var profileCancellable: AnyCancellable?
+    private var switchCancellable: AnyCancellable?
     /// The user picked a profile for this new chat, so it no longer follows the active profile.
     private var profileChosen = false
     /// Responses the CLI could not write to the run log. They stay visible after every refresh.
@@ -115,6 +120,10 @@ final class ChatModel: ObservableObject, Identifiable {
         }
         profileCancellable = env.profiles.$snapshot.sink { [weak self] s in
             MainActor.assumeIsolated { self?.followActiveProfile(s) }
+        }
+        // The send button and its reason follow the persisted switch.
+        switchCancellable = env.offloadSwitch?.$current.sink { [weak self] _ in
+            MainActor.assumeIsolated { self?.objectWillChange.send() }
         }
     }
 
@@ -190,6 +199,7 @@ final class ChatModel: ObservableObject, Identifiable {
     /// Why Send is unavailable, if it is.
     var blockReason: String? {
         if env.cli == nil { return CLIError.unavailable.errorDescription }
+        if env.offloadSwitch?.isOff == true { return SwitchPresentation.chatBlockReason }
         if isBusy { return "A message is already running in this conversation." }
         if phase == .loading { return "Loading the conversation…" }
         if draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return "Type a message first." }

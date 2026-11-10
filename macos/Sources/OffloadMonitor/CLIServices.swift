@@ -116,6 +116,25 @@ struct OffloadCLI {
         return try ProfilesSnapshot.decode(try await run(["profile", "save", "--json"], stdin: body, secrets: secrets))
     }
 
+    // MARK: Global switch
+
+    func switchStatus() async throws -> OffloadSwitch {
+        try OffloadSwitch.decode(try await run(["status", "--json"]))
+    }
+
+    /// `offload enable|disable --json`. Exit 2 with a document means the switch was saved but the agent
+    /// instructions were not fully updated; that document is still the truth, so it is returned, not thrown.
+    func setOffloadEnabled(_ enabled: Bool) async throws -> OffloadSwitch {
+        let out = try await runOutput([enabled ? "enable" : "disable", "--json"], acceptedStatuses: [0, 2])
+        if out.status == 2 {
+            guard let doc = try? OffloadSwitch.decode(out.stdout) else {
+                throw CLIError.failed(Self.sanitize(stderr: out.stderr, secrets: [], status: out.status))
+            }
+            return doc
+        }
+        return try OffloadSwitch.decode(out.stdout)
+    }
+
     // MARK: Agent skills
 
     func agentStatus() async throws -> SkillsSnapshot {

@@ -1,7 +1,7 @@
 import SwiftUI
 
 enum SettingsTab: String, CaseIterable, Identifiable {
-    case profiles = "Profiles", skills = "Agent skills", app = "App"
+    case offload = "Offload", profiles = "Profiles", skills = "Agent skills", app = "App"
     var id: String { rawValue }
 }
 
@@ -16,7 +16,22 @@ struct SettingsView: View {
     @ObservedObject var skills: AgentSkillsModel
     @ObservedObject var updates: UpdateManager
     @ObservedObject var motion: MotionController
-    @State var tab: SettingsTab = .profiles
+    @ObservedObject var offloadSwitch: OffloadSwitchModel
+    @ObservedObject var monitor: MonitorModel
+    @State var tab: SettingsTab
+
+    @MainActor
+    init(profiles: ProfilesModel, skills: AgentSkillsModel, updates: UpdateManager, motion: MotionController,
+         offloadSwitch: OffloadSwitchModel? = nil, monitor: MonitorModel? = nil, tab: SettingsTab = .offload) {
+        self.profiles = profiles
+        self.skills = skills
+        self.updates = updates
+        self.motion = motion
+        // Headless callers pass neither; the App always passes both.
+        self.offloadSwitch = offloadSwitch ?? OffloadSwitchModel(testing: nil)
+        self.monitor = monitor ?? MonitorModel(testingSnapshot: nil)
+        _tab = State(initialValue: tab)
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -29,6 +44,7 @@ struct SettingsView: View {
             Divider()
             Group {
                 switch tab {
+                case .offload: OffloadSettingsView(model: offloadSwitch, monitor: monitor)
                 case .profiles: ProfilesSettingsView(profiles: profiles)
                 case .skills: SkillsSettingsView(skills: skills)
                 case .app: AppSettingsView(updates: updates, motion: motion)
@@ -38,6 +54,107 @@ struct SettingsView: View {
         }
         .frame(width: SettingsLayout.width, height: SettingsLayout.height)
         .font(.system(size: 12))
+    }
+}
+
+// MARK: - Offload on/off
+
+/// The one switch that turns every Offload execution on or off. The state is the persisted one the CLI uses.
+struct OffloadSettingsView: View {
+    @ObservedObject var model: OffloadSwitchModel
+    @ObservedObject var monitor: MonitorModel
+    @State private var confirmStop = false
+
+    private var isOn: Binding<Bool> {
+        Binding(get: { model.current?.enabled ?? true },
+                set: { value in Task { await model.setEnabled(value) } })
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Card(tint: model.isOff ? .orange : .omTeal) {
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack {
+                        Toggle("Enable Offload", isOn: isOn)
+                            .toggleStyle(.switch)
+                            .font(.system(size: 13, weight: .semibold))
+                            .disabled(model.busy || model.current == nil)
+                        Spacer()
+                        if model.busy { ProgressView().controlSize(.small) }
+                        Text(SwitchPresentation.title(model.current)).font(.system(size: 10, weight: .semibold))
+                            .padding(.horizontal, 6).padding(.vertical, 1)
+                            .background((model.isOff ? Color.orange : Color.omTeal).opacity(0.2), in: Capsule())
+                            .foregroundStyle(model.isOff ? Color.orange : Color.omTeal)
+                    }
+                    if let s = model.current {
+                        Label(SwitchPresentation.newExecutionsLine(s),
+                              systemImage: s.blocksNewExecutions ? "hand.raised.fill" : "checkmark.circle")
+                            .font(.system(size: 11)).foregroundStyle(s.blocksNewExecutions ? .orange : .secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                        if s.blocksNewExecutions, let reason = s.reason {
+                            Text("Refusal reason shown to callers: \(reason) (error_kind \(s.errorKind ?? OffloadSwitch.disabledKind))")
+                                .font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(3).fixedSize(horizontal: false, vertical: true)
+                        }
+                    } else {
+                        Text(model.loadError ?? "Loading…").font(.system(size: 11)).foregroundStyle(.secondary)
+                    }
+                }
+            }
+            if let s = model.current { runningCard(s) }
+            if let e = model.actionError ?? (model.current == nil ? nil : model.loadError) {
+                Label(e, systemImage: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+                    .font(.system(size: 11)).lineLimit(3).fixedSize(horizontal: false, vertical: true)
+            }
+            if let note = model.instructionsNote {
+                Label("Offload is switched, but the agent instructions were not fully updated: \(note)", systemImage: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.orange).font(.system(size: 11)).lineLimit(3).fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 0)
+            Text("Turning Offload off keeps your profiles, accounts, history, default profile and delegation mode. Status, history and settings stay available.")
+                .font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(3).fixedSize(horizontal: false, vertical: true)
+            Text(SwitchPresentation.newSessionNote)
+                .font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(3).fixedSize(horizontal: false, vertical: true)
+            Text("Closing this window, quitting the App, or disabling only the agent skill does not turn Offload off.")
+                .font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(2).fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(14)
+        .onAppear { model.refresh() }
+        .confirmationDialog("Stop running tasks?", isPresented: $confirmStop) {
+            Button("Stop \(stoppableIDs.count) running task\(stoppableIDs.count == 1 ? "" : "s")", role: .destructive) {
+                Task { await model.stopRunning(runIDs: stoppableIDs) }
+            }
+            Button("Keep them running", role: .cancel) {}
+        } message: {
+            Text("Each task is asked to stop, the same as the Stop button in its window. This cannot be undone.")
+        }
+    }
+
+    /// Running work this computer's state shows, by run id. Tasks without a run id cannot be stopped from here.
+    private var stoppableIDs: [String] {
+        (monitor.snapshot?.active ?? []).filter { $0.isRunning }.compactMap(\.runId)
+    }
+
+    @ViewBuilder private func runningCard(_ s: OffloadSwitch) -> some View {
+        let active = s.running.active ?? 0
+        Card(tint: active > 0 ? .omBlue : nil) {
+            VStack(alignment: .leading, spacing: 6) {
+                Label(SwitchPresentation.runningLine(s), systemImage: active > 0 ? "circle.dotted" : "circle")
+                    .font(.system(size: 11)).foregroundStyle(active > 0 ? Color.omBlue : .secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                if s.blocksNewExecutions && active > 0 {
+                    HStack {
+                        Text("Turning Offload off does not stop them.").font(.system(size: 10)).foregroundStyle(.secondary)
+                        Spacer()
+                        Button("Stop running tasks…") { confirmStop = true }
+                            .disabled(model.stopping || stoppableIDs.isEmpty)
+                            .help(stoppableIDs.isEmpty ? "No running task with a stoppable run id" : "Ask each running task to stop")
+                    }
+                }
+                if let r = model.stopResult {
+                    Text(r).font(.system(size: 10)).foregroundStyle(.secondary)
+                }
+            }
+        }
     }
 }
 
@@ -252,7 +369,10 @@ struct ProfilesSettingsView: View {
                 Button("Reload saved values") { choose(selection) }.controlSize(.small)
             }
         }
-        if let e = formError ?? profiles.actionError {
+        if let blocked = profiles.blockedNotice {
+            Label(blocked, systemImage: "hand.raised.fill").foregroundStyle(.orange)
+                .font(.system(size: 11)).lineLimit(3).fixedSize(horizontal: false, vertical: true)
+        } else if let e = formError ?? profiles.actionError {
             Label(e, systemImage: "exclamationmark.triangle.fill").foregroundStyle(.orange)
                 .font(.system(size: 11)).lineLimit(3).fixedSize(horizontal: false, vertical: true)
         } else if let n = notice {
@@ -271,8 +391,8 @@ struct ProfilesSettingsView: View {
                 Spacer()
                 if profiles.testing.contains(e.name) { ProgressView().controlSize(.small) }
                 Button(profiles.testing.contains(e.name) ? "Testing…" : "Check profile") { retest(e.name) }
-                    .disabled(profiles.busy)
-                    .help("Make one minimal real model call; success makes the profile available again")
+                    .disabled(profiles.busy || profiles.checksPaused)
+                    .help(profiles.checksPaused ? ProfilesModel.offNotice : "Make one minimal real model call; success makes the profile available again")
             }
         }
         if snap != nil {
@@ -283,11 +403,13 @@ struct ProfilesSettingsView: View {
                     Spacer()
                     Button("Cancel checks") { profiles.cancelTests() }
                 } else {
-                    Text("Unavailable profiles are checked automatically every 30 minutes while the app runs.")
-                        .font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(2)
+                    Text(profiles.checksPaused
+                         ? "Offload is off: automatic and manual profile checks are paused. They resume when Offload is turned on."
+                         : "Unavailable profiles are checked automatically every 30 minutes while the app runs.")
+                        .font(.system(size: 10)).foregroundStyle(profiles.checksPaused ? .orange : .secondary).lineLimit(2)
                     Spacer()
                     Button("Check all unavailable") { profiles.startUnavailableTests() }
-                        .disabled(profiles.busy || !(snap?.profiles.contains(where: \.isUnavailable) ?? false))
+                        .disabled(profiles.busy || profiles.checksPaused || !(snap?.profiles.contains(where: \.isUnavailable) ?? false))
                 }
             }
         }
