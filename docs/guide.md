@@ -790,12 +790,18 @@ an account name. Choose **Sign in…** and follow the device-login instructions,
 choose **Import…** to select an existing Codex OAuth `auth.json`. Select the new
 account in **Account**, then save or create the profile.
 
+Choose **Link…** to share an existing private OAuth `auth.json`. Enter a name to
+create or update that managed account; leave the name empty to link the currently
+selected managed account. Linking refreshes the account list without saving the
+profile, changing its model, or selecting a new default.
+
 The CLI supports the same managed accounts:
 
 ```sh
 offload accounts add work
 offload accounts --json
 offload accounts import personal < /path/to/auth.json
+offload accounts link personal /absolute/path/to/auth.json
 offload profile save --json <<'JSON'
 {"name":"codex-work","create":true,"backend":"codex","codex_account":"work"}
 JSON
@@ -811,6 +817,37 @@ then bind the new offload account name with `codex_account`. Each account needs
 its own import and profile. This is an explicit import workflow, not automatic
 CodexBar discovery or synchronization; CodexBar's saved registry and system
 Codex sign-in are not changed.
+
+Alternatively, `accounts link` shares only the selected `auth.json`, keeping the
+managed home, configuration and sessions private. The source must resolve to an
+existing regular OAuth file with mode `0600`; use a clean absolute path. Dangling,
+cyclic, directory and self links are rejected. Account directories and the
+managed account root cannot be symlinks. The command validates but never writes
+or changes permissions on the source. Native Codex refreshes can subsequently
+update the shared target, including by atomic file replacement.
+
+The command can convert an existing account or explicitly change its link target.
+Existing authentication must be verifiable and have the same OAuth `account_id`;
+use a new account name to link a different identity.
+Before replacement, `.auth-link-backup-*` in that account's private home retains
+the original regular `auth.json` (when present) and `mapping.json` with the old
+`previous_target` and new `target`. Repeating the same link is idempotent. To
+recover, stop clients using the account and atomically replace its auth leaf with
+the private backed-up file, or recreate the previous link from `previous_target`.
+Import refuses to overwrite linked authentication; use `accounts link` explicitly
+to change the source. Treat backups as credentials and keep them private.
+
+Isolated environments preserve a linked account's final auth target rather than
+copying credentials. An existing ordinary isolated copy is backed up and converted
+only if its OAuth account matches; a different source link or account is rejected.
+Ordinary unlinked accounts retain independent isolated authentication snapshots.
+
+This supports only Codex's **file** credential store, verified against official
+Codex CLI **0.167.0** (commit `086ccc833bc9cf01024ad2dd6af7dbd421b6bf9a`). It does
+not support keychain-only authentication. Codex's shared-target commit lock does
+not cover the entire network refresh: simultaneous clients can still race token
+refresh requests. Avoid concurrent refreshes for the same account. Linking does
+not add OAuth coordination, provider discovery, or CodexBar registry changes.
 
 Verify routing with a small task, for example:
 

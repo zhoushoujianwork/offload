@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/zhoushoujianwork/offload/internal/config"
 )
 
 // NewEnvironment creates an owned, persistent native home and empty workspace.
@@ -189,6 +191,39 @@ func (o *Opts) prepareEnvironment(sourceHome string) (func() error, error) {
 		}
 	}
 	target := filepath.Join(destination, "auth.json")
+	source := filepath.Join(sourceHome, "auth.json")
+	if st, err := os.Lstat(source); err == nil && st.Mode()&os.ModeSymlink != 0 {
+		if st, err := os.Lstat(sourceHome); err != nil || !st.IsDir() || st.Mode()&os.ModeSymlink != 0 {
+			return nil, errors.New("linked authentication requires a real source home")
+		}
+		resolved, account, err := config.ResolveOAuthFile(source)
+		if err != nil {
+			return nil, err
+		}
+		if existing, err := os.Lstat(target); err == nil {
+			if existing.Mode()&os.ModeSymlink != 0 {
+				current, _, err := config.ResolveOAuthFile(target)
+				if err != nil || current != resolved {
+					return nil, errors.New("isolated authentication belongs to another source")
+				}
+			} else {
+				raw, err := privateEnvironmentFile(target)
+				if err != nil {
+					return nil, err
+				}
+				current, err := config.OAuthAccountID(raw)
+				if err != nil || current != account {
+					return nil, errors.New("isolated authentication belongs to another account")
+				}
+			}
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return nil, err
+		}
+		if err := config.LinkAuthFile(destination, resolved); err != nil {
+			return nil, err
+		}
+		return func() error { return nil }, nil
+	}
 	if _, err := os.Lstat(target); err == nil {
 		if _, err = privateEnvironmentFile(target); err != nil {
 			return nil, err
@@ -197,7 +232,6 @@ func (o *Opts) prepareEnvironment(sourceHome string) (func() error, error) {
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return nil, err
 	}
-	source := filepath.Join(sourceHome, "auth.json")
 	auth, err := privateEnvironmentFile(source)
 	if err != nil {
 		return nil, errors.New("isolated Codex execution requires file-backed authentication for the selected account")

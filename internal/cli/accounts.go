@@ -18,8 +18,14 @@ func cmdAccounts(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	if len(args) == 0 || (len(args) == 1 && args[0] == "--json") {
 		return writeSnapshotAccounts(stdout, stderr)
 	}
+	if len(args) == 3 && args[0] == "link" {
+		if _, err := config.LinkManagedAccount(args[1], args[2]); err != nil {
+			return fail(stderr, err)
+		}
+		return writeSnapshotAccounts(stdout, stderr)
+	}
 	if len(args) != 2 || (args[0] != "add" && args[0] != "import") {
-		return fail(stderr, errors.New("usage: offload accounts [--json] | add <name> | import <name> (auth.json on stdin)"))
+		return fail(stderr, errors.New("usage: offload accounts [--json] | add <name> | import <name> (auth.json on stdin) | link <name> <absolute-auth.json>"))
 	}
 	home, err := config.CreateManagedAccount(args[1])
 	if err != nil {

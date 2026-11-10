@@ -23,7 +23,16 @@ func ManagedAccountHome(name string) (string, error) {
 			return "", errors.New("managed account unavailable")
 		}
 	}
-	if st, err := os.Lstat(filepath.Join(home, "auth.json")); err != nil || !st.Mode().IsRegular() || st.Mode().Perm()&0077 != 0 {
+	path := filepath.Join(home, "auth.json")
+	st, err := os.Lstat(path)
+	if err != nil {
+		return "", errors.New("managed account is not signed in")
+	}
+	if st.Mode()&os.ModeSymlink != 0 {
+		if _, _, err := ResolveOAuthFile(path); err != nil {
+			return "", err
+		}
+	} else if !st.Mode().IsRegular() || st.Mode().Perm()&0077 != 0 {
 		return "", errors.New("managed account is not signed in")
 	}
 	return home, nil
@@ -64,7 +73,8 @@ func CreateManagedAccount(name string) (string, error) {
 	return home, nil
 }
 
-func ImportManagedAuth(home string, data []byte) error {
+// OAuthAccountID shares import validation with read-only link and migration checks.
+func OAuthAccountID(data []byte) (string, error) {
 	var auth struct {
 		Mode   string `json:"auth_mode"`
 		Tokens *struct {
@@ -74,11 +84,35 @@ func ImportManagedAuth(home string, data []byte) error {
 		} `json:"tokens"`
 	}
 	if len(data) > 1<<20 || json.Unmarshal(data, &auth) != nil || auth.Tokens == nil || auth.Tokens.Access == "" || auth.Tokens.Refresh == "" || auth.Tokens.Account == "" || (auth.Mode != "" && auth.Mode != "chatgpt") {
-		return errors.New("expected a Codex OAuth auth.json with account and refresh credentials")
+		return "", errors.New("expected a Codex OAuth auth.json with account and refresh credentials")
 	}
-	path := filepath.Join(home, "auth.json")
-	if err := os.WriteFile(path, data, 0600); err != nil {
+	return auth.Tokens.Account, nil
+}
+
+func ImportManagedAuth(home string, data []byte) error {
+	if _, err := OAuthAccountID(data); err != nil {
 		return err
 	}
-	return os.Chmod(path, 0600)
+	if st, err := os.Lstat(home); err != nil || !st.IsDir() || st.Mode()&os.ModeSymlink != 0 {
+		return errors.New("authentication home must be a real directory")
+	}
+	path := filepath.Join(home, "auth.json")
+	if st, err := os.Lstat(path); err == nil && st.Mode()&os.ModeSymlink != 0 {
+		return errors.New("cannot import over linked authentication; use accounts link explicitly")
+	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	f, err := os.CreateTemp(home, ".auth-import-")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(f.Name())
+	if _, err := f.Write(data); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	return os.Rename(f.Name(), path)
 }

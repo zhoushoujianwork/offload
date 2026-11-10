@@ -58,20 +58,25 @@ workers a clear task and authorization scope. See [permissions](docs/guide.md#pe
 
 Use one profile per account, such as `codex-work` and `codex-personal`.
 In the app, open **Settings → Profiles**, choose Codex, then **Sign in…** or
-**Import…**. Select the account and save the profile.
+**Import…**. Use **Link…** to share an existing private OAuth `auth.json` instead.
+Select the account and save the profile.
 
 ```sh
 offload accounts add work                # device sign-in
 # Or: offload accounts import work < /path/to/auth.json
+# Or: offload accounts link work /absolute/path/to/auth.json
 offload profile save --json <<'JSON'
 {"name":"codex-work","create":true,"backend":"codex","codex_account":"work"}
 JSON
 offload -p codex-work "Your task"
 ```
 
-Each managed account has its own credentials and sessions. CodexBar accounts can
-be imported from their managed `auth.json`; imports are separate copies, not
-continuous synchronization.
+Each managed account keeps private configuration and sessions. Imports copy
+credentials; links share only `auth.json`, including external atomic refreshes.
+Linking can create an account or convert an existing one with a private recovery
+backup. Only Codex's file credential store is supported (verified with Codex CLI
+0.167.0). Sharing the file does not serialize concurrent network token refreshes;
+avoid refreshing the same account concurrently in multiple clients.
 
 The [agent skill](skills/offload/SKILL.md) explains random account selection and
 bounded failover on quota errors. This selection happens in the supervising
