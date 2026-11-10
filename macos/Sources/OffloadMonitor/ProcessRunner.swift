@@ -8,6 +8,7 @@ struct ProcessOutput {
     var truncated: Bool
     /// The caller's `ProcessControl` asked the process to stop (an interrupt was sent).
     var cancelled: Bool = false
+    var signalled: Bool = false
 }
 
 /// Stops one running child cleanly: SIGINT first so the program can finish and print its result, then SIGTERM
@@ -22,7 +23,9 @@ final class ProcessControl: @unchecked Sendable {
     let termGrace: TimeInterval
     private let lock = NSLock()
     private var process: Process?
-    private var exited = Set<ObjectIdentifier>()
+    // Weak identity storage also permits sequential commands: a newly allocated Process must
+    // not be mistaken for an exited one when its memory address is reused.
+    private var exited = NSHashTable<Process>.weakObjects()
     private var cancelledFlag = false
     private var sentSignals: [Int32] = []
 
@@ -41,7 +44,7 @@ final class ProcessControl: @unchecked Sendable {
     @discardableResult
     func bind(_ p: Process) -> Bool {
         lock.lock()
-        guard !exited.contains(ObjectIdentifier(p)), p.isRunning, p.processIdentifier > 1 else { lock.unlock(); return false }
+        guard !exited.contains(p), p.isRunning, p.processIdentifier > 1 else { lock.unlock(); return false }
         process = p
         let c = cancelledFlag
         lock.unlock()
@@ -52,7 +55,7 @@ final class ProcessControl: @unchecked Sendable {
     /// Called from the termination handler. Nothing is signalled to this process afterwards, even if it was not bound yet.
     func processExited(_ p: Process) {
         lock.lock()
-        exited.insert(ObjectIdentifier(p))
+        exited.add(p)
         if process === p { process = nil }
         lock.unlock()
     }
@@ -69,7 +72,7 @@ final class ProcessControl: @unchecked Sendable {
     /// Sends `sig` only to the still-running, still-bound process, under the lock.
     private func signal(_ p: Process, _ sig: Int32) -> Bool {
         lock.lock(); defer { lock.unlock() }
-        guard process === p, !exited.contains(ObjectIdentifier(p)), p.isRunning else { return false }
+        guard process === p, !exited.contains(p), p.isRunning else { return false }
         let pid = p.processIdentifier
         guard pid > 1 else { return false }
         kill(pid, sig)
@@ -110,6 +113,7 @@ enum ProcessRunner {
         var errEOF = false
         var exited = false
         var status: Int32 = 0
+        var signalled = false
         var timedOut = false
         var truncated = false
         var finished = false
@@ -162,7 +166,7 @@ enum ProcessRunner {
                 state.finished = true
                 let result = ProcessOutput(stdout: state.out, stderr: state.err, status: state.status,
                                            timedOut: state.timedOut, truncated: state.truncated,
-                                           cancelled: control?.isCancelled == true)
+                                           cancelled: control?.isCancelled == true, signalled: state.signalled)
                 state.lock.unlock()
                 outHandle.readabilityHandler = nil
                 errHandle.readabilityHandler = nil
@@ -200,6 +204,7 @@ enum ProcessRunner {
                 state.lock.lock()
                 state.exited = true
                 state.status = p.terminationStatus
+                state.signalled = p.terminationReason == .uncaughtSignal
                 state.lock.unlock()
                 maybeFinish()
                 DispatchQueue.global().asyncAfter(deadline: .now() + drainGrace) { finish() }

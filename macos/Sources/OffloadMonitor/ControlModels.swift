@@ -21,20 +21,34 @@ final class ProfilesModel: ObservableObject {
     private let cli: OffloadCLI?
     private var lastLoad: Date?
     private var poller: Task<Void, Never>?
+    private var batchTask: Task<Void, Never>?
+    private var testControl: ProcessControl?
+    private var batchCancelled = false
+    private var lastAttempt: [String: Date] = [:]
+    private let now: () -> Date
+    private let recoveryInterval: TimeInterval
+    @Published private(set) var batchRunning = false
+    @Published private(set) var batchCompleted = 0
+    @Published private(set) var batchTotal = 0
 
     /// With `autoLoad`, reads once now and then every `refreshInterval`, so the header follows a default changed
     /// outside the app. Reads never overlap (a busy model skips the tick). Tests pass `autoLoad: false`.
-    init(cli: OffloadCLI?, autoLoad: Bool = true, refreshInterval: TimeInterval = 15) {
+    init(cli: OffloadCLI?, autoLoad: Bool = true, refreshInterval: TimeInterval = 15,
+         recoveryInterval: TimeInterval = 30 * 60, now: @escaping () -> Date = Date.init) {
         self.cli = cli
+        self.now = now
+        self.recoveryInterval = max(0.05, recoveryInterval)
         if cli == nil { loadError = CLIError.unavailable.errorDescription }
         if autoLoad && cli != nil { startPolling(every: refreshInterval) }
     }
 
-    deinit { poller?.cancel() }
+    deinit { poller?.cancel(); batchTask?.cancel(); testControl?.cancel() }
 
     /// Headless layout tests: shows the given state and never runs a command.
     init(testingSnapshot: ProfilesSnapshot?, error: String? = nil) {
         cli = nil
+        now = Date.init
+        recoveryInterval = 30 * 60
         snapshot = testingSnapshot
         loadError = error
     }
@@ -50,20 +64,68 @@ final class ProfilesModel: ObservableObject {
     private func startPolling(every interval: TimeInterval) {
         poller = Task { [weak self] in
             while !Task.isCancelled {
-                guard let self else { return }
-                _ = await self.reload()
+                guard self != nil else { return }
+                await self?.pollRecovery()
                 try? await Task.sleep(nanoseconds: UInt64(max(0.05, interval) * 1_000_000_000))
             }
         }
     }
 
-    /// Stops the periodic refresh. In-flight reads are bounded by the command timeout.
-    func stopPolling() { poller?.cancel(); poller = nil }
+    /// Reload first, then test only overdue unavailable profiles. Owned by AppState, not Settings.
+    func pollRecovery() async {
+        guard await reload(), !Task.isCancelled else { return }
+        await testUnavailable(automatic: true)
+    }
+
+    func stopPolling() {
+        poller?.cancel(); poller = nil
+        cancelTests()
+    }
+
+    func cancelTests() {
+        batchCancelled = true
+        batchTask?.cancel()
+        testControl?.cancel()
+    }
+
+    func startUnavailableTests() {
+        guard !busy, !batchRunning, batchTask == nil else { return }
+        batchTask = Task { [weak self] in
+            await self?.testUnavailable()
+            self?.batchTask = nil
+        }
+    }
+
+    /// Shared serial lane for automatic and manual batches, single tests, reads and writes.
+    func testUnavailable(automatic: Bool = false) async {
+        guard cli != nil, !busy, !batchRunning, !Task.isCancelled else { return }
+        let names = (snapshot?.profiles ?? []).filter { entry in
+            guard entry.isUnavailable else { return false }
+            guard automatic else { return true }
+            let previous = lastAttempt[entry.name] ?? entry.unavailableDate
+            guard let previous else { return true }
+            return now().timeIntervalSince(previous) >= recoveryInterval
+        }.map(\.name)
+        guard !names.isEmpty else { return }
+        busy = true
+        batchRunning = true
+        batchCancelled = false
+        batchCompleted = 0
+        batchTotal = names.count
+        actionError = nil
+        defer { busy = false; batchRunning = false }
+        for name in names {
+            guard !Task.isCancelled, !batchCancelled else { break }
+            _ = await performTest(name)
+            guard !Task.isCancelled, !batchCancelled else { break }
+            batchCompleted += 1
+        }
+    }
 
     func refresh() { Task { _ = await reload() } }
 
     func refreshIfStale() {
-        if let t = lastLoad, Date().timeIntervalSince(t) < Self.staleAfter, loadError == nil { return }
+        if let t = lastLoad, now().timeIntervalSince(t) < Self.staleAfter, loadError == nil { return }
         refresh()
     }
 
@@ -79,8 +141,10 @@ final class ProfilesModel: ObservableObject {
         do {
             snapshot = try await cli.profiles()
             loadError = nil
-            lastLoad = Date()
+            lastLoad = now()
             return true
+        } catch is CancellationError {
+            return false
         } catch {
             loadError = message(error)
             return false
@@ -112,7 +176,7 @@ final class ProfilesModel: ObservableObject {
         do {
             snapshot = try await cli.saveProfile(request)
             loadError = nil
-            lastLoad = Date()
+            lastLoad = now()
             return true
         } catch {
             actionError = message(error)
@@ -120,18 +184,37 @@ final class ProfilesModel: ObservableObject {
         }
     }
 
-    /// Re-tests one profile. Success restores it; failure leaves it unavailable with the new reason.
+    /// Manual checks can test healthy profiles and bypass the automatic retry interval.
     @discardableResult
     func test(_ name: String) async -> Bool {
-        guard let cli, !testing.contains(name) else { return false }
-        testing.insert(name)
-        defer { testing.remove(name) }
+        guard cli != nil, !busy, !batchRunning, !Task.isCancelled else { return false }
+        busy = true
+        defer { busy = false }
         actionError = nil
+        return await performTest(name)
+    }
+
+    private func performTest(_ name: String) async -> Bool {
+        guard let cli, !testing.contains(name), !Task.isCancelled else { return false }
+        let control = ProcessControl(intGrace: 1, termGrace: 1)
+        testControl = control
+        testing.insert(name)
+        lastAttempt[name] = now()
+        defer { testing.remove(name); testControl = nil }
         do {
-            snapshot = try await cli.testProfile(name)
+            let result = try await cli.testProfile(name, control: control)
+            try Task.checkCancellation()
+            guard !control.isCancelled else { return false }
+            snapshot = result.snapshot
             loadError = nil
-            lastLoad = Date()
-            return snapshot?.entry(name)?.isUnavailable == false
+            lastLoad = now()
+            guard result.succeeded else {
+                actionError = "The profile check failed (exit 1)."
+                return false
+            }
+            return result.snapshot.entry(name)?.isUnavailable == false
+        } catch is CancellationError {
+            return false
         } catch {
             actionError = message(error)
             return false

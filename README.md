@@ -124,3 +124,5 @@ force-kills the app. [Development updates →](docs/guide.md#fast-local-developm
 - [Release packaging](docs/guide.md#release-downloads): assets, signatures and updater verification.
 
 [MIT License](LICENSE)
+
+macOS App 运行期间会自动串行复测失效的 profile：启动时先刷新列表，失效至少 30 分钟后才尝试，此后每项至少间隔 30 分钟。关闭设置窗口不影响复测；没有失效项时不会发起模型调用。设置中的 **Check profile** 可检查任意 profile，**Check all unavailable** 可立即检查所有失效项（会产生最小真实模型调用），并显示进度及取消按钮；取消不会由 App 改写可用状态。

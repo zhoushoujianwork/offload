@@ -101,7 +101,7 @@ func patchProfileField(path, name string, value json.RawMessage) error {
 }
 
 var (
-	reAuth  = regexp.MustCompile(`(?i)\b401\b|unauthori[sz]ed|authentication[_ ](failed|error)|invalid[_ ](api[_ ]?key|x-api-key|token|credentials?)|incorrect api key|token (has )?(expired|revoked)|not logged in|please (log ?in|sign ?in)|permission_denied|\b403\b.*(forbidden|key)`)
+	reAuth  = regexp.MustCompile(`(?i)\b401\b|unauthori[sz]ed|authentication[_ ](failed|error)|invalid[_ ](api[_ ]?key|x-api-key|token|credentials?)|incorrect api key|token (has )?(expired|revoked)|refresh token was already used|please log out and sign in again|not logged in|please (log ?in|sign ?in)|permission_denied|\b403\b.*(forbidden|key)`)
 	reQuota = regexp.MustCompile(`(?i)insufficient[_ ]quota|quota (exceeded|exhausted)|exceeded your (current )?quota|credit balance|out of credits|billing|usage limit|payment required|\b402\b`)
 	reModel = regexp.MustCompile(`(?i)model[_ ]not[_ ]found|model .{0,80}(does not exist|not found|not supported|is not available|has been (deprecated|retired))|unknown model|invalid model|no such model|does not have access to model`)
 	reTemp  = regexp.MustCompile(`(?i)rate[_ ]limit|too many requests|\b429\b|timed? ?out|deadline exceeded|connection (reset|refused|closed)|network|temporar|overloaded|\b50[234]\b|unavailable|\bEOF\b|no such host|dial tcp`)

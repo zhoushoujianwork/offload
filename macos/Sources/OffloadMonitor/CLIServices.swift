@@ -29,17 +29,36 @@ struct OffloadCLI {
     var executable: URL
     var timeout: TimeInterval = 15
 
-    func run(_ args: [String], stdin: Data? = nil, secrets: [String] = [], maxOutput: Int = 2_000_000) async throws -> Data {
+    func run(_ args: [String], stdin: Data? = nil, secrets: [String] = [], maxOutput: Int = 2_000_000,
+             control: ProcessControl? = nil, commandTimeout: TimeInterval? = nil,
+             acceptedStatuses: Set<Int32> = [0]) async throws -> Data {
+        try await runOutput(args, stdin: stdin, secrets: secrets, maxOutput: maxOutput,
+                            control: control, commandTimeout: commandTimeout,
+                            acceptedStatuses: acceptedStatuses).stdout
+    }
+
+    private func runOutput(_ args: [String], stdin: Data? = nil, secrets: [String] = [],
+                           maxOutput: Int = 2_000_000, control: ProcessControl? = nil,
+                           commandTimeout: TimeInterval? = nil,
+                           acceptedStatuses: Set<Int32> = [0]) async throws -> ProcessOutput {
+        let control = control ?? ProcessControl(intGrace: 1, termGrace: 1)
         let out: ProcessOutput
         do {
-            out = try await ProcessRunner.run(executable: executable, arguments: args, timeout: timeout, maxOutput: maxOutput, stdin: stdin)
-        } catch { throw CLIError.launch }
+            out = try await withTaskCancellationHandler {
+                try Task.checkCancellation()
+                return try await ProcessRunner.run(executable: executable, arguments: args,
+                    timeout: commandTimeout ?? timeout, maxOutput: maxOutput, stdin: stdin, control: control)
+            } onCancel: { control.cancel() }
+        } catch is CancellationError { throw CancellationError() }
+        catch { throw CLIError.launch }
         if out.timedOut { throw CLIError.timedOut }
+        if out.cancelled || Task.isCancelled { throw CancellationError() }
         if out.truncated { throw CLIError.tooLarge }
-        guard out.status == 0 else {
+        guard !out.signalled else { throw CLIError.failed("The offload command was terminated by a signal.") }
+        guard acceptedStatuses.contains(out.status) else {
             throw CLIError.failed(Self.sanitize(stderr: out.stderr, secrets: secrets, status: out.status))
         }
-        return out.stdout
+        return out
     }
 
     /// First line of stderr, trimmed and bounded, with any secret removed. Falls back to a generic message.
@@ -71,12 +90,22 @@ struct OffloadCLI {
         _ = try await run(["default", name])
     }
 
-    /// `offload profile test <name>`: one minimal real model call. Exit 1 (test failed) is reported through the
-    /// refreshed snapshot, so only a launch failure throws.
-    func testProfile(_ name: String) async throws -> ProfilesSnapshot {
+    struct ProfileTestResult {
+        var snapshot: ProfilesSnapshot
+        var succeeded: Bool
+    }
+
+    /// Exit 1 is a completed failed probe; availability may remain unchanged for transient failures.
+    /// Launch failures, timeouts, cancellation and unexpected exits remain visible errors.
+    static let profileTestTimeout: TimeInterval = 130
+
+    func testProfile(_ name: String, control: ProcessControl = ProcessControl(intGrace: 1, termGrace: 1)) async throws -> ProfileTestResult {
         guard Self.validArgumentName(name) else { throw CLIError.invalidArgument("That profile name cannot be tested from here.") }
-        _ = try? await run(["profile", "test", name])
-        return try await profiles()
+        let probe = try await runOutput(["profile", "test", name], control: control,
+                          commandTimeout: max(timeout, Self.profileTestTimeout), acceptedStatuses: [0, 1])
+        try Task.checkCancellation()
+        let snapshot = try ProfilesSnapshot.decode(try await run(["profiles", "--json"], control: control))
+        return ProfileTestResult(snapshot: snapshot, succeeded: probe.status == 0)
     }
 
     func saveProfile(_ request: ProfileSaveRequest) async throws -> ProfilesSnapshot {

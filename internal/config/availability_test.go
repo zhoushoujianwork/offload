@@ -11,9 +11,11 @@ import (
 
 func TestClassifyFailure(t *testing.T) {
 	permanent := map[string]string{
-		"auth":  "HTTP 401 Unauthorized: invalid x-api-key",
-		"quota": "You exceeded your current quota, please check your plan",
-		"model": "The model `foo-9` does not exist",
+		"refresh_reused": "Your refresh token was already used to generate a new access token.",
+		"reauth":         "Please log out and sign in again.",
+		"auth":           "HTTP 401 Unauthorized: invalid x-api-key",
+		"quota":          "You exceeded your current quota, please check your plan",
+		"model":          "The model `foo-9` does not exist",
 	}
 	for name, msg := range permanent {
 		if ok, _ := ClassifyFailure("execution", msg); !ok {
@@ -29,6 +31,8 @@ func TestClassifyFailure(t *testing.T) {
 		{"capacity", "overloaded"},
 		{"execution", "429 Too Many Requests"},
 		{"canceled", "401 unauthorized"},
+		{"canceled", "Your refresh token was already used"},
+		{"timeout", "Please log out and sign in again"},
 	}
 	for _, c := range transient {
 		if ok, _ := ClassifyFailure(c.kind, c.msg); ok {

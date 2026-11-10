@@ -251,16 +251,33 @@ struct ProfilesSettingsView: View {
 
     @ViewBuilder
     private var availability: some View {
-        if let e = snap?.entry(selection), e.isUnavailable {
+        if let e = snap?.entry(selection) {
             HStack(spacing: 6) {
-                Label(ProfilePresentation.testing(profiles.testing.contains(e.name)) ?? "Unavailable", systemImage: "exclamationmark.triangle.fill")
-                    .foregroundStyle(.orange).font(.system(size: 11)).lineLimit(1)
-                    .help(e.unavailableDetail)
+                Label(ProfilePresentation.testing(profiles.testing.contains(e.name)) ?? (e.isUnavailable ? "Unavailable" : "Available"),
+                      systemImage: e.isUnavailable ? "exclamationmark.triangle.fill" : "checkmark.circle")
+                    .foregroundStyle(e.isUnavailable ? .orange : .secondary).font(.system(size: 11)).lineLimit(1)
+                    .help(e.isUnavailable ? e.unavailableDetail : "")
                 Spacer()
                 if profiles.testing.contains(e.name) { ProgressView().controlSize(.small) }
-                Button(ProfilePresentation.retestTitle(testing: profiles.testing.contains(e.name))) { retest(e.name) }
-                    .disabled(profiles.testing.contains(e.name))
+                Button(profiles.testing.contains(e.name) ? "Testing…" : "Check profile") { retest(e.name) }
+                    .disabled(profiles.busy)
                     .help("Make one minimal real model call; success makes the profile available again")
+            }
+        }
+        if snap != nil {
+            HStack(spacing: 6) {
+                if profiles.batchRunning {
+                    Text("Checking unavailable: \(profiles.batchCompleted)/\(profiles.batchTotal)")
+                        .font(.system(size: 11)).foregroundStyle(.secondary)
+                    Spacer()
+                    Button("Cancel checks") { profiles.cancelTests() }
+                } else {
+                    Text("Unavailable profiles are checked automatically every 30 minutes while the app runs.")
+                        .font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(2)
+                    Spacer()
+                    Button("Check all unavailable") { profiles.startUnavailableTests() }
+                        .disabled(profiles.busy || !(snap?.profiles.contains(where: \.isUnavailable) ?? false))
+                }
             }
         }
     }
@@ -269,7 +286,7 @@ struct ProfilesSettingsView: View {
         formError = nil
         notice = nil
         Task {
-            if await profiles.test(name) { notice = "\"\(name)\" is available again." }
+            if await profiles.test(name) { notice = "\"\(name)\" is available." }
         }
     }
 

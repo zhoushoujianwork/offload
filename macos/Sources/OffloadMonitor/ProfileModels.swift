@@ -19,6 +19,13 @@ struct ProfileEntry: Codable, Equatable, Identifiable {
     var unavailableAt: String? = nil
     var id: String { name }
     var isUnavailable: Bool { available == false }
+    var unavailableDate: Date? {
+        guard let unavailableAt else { return nil }
+        let parser = ISO8601DateFormatter()
+        if let date = parser.date(from: unavailableAt) { return date }
+        parser.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return parser.date(from: unavailableAt)
+    }
     /// Hover text for an unavailable profile: the sanitized reason and when it happened.
     var unavailableDetail: String {
         let reason = (unavailableReason ?? "").isEmpty ? "Unavailable" : unavailableReason!
