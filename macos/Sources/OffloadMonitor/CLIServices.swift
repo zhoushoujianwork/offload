@@ -47,6 +47,7 @@ struct OffloadCLI {
             out = try await withTaskCancellationHandler {
                 try Task.checkCancellation()
                 return try await ProcessRunner.run(executable: executable, arguments: args,
+                    environment: ChatCommand.environment(),
                     timeout: commandTimeout ?? timeout, maxOutput: maxOutput, stdin: stdin, control: control)
             } onCancel: { control.cancel() }
         } catch is CancellationError { throw CancellationError() }

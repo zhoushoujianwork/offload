@@ -307,6 +307,34 @@ final class ProfileDraftTests: XCTestCase {
 }
 
 final class FakeCLITests: XCTestCase {
+    func testProfileManagementReceivesSearchPath() async throws {
+        let fake = try FakeCLI()
+        let pathLog = fake.dir.appendingPathComponent("path.log")
+        let script = """
+        #!/bin/sh
+        printf '%s\\n' "$PATH" >> '\(pathLog.path)'
+        case "$1 $2" in
+          "profile test") exit 0 ;;
+          "profiles --json") /bin/cat '\(fake.dir.appendingPathComponent("profiles.json").path)' ;;
+          *) exit 64 ;;
+        esac
+        """
+        try script.write(to: fake.exe, atomically: true, encoding: .utf8)
+
+        let result = try await fake.cli.testProfile("work")
+        XCTAssertTrue(result.succeeded)
+        let paths = try String(contentsOf: pathLog).split(separator: "\n").map(String.init)
+        XCTAssertEqual(paths.count, 2, "both the probe and snapshot refresh receive the environment")
+        for path in paths {
+            let parts = path.split(separator: ":").map(String.init)
+            XCTAssertTrue(parts.contains("/opt/homebrew/bin"))
+            XCTAssertTrue(parts.contains("/usr/local/bin"))
+            for inherited in (ProcessInfo.processInfo.environment["PATH"] ?? "").split(separator: ":") {
+                XCTAssertTrue(parts.contains(String(inherited)), "inherited search paths are preserved")
+            }
+        }
+    }
+
     func testSaveSendsSecretOnStdinOnly() async throws {
         let secret = "sk-ONLY-ON-STDIN-12345"
         let after = Fixtures.profiles([Fixtures.profile(name: "work", auth: "token")])
