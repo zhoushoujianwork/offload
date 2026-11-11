@@ -103,7 +103,8 @@ turning delegation off, take precedence.
 ## macOS app
 
 Download the Apple silicon or Intel app from [Releases](https://github.com/zhoushoujianwork/offload/releases).
-The app includes its own CLI; updating a standalone CLI does not update the app.
+The app includes its own CLI; updating a standalone CLI does not update the app, and updating the app does not change a standalone CLI.
+Settings > App lists both, with paths and versions, and can replace a plain standalone copy after you confirm.
 Release installation requires confirmation and verifies the downloaded bundle.
 The app is ad-hoc signed and not notarized.
 

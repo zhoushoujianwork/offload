@@ -16,6 +16,7 @@ final class AppState {
     let motion: MotionController
     private var chatWindow: NSWindow?
     private var settingsWindow: NSWindow?
+    private let settingsNavigator = SettingsNavigator()
     private var window: NSWindow?
     private var auxWindows: [String: NSWindow] = [:]
 
@@ -102,9 +103,9 @@ extension AppState {
     }
 
     /// The Settings window is created once, so edits in progress survive closing and reopening it.
-    func showSettings() {
+    func showSettings(tab: SettingsTab? = nil) {
         if settingsWindow == nil {
-            let hosting = NSHostingController(rootView: SettingsView(profiles: profiles, skills: skills, updates: updates, motion: motion, offloadSwitch: offloadSwitch, monitor: model))
+            let hosting = NSHostingController(rootView: SettingsView(profiles: profiles, skills: skills, updates: updates, motion: motion, offloadSwitch: offloadSwitch, monitor: model, tab: tab ?? .offload, navigator: settingsNavigator))
             let w = NSWindow(contentViewController: hosting)
             w.title = "Offload Monitor Settings"
             w.styleMask = [.titled, .closable]
@@ -116,6 +117,10 @@ extension AppState {
             profiles.refreshIfStale()
         }
         offloadSwitch.refresh()
+        if let tab {
+            settingsNavigator.requested = tab
+            if tab == .app { updates.cliInstalls.startRefresh() }
+        }
         NSApp.activate(ignoringOtherApps: true)
         settingsWindow?.makeKeyAndOrderFront(nil)
     }

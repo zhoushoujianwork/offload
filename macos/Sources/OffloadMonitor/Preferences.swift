@@ -11,6 +11,7 @@ struct Preferences {
         static let lastWorkspace = "chatLastWorkspace"
         static let decorativeMotion = "decorativeMotion"
         static let restartOnAppChange = "restartOnInstalledAppChange"
+        static let dismissedCLISuggestion = "dismissedStandaloneCLISuggestion"
     }
 
     var defaults: UserDefaults = .standard
@@ -46,6 +47,12 @@ struct Preferences {
     var autoInstall: Bool {
         get { defaults.object(forKey: Key.autoInstall) as? Bool ?? false }
         nonmutating set { defaults.set(newValue, forKey: Key.autoInstall) }
+    }
+
+    /// Fingerprint of the standalone-CLI suggestion the user dismissed. A different situation shows it again.
+    var dismissedCLISuggestion: String? {
+        get { defaults.string(forKey: Key.dismissedCLISuggestion) }
+        nonmutating set { defaults.set(newValue, forKey: Key.dismissedCLISuggestion) }
     }
 
     /// Applies an App already installed on disk; does not enable automatic release downloads.

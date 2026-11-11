@@ -332,6 +332,13 @@ struct UpdateBanner: View {
                        title: n.ok ? "Update installed" : "Update failed", message: n.message)
                     .onTapGesture { updates.dismissNotice() }
             }
+            if let n = updates.cliSuggestion {
+                Banner(symbol: n.symbol, tint: n.tint, title: n.title, message: n.message)
+                HStack {
+                    Button("Review in Settings…") { AppState.shared.showSettings(tab: .app) }
+                    Button("Dismiss") { updates.dismissCLISuggestion() }
+                }.controlSize(.small)
+            }
             switch updates.phase {
             case .idle, .upToDate: EmptyView()
             case .checking: Banner(symbol: "arrow.triangle.2.circlepath", tint: .omBlue, title: "Checking for updates…", message: "")
@@ -356,7 +363,7 @@ struct NoticeItem: Equatable {
     var tint: Color
     var title: String
     var message: String
-    enum Action: Equatable { case none, download, restart, reloadApp }
+    enum Action: Equatable { case none, download, restart, reloadApp, reviewCLI }
     var action: Action = .none
 }
 
@@ -422,7 +429,7 @@ struct NoticeRow: View {
             let base = Notices.items(error: model.lastError, hasSnapshot: model.snapshot != nil,
                                       isStale: model.isStale(at: ctx.date), phase: updates.phase,
                                       result: updates.resultNotice, currentVersion: updates.currentVersionText)
-            let items = updates.localNotice.map { [$0] + base } ?? base
+            let items = (updates.localNotice.map { [$0] + base } ?? base) + (updates.cliSuggestion.map { [$0] } ?? [])
             if let first = items.first {
                 HStack(spacing: 6) {
                     Image(systemName: first.symbol).foregroundStyle(first.tint).font(.system(size: 12))
@@ -437,6 +444,7 @@ struct NoticeRow: View {
                     case .download: Button("Review…") { AppState.shared.confirmUpdate(updates) }
                     case .restart: Button("Review Update…") { AppState.shared.confirmUpdate(updates) }
                     case .reloadApp: Button("Restart App") { updates.restartInstalledApp() }
+                    case .reviewCLI: Button("Review") { AppState.shared.showSettings(tab: .app) }
                     case .none: EmptyView()
                     }
                     Button(items.count > 1 ? "Details (\(items.count))" : "Details") { AppState.shared.showNotices() }

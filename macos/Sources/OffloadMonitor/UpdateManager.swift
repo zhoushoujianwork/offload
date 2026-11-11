@@ -24,6 +24,8 @@ final class UpdateManager: ObservableObject {
         didSet { prefs.restartOnAppChange = restartOnAppChange; considerRestart() }
     }
     let localChanges: LocalInstallMonitor
+    let cliInstalls: CLIInstallsModel
+    @Published private(set) var dismissedCLISuggestion: String?
     @Published var autoCheck: Bool {
         didSet { prefs.autoCheck = autoCheck; if autoCheck { scheduleChecks() } else { scheduler?.cancel(); scheduler = nil } }
     }
@@ -43,6 +45,7 @@ final class UpdateManager: ObservableObject {
     private var work: Task<Void, Never>?
     private var staged: UpdateService.Staged?
     private var localSubscription: AnyCancellable?
+    private var cliSubscription: AnyCancellable?
     private var restartBlocker: () -> String? = { "Waiting for the app to finish starting." }
     private var requestTermination: () -> Void = {}
     private var lifecycleConfigured = false
@@ -63,7 +66,7 @@ final class UpdateManager: ObservableObject {
     var currentVersionText: String { Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "development" }
 
     init(prefs: Preferences = Preferences(), service: UpdateService = UpdateService(), arch: String = Arch.current, consumeReport: Bool = true,
-         localChanges: LocalInstallMonitor? = nil) {
+         localChanges: LocalInstallMonitor? = nil, cliInstalls: CLIInstallsModel? = nil) {
         self.prefs = prefs
         self.service = service
         self.arch = arch
@@ -71,10 +74,13 @@ final class UpdateManager: ObservableObject {
         self.autoInstall = false // Legacy preference must not bypass confirmation.
         self.restartOnAppChange = prefs.restartOnAppChange
         self.localChanges = localChanges ?? LocalInstallMonitor()
+        self.cliInstalls = cliInstalls ?? CLIInstallsModel()
+        self.dismissedCLISuggestion = prefs.dismissedCLISuggestion
         let v = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
         self.currentVersion = v.flatMap(SemanticVersion.init) ?? SemanticVersion("0.0.0")!
         self.resultNotice = consumeReport ? UpdateReport.consume() : nil
         localSubscription = self.localChanges.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }
+        cliSubscription = self.cliInstalls.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }
         self.localChanges.onPoll = { [weak self] in self?.considerRestart() }
         if autoCheck { scheduleChecks() }
     }
@@ -99,7 +105,24 @@ final class UpdateManager: ObservableObject {
         lifecycleConfigured = true
     }
 
-    func startLocalObservation() { localChanges.start() }
+    func startLocalObservation() {
+        localChanges.start()
+        cliInstalls.startRefresh()
+    }
+
+    /// A suggestion, never an action: it appears when a separate offload in PATH is older than, or cannot be compared
+    /// with, the App's CLI. The user can dismiss it; it returns when the situation changes.
+    var cliSuggestion: NoticeItem? {
+        guard let fingerprint = cliInstalls.suggestionFingerprint, fingerprint != dismissedCLISuggestion else { return nil }
+        return NoticeItem(symbol: "terminal", tint: .orange, title: "Separate command-line offload needs attention",
+                          message: cliInstalls.summary, action: .reviewCLI)
+    }
+
+    func dismissCLISuggestion() {
+        guard let fingerprint = cliInstalls.suggestionFingerprint else { return }
+        prefs.dismissedCLISuggestion = fingerprint
+        dismissedCLISuggestion = fingerprint
+    }
 
     func restartInstalledApp() {
         guard localChanges.observation.appChanged else { return }

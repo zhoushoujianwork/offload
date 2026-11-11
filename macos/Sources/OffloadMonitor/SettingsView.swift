@@ -5,6 +5,12 @@ enum SettingsTab: String, CaseIterable, Identifiable {
     var id: String { rawValue }
 }
 
+/// Lets other windows open Settings on a given tab without rebuilding it (edits in progress stay).
+@MainActor
+final class SettingsNavigator: ObservableObject {
+    @Published var requested: SettingsTab?
+}
+
 enum SettingsLayout {
     static let width: CGFloat = 580
     static let height: CGFloat = 560
@@ -18,11 +24,14 @@ struct SettingsView: View {
     @ObservedObject var motion: MotionController
     @ObservedObject var offloadSwitch: OffloadSwitchModel
     @ObservedObject var monitor: MonitorModel
+    @ObservedObject var navigator: SettingsNavigator
     @State var tab: SettingsTab
 
     @MainActor
     init(profiles: ProfilesModel, skills: AgentSkillsModel, updates: UpdateManager, motion: MotionController,
-         offloadSwitch: OffloadSwitchModel? = nil, monitor: MonitorModel? = nil, tab: SettingsTab = .offload) {
+         offloadSwitch: OffloadSwitchModel? = nil, monitor: MonitorModel? = nil, tab: SettingsTab = .offload,
+         navigator: SettingsNavigator? = nil) {
+        self.navigator = navigator ?? SettingsNavigator()
         self.profiles = profiles
         self.skills = skills
         self.updates = updates
@@ -54,6 +63,11 @@ struct SettingsView: View {
         }
         .frame(width: SettingsLayout.width, height: SettingsLayout.height)
         .font(.system(size: 12))
+        .onReceive(navigator.$requested) { requested in
+            guard let requested else { return }
+            tab = requested
+            navigator.requested = nil
+        }
     }
 }
 
@@ -656,33 +670,30 @@ struct AppSettingsView: View {
     @ObservedObject var motion: MotionController
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 8) {
             Text("Updates").font(.system(size: 13, weight: .semibold))
             Toggle("Check for updates automatically", isOn: $updates.autoCheck)
-            Text("New releases show a red dot. Review the version and confirm before downloading and installing.")
-                .font(.system(size: 10)).foregroundStyle(.secondary)
             Toggle("Restart when the installed App changes", isOn: $updates.restartOnAppChange)
-            Text("Release updates replace the whole App and its bundled CLI. Restart waits for chats, drafts and profile edits.")
-                .font(.system(size: 10)).foregroundStyle(.secondary)
+            Text("New releases show a red dot and need your confirmation. A release replaces the whole App and its bundled CLI; restart waits for chats, drafts and profile edits.")
+                .font(.system(size: 10)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             if let reason = updates.restartWaitReason {
                 Text(reason).font(.system(size: 10)).foregroundStyle(.orange).lineLimit(2)
             } else if let problem = updates.localChanges.problem {
                 Text(problem).font(.system(size: 10)).foregroundStyle(.orange).lineLimit(2)
             }
-            if let cli = updates.localChanges.cliURL {
-                Text("Selected CLI: " + cli.path).font(.system(size: 9, design: .monospaced)).foregroundStyle(.secondary)
-                    .lineLimit(1).truncationMode(.middle).help(cli.path)
-                Text(updates.localChanges.cliChangedAt.map { "CLI changed on disk · data refreshed \($0.formatted(date: .omitted, time: .shortened))" }
-                     ?? "CLI-only changes refresh data. A global CLI update does not replace this App's bundled CLI.")
-                    .font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(2)
+            if let changed = updates.localChanges.cliChangedAt {
+                Text("CLI changed on disk · data refreshed \(changed.formatted(date: .omitted, time: .shortened))")
+                    .font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(1)
             }
+            Divider()
+            CLIInstallsSection(installs: updates.cliInstalls, selected: updates.localChanges.cliURL)
             Divider()
             Text("Appearance").font(.system(size: 13, weight: .semibold))
             Toggle("Animate status symbol", isOn: $motion.decorativeEnabled)
                 .disabled(motion.systemReduceMotion)
             Text(motion.systemReduceMotion
                  ? "Off because Reduce Motion is on in System Settings. The status text and counts are unchanged."
-                 : "A slow fade while work is running, and one short pulse when something needs attention. The status text and counts are the same with it off.")
+                 : "A slow fade while work is running, and one short pulse when something needs attention. Status text and counts stay the same.")
                 .font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(2).fixedSize(horizontal: false, vertical: true)
             Divider()
             HStack {
@@ -692,7 +703,7 @@ struct AppSettingsView: View {
             Spacer(minLength: 0)
             Text("Offload Monitor \(updates.currentVersionText)").font(.system(size: 10)).foregroundStyle(.secondary)
         }
-        .padding(14)
+        .padding(12)
     }
 
     private var status: String {

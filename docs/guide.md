@@ -495,6 +495,14 @@ The running App also checks its installed executable and version metadata every 
 
 The App uses `Contents/Resources/offload` first. Updating `~/go/bin/offload` alone does not update this bundled copy or the native interface. When the selected CLI's bytes change, the App refreshes statistics, profiles, skills and history without restarting. Settings shows the selected CLI path and the last detected change. Updating the native interface still requires installing a new App bundle. The first installation of this detection feature needs one ordinary App reopen; subsequent replacements are detected by the running build.
 
+#### Standalone CLI in PATH
+
+An App update changes only `Offload Monitor.app` and the `offload` inside it. A separate `offload` in your `PATH` (for example `~/go/bin/offload` from `go install`) is a different file and stays on its old version. **Settings > App > Command-line offload** lists the App's bundled CLI and every other `offload` found in `PATH`, each with its path, the version it prints for `offload version`, and how it is managed (Go install, Homebrew or another package manager, symbolic link, or a plain copy). A copy that is older than the App's, or prints something that is not a version number such as `dev`, also raises a notice with a **Review** button; **Dismiss** hides it until the situation changes.
+
+The App replaces a standalone copy only when you press **Update…** next to it and confirm the exact file and versions. It offers this only for a plain file in a folder it can write to, which is a Go install or a manual copy. Homebrew, MacPorts and Nix files, symbolic links, unwritable folders, newer copies, and two builds of the same version number are never offered for replacement; the entry explains what to run instead (for example `brew upgrade`, `go install github.com/zhoushoujianwork/offload@latest`, or `ln -sfn` to the bundled CLI). Before the swap the App re-checks that the file is unchanged, is not a link, and is not package-managed, verifies the bundled CLI's code signature, saves the old file under `~/Library/Application Support/OffloadMonitor/cli-backups`, replaces it atomically, runs `offload version` on the result, and puts the backup back if that fails. Running commands are not interrupted.
+
+To confirm the result, open a new Terminal window and run `which -a offload && offload version`. Both the App's bundled copy and each standalone copy should print the same version.
+
 #### Release downloads
 
 Pushing a `v*` tag runs `.github/workflows/macos-release.yml`. On a `macos-15` (Apple silicon) and a `macos-15-intel` runner it runs `go test ./...` and `swift test --package-path macos`, builds `Offload Monitor.app` with `scripts/package-macos-release.sh`, and uploads one archive per architecture to that tag's GitHub release (creating the release if needed):
