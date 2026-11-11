@@ -33,10 +33,29 @@ extension AppState {
         guard let candidate = manager.releaseCandidate else { return }
         let alert = NSAlert()
         alert.messageText = "Update Offload Monitor to \(candidate.version)?"
-        alert.informativeText = "Current version: \(manager.currentVersionText). The App and bundled CLI will be verified and updated together. Restart waits for active chats and unsaved edits."
+        alert.informativeText = "Current version: \(manager.currentVersionText). The App and bundled CLI will be verified and updated together. Restart waits for active chats and unsaved edits.\n\nOnly the App and its bundled CLI change. Any separate offload command in your PATH (for example ~/go/bin/offload) stays as it is; Settings > App shows it and lets you update it yourself."
         alert.addButton(withTitle: "Update When Idle")
         alert.addButton(withTitle: "Cancel")
         alert.buttons.last?.keyEquivalent = "\u{1b}"
         if alert.runModal() == .alertFirstButtonReturn { manager.confirmReleaseUpdate() }
+    }
+}
+
+extension AppState {
+    /// The only way a standalone CLI is ever replaced: the user confirms this exact file and version.
+    func confirmCLISync(_ plan: CLISyncPlan) {
+        let alert = NSAlert()
+        alert.messageText = "Replace \(plan.path) with the App's offload \(plan.toVersion)?"
+        alert.informativeText = """
+            This file now reports \(plan.fromVersion ?? "no version"). The App copies its bundled offload (\(plan.bundledPath)) over it and checks the result. \
+            The old file is saved first in ~/Library/Application Support/OffloadMonitor/cli-backups and is put back if the new one does not verify.
+
+            Nothing else is changed. Commands already running keep running. Afterwards, open a new Terminal window and run: \(CLIAdvisor.verifyCommand)
+            """
+        alert.addButton(withTitle: "Replace")
+        alert.addButton(withTitle: "Cancel")
+        alert.buttons.last?.keyEquivalent = "\u{1b}"
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        Task { await updates.cliInstalls.sync(plan) }
     }
 }

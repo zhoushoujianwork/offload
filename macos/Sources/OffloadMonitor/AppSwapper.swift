@@ -124,7 +124,7 @@ enum UpdateHelper {
         let report: UpdateReport
         switch swapper.run() {
         case .installed:
-            report = UpdateReport(ok: true, version: version, message: "Updated to \(version).")
+            report = UpdateReport(ok: true, version: version, message: "Updated to \(version). A separate offload command in your PATH is not changed; see Settings > App.")
         case .rolledBack(let reason):
             report = UpdateReport(ok: false, version: version, message: "Update to \(version) failed and the previous version was kept: \(reason).")
         case .needsManualRecovery(let reason):
