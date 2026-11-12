@@ -109,6 +109,11 @@ struct OffloadCLI {
         return ProfileTestResult(snapshot: snapshot, succeeded: probe.status == 0)
     }
 
+    func deleteProfile(_ request: ProfileDeleteRequest) async throws -> ProfilesSnapshot {
+        guard Self.validArgumentName(request.name) else { throw CLIError.invalidArgument("That profile name cannot be deleted from here.") }
+        return try ProfilesSnapshot.decode(try await run(request.arguments))
+    }
+
     func saveProfile(_ request: ProfileSaveRequest) async throws -> ProfilesSnapshot {
         let body: Data
         do { body = try JSONEncoder().encode(request) } catch { throw CLIError.invalidArgument("The profile could not be encoded.") }

@@ -26,6 +26,7 @@ import (
 // Profile explicitly selects the backend and its native configuration. Token
 // fields are credentials; do not log or serialize the configuration.
 type Profile struct {
+	Disabled                                              bool
 	Backend, BaseURL, Model, ReasoningEffort, ServiceTier string
 	CodexAccount, IdleTimeout, Endpoint                   string
 	TokenCmd                                              string `json:"-"`
@@ -179,7 +180,7 @@ var runIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$`)
 var activeRuns sync.Map
 
 func internalProfile(p Profile) config.Profile {
-	return config.Profile{Backend: p.Backend, BaseURL: p.BaseURL, Model: p.Model,
+	return config.Profile{Disabled: p.Disabled, Backend: p.Backend, BaseURL: p.BaseURL, Model: p.Model,
 		ReasoningEffort: p.ReasoningEffort, ServiceTier: p.ServiceTier, CodexAccount: p.CodexAccount,
 		IdleTimeout: p.IdleTimeout, Endpoint: p.Endpoint, TokenCmd: p.TokenCmd, Token: p.Token}
 }
@@ -191,7 +192,7 @@ func New(c Config) (*Client, error) {
 		return nil, errors.New("execution requires an explicit profile name")
 	}
 	profiles := config.Config{Profiles: map[string]config.Profile{c.ProfileName: internalProfile(c.Profile)}}
-	_, p, err := profiles.Resolve(c.ProfileName)
+	_, p, err := profiles.ResolveForRun(c.ProfileName)
 	if err != nil {
 		return nil, err
 	}
@@ -209,11 +210,11 @@ func LoadConfig(path, name string) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	canonical, p, err := c.Resolve(name)
+	canonical, p, err := c.ResolveForRun(name)
 	if err != nil {
 		return Config{}, err
 	}
-	return Config{ProfileName: canonical, Profile: Profile{Backend: p.Backend, BaseURL: p.BaseURL,
+	return Config{ProfileName: canonical, Profile: Profile{Disabled: p.Disabled, Backend: p.Backend, BaseURL: p.BaseURL,
 		Model: p.Model, ReasoningEffort: p.ReasoningEffort, ServiceTier: p.ServiceTier,
 		CodexAccount: p.CodexAccount, IdleTimeout: p.IdleTimeout, Endpoint: p.Endpoint, TokenCmd: p.TokenCmd, Token: p.Token},
 		Limits: Limits{MaxWorkers: c.Limits.MaxWorkers, GoMaxProcs: c.Limits.GoMaxProcs, GoParallelism: c.Limits.GoParallelism}}, nil

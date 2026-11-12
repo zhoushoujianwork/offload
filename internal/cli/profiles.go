@@ -22,6 +22,7 @@ const (
 
 // profileEntry is one profile in the machine-readable list. It never carries token or token_cmd.
 type profileEntry struct {
+	Disabled        bool   `json:"disabled"`
 	UseFor          string `json:"use_for"`
 	CodexAccount    string `json:"codex_account"`
 	Name            string `json:"name"`
@@ -168,6 +169,7 @@ func cmdProfilesArgs(args []string, stdout, stderr io.Writer) int {
 // profileSaveRequest is the stdin document of `offload profile save --json`. Pointer fields
 // are patches: omitted (or null) keeps the stored value.
 type profileSaveRequest struct {
+	Disabled        *bool   `json:"disabled"`
 	UseFor          *string `json:"use_for"`
 	CodexAccount    *string `json:"codex_account"`
 	Name            string  `json:"name"`
@@ -210,6 +212,7 @@ func readProfileRequest(stdin io.Reader) (profileSaveRequest, error) {
 // safeSaveErrors are the fixed config validation messages that may be shown to the caller.
 // Anything else is replaced so request values, paths and parser details never reach the output.
 var safeSaveErrors = map[string]bool{
+	"set another default first":                                   true,
 	"invalid Claude reasoning effort":                             true,
 	"use_for must be a single line without control characters":    true,
 	"use_for must be at most 300 characters":                      true,
@@ -236,8 +239,18 @@ func safeSaveError(err error) error {
 	return errors.New("profile could not be saved")
 }
 
+// disabledOnly is an administrative patch and does not require usable credentials.
+func (r profileSaveRequest) disabledOnly() bool {
+	return !r.Create && r.Disabled != nil && r.UseFor == nil && r.CodexAccount == nil &&
+		r.Backend == nil && r.BaseURL == nil && r.Model == nil && r.Endpoint == nil &&
+		r.ReasoningEffort == nil && r.ServiceTier == nil && r.AuthMode == nil && r.Secret == nil
+}
+
 // applyProfileRequest builds the complete profile from the stored one plus the request patch.
 func applyProfileRequest(p config.Profile, req profileSaveRequest) (config.Profile, error) {
+	if req.Disabled != nil {
+		p.Disabled = *req.Disabled
+	}
 	if req.Create && req.Backend == nil {
 		p.Backend = "claude"
 	}
@@ -309,6 +322,9 @@ func applyProfileRequest(p config.Profile, req profileSaveRequest) (config.Profi
 // cmdProfile handles `offload profile save --json`. Creating selects the new profile as default
 // (SaveProfile semantics); editing keeps the saved default. Names are exact and immutable.
 func cmdProfile(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
+	if len(args) >= 1 && (args[0] == "disable" || args[0] == "enable" || args[0] == "delete") {
+		return cmdProfileLifecycle(args, stdout, stderr)
+	}
 	if len(args) >= 1 && args[0] == "test" {
 		return cmdProfileTest(args[1:], stdout, stderr)
 	}
@@ -336,7 +352,12 @@ func cmdProfile(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	if err != nil {
 		return fail(stderr, safeSaveError(err))
 	}
-	if err := config.SaveProfile(path, req.Name, profile, req.Create); err != nil {
+	if req.disabledOnly() {
+		err = config.SetProfileDisabled(path, req.Name, *req.Disabled)
+	} else {
+		err = config.SaveProfile(path, req.Name, profile, req.Create)
+	}
+	if err != nil {
 		return fail(stderr, safeSaveError(err))
 	}
 	snap, err := buildProfileSnapshot(path)
@@ -348,6 +369,7 @@ func cmdProfile(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 
 func (e profileEntry) withAvailability(p config.Profile) profileEntry {
 	e.Available = p.Available()
+	e.Disabled = p.Disabled
 	if p.Unavailable != nil {
 		e.UnavailableReason, e.UnavailableAt = config.SanitizeReason(p.Unavailable.Reason), p.Unavailable.At
 	}

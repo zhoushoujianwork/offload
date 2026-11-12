@@ -201,6 +201,23 @@ final class ProfilesModel: ObservableObject {
         }
     }
 
+    @discardableResult
+    func delete(_ request: ProfileDeleteRequest) async -> Bool {
+        guard let cli, !busy else { return false }
+        busy = true
+        defer { busy = false }
+        actionError = nil
+        do {
+            snapshot = try await cli.deleteProfile(request)
+            loadError = nil
+            lastLoad = now()
+            return true
+        } catch {
+            actionError = message(error)
+            return false
+        }
+    }
+
     /// Manual checks can test healthy profiles and bypass the automatic retry interval.
     @discardableResult
     func test(_ name: String) async -> Bool {

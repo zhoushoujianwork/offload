@@ -248,12 +248,13 @@ struct ProfileMenu: View {
                     Button {
                         Task { await profiles.use(p.name) }
                     } label: {
-                        let base = p.model.isEmpty ? p.name : "\(p.name) — \(p.model)"
-                        let t = p.isUnavailable ? "\(base) (unavailable)" : base
-                        if p.name == s.active { Label(t, systemImage: "checkmark") }
+                        let t = ProfilePresentation.pickerTitle(p)
+                        if p.isDisabled { Text(t) }
+                        else if p.name == s.active { Label(t, systemImage: "checkmark") }
                         else if p.isUnavailable { Label(t, systemImage: "exclamationmark.triangle") }
                         else { Text(t) }
                     }
+                    .disabled(p.isDisabled)
                     .help(p.isUnavailable ? p.unavailableDetail : "")
                 }
                 if s.overriddenByEnvironment {

@@ -91,6 +91,19 @@ offload -p minimax -d /absolute/path/app "Summarize README.md, max 5 bullets."
 OFFLOAD_PROFILE=deepseek offload -d /absolute/path/app "Find retry entry points, max 10 file:line rows."
 ```
 
+#### Disable or delete a profile
+
+Disable a profile to keep it but stop every use of it. A disabled profile is skipped for default and pool selection, reports `"disabled": true` and `"available": false` in `offload profiles --json`, and any run on it fails before a worker starts, including `-p`, `OFFLOAD_PROFILE`, resumes and scheduled runs. The configured default cannot be disabled; choose another default first.
+
+```sh
+offload profile disable codex-old
+offload profile enable codex-old
+offload profile delete codex-old             # remove the profile and its aliases
+offload profile delete codex-old --account   # also remove its managed Codex account
+```
+
+`profile delete` refuses the configured default, a profile that an active or queued worker is using, and a profile that a saved schedule names; nothing changes in those cases. Sessions recorded on a deleted profile can no longer be resumed with `-r`. The macOS app offers the same actions in the profile editor: a **Disabled** switch and **Delete Profile…**, which can also delete the profile's managed account when no other profile uses it.
+
 `offload default <profile>` validates the profile and saves it without changing other configuration fields. `OFFLOAD_PROFILE` still overrides the saved default for new runs. Resuming a known session reuses its original profile and directory; `-p` and `-d` explicitly override them. Additional `--add-dir` directories are inherited from the latest run unless replaced or cleared.
 
 `-m` overrides the selected profile's model for that run. `-effort <level>` overrides its reasoning effort (`low`, `medium`, `high`, `xhigh`, `max`; Codex also accepts `ultra`). On Codex profiles, `-fast` selects the priority service tier and `-fast=false` the default tier; Claude profiles reject `-fast`. Overrides apply to that run only, including a resume, and never change the saved profile.
@@ -845,6 +858,7 @@ offload accounts add work
 offload accounts --json
 offload accounts import personal < /path/to/auth.json
 offload accounts link personal /absolute/path/to/auth.json
+offload accounts remove old-work      # permanently delete an account no profile uses
 offload profile save --json <<'JSON'
 {"name":"codex-work","create":true,"backend":"codex","codex_account":"work"}
 JSON
@@ -868,6 +882,8 @@ cyclic, directory and self links are rejected. Account directories and the
 managed account root cannot be symlinks. The command validates but never writes
 or changes permissions on the source. Native Codex refreshes can subsequently
 update the shared target, including by atomic file replacement.
+
+`offload accounts remove <name>` permanently deletes the account's private home: its sign-in, configuration and sessions. It refuses an account that any profile still references or that an active or queued worker is using, and it works whether or not the account is signed in. For a linked account it removes the link only, never the shared source file.
 
 The command can convert an existing account or explicitly change its link target.
 Existing authentication must be verifiable and have the same OAuth `account_id`;

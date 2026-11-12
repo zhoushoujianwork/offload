@@ -31,10 +31,20 @@ type probeOutcome struct {
 
 // probeProfile is replaced in tests. The default makes one real, minimal model call.
 var probeProfile = func(ctx context.Context, path, name string) probeOutcome {
-	cfg, err := execution.LoadConfig(path, name)
+	saved, err := config.Load(path)
 	if err != nil {
 		return probeOutcome{ErrorKind: "configuration", Message: err.Error()}
 	}
+	canonical, p, err := saved.Resolve(name)
+	if err != nil {
+		return probeOutcome{ErrorKind: "configuration", Message: err.Error()}
+	}
+	// A diagnostic probe deliberately ignores Disabled in memory. The saved switch is untouched.
+	cfg := execution.Config{ProfileName: canonical, Profile: execution.Profile{
+		Backend: p.Backend, BaseURL: p.BaseURL, Model: p.Model, ReasoningEffort: p.ReasoningEffort,
+		ServiceTier: p.ServiceTier, CodexAccount: p.CodexAccount, IdleTimeout: p.IdleTimeout,
+		Endpoint: p.Endpoint, TokenCmd: p.TokenCmd, Token: p.Token}, Limits: execution.Limits{
+		MaxWorkers: saved.Limits.MaxWorkers, GoMaxProcs: saved.Limits.GoMaxProcs, GoParallelism: saved.Limits.GoParallelism}}
 	client, err := execution.New(cfg)
 	if err != nil {
 		return probeOutcome{ErrorKind: "configuration", Message: err.Error()}
@@ -103,7 +113,7 @@ func retestProfile(ctx context.Context, path, name string) (probeOutcome, error)
 		return out, config.MarkAvailable(path, canonical)
 	}
 	permanent, category := config.ClassifyFailure(out.ErrorKind, out.Message)
-	if permanent || !p.Available() {
+	if permanent || p.Unavailable != nil {
 		if category == "" {
 			category = "test failed"
 		}

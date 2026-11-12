@@ -251,7 +251,7 @@ func validateRun(t *schedule.Task) error {
 		if err != nil {
 			return err
 		}
-		name, p, err := cfg.Resolve(t.Profile)
+		name, p, err := cfg.ResolveForRun(t.Profile)
 		if err != nil {
 			return err
 		}

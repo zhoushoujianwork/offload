@@ -34,7 +34,7 @@ Because the worker cannot see your conversation, its brief must stand alone: abs
 Pick the worker the way you would pick a subagent's model:
 
 1. Run `offload profiles --json`. Each profile shows its `backend`, `model`, `reasoning_effort`, `service_tier`, availability and an optional `use_for` hint written by the user, such as "frontend/UI work" or "bulk log reading".
-2. Choose the available profile whose `use_for` fits the task. When no hint fits, use the configured default, or the account-pool rules below for interchangeable Codex accounts. A profile the user names always wins.
+2. Choose the available profile (`available: true`, so not failed or disabled) whose `use_for` fits the task. When no hint fits, use the configured default, or the account-pool rules below for interchangeable Codex accounts. A profile the user names always wins.
 3. Override settings for this run only when the task needs it:
    - `-m <model>` replaces the profile's model.
    - `-effort <level>` sets reasoning effort: `low`, `medium`, `high`, `xhigh`, `max` on both backends, plus `ultra` on Codex. Use a lower effort for lookups and summaries and a higher one for tricky debugging or design-sensitive implementation.
@@ -62,6 +62,7 @@ account's private home, credentials and sessions. Discover names with
   `OFFLOAD_PROFILE` or the saved default. The CLI has no automatic pool scheduler.
   Do not change the saved default merely to dispatch one task.
 - Profiles with `"available": false` (see `unavailable_reason` and `unavailable_at`) failed with an unrecoverable error such as bad credentials, exhausted quota or a missing model. Never pick them at random and never use them as the default; run `offload profile test <name>` to re-test one, which restores it on success. An explicit `-p` still runs the named profile.
+- Profiles with `"disabled": true` were switched off by the user and also report `"available": false`. Never choose them; every run on one fails, including an explicit `-p` or a resume. Only the user re-enables them (`offload profile enable <name>`), so do not enable, delete or edit profiles on your own.
 - The profile catalog proves configuration, not remaining quota. Exclude accounts
   already known to be exhausted until their reported reset, and accounts with
   unresolved authentication errors. Treat an untested account as unknown, not
@@ -257,6 +258,7 @@ Report each external worker's status/exit code, profile/model, session, turns, e
 ## Follow-up and setup
 
 - `offload profiles` — list gateway profiles without tokens; `-p name` overrides `OFFLOAD_PROFILE` and config `default`.
+- `offload profile disable|enable|delete <name>` and `offload accounts remove <name>` — user-managed profile and account lifecycle; run them only when the user asks.
 - `offload ls [n]` — recent runs with estimated cost, compact token usage and elapsed time; missing costs show `N/A`, with details in `offload show <session>`.
 - `offload stats [--json] [--period today|week|month|all]` — aggregate runs, unique sessions, per-run tokens and estimated costs, with coverage and project/model breakdowns. Cached input is a subset of input. `--json` also has a `trend` of hourly (today) or daily (week, month, last 30 days for all) points with the same coverage fields. Legacy Claude costs and salvaged accounting are excluded from totals; missing data is not zero. The macOS Offload Monitor app consumes this JSON and shows live workers alongside history.
 - `offload show <session>` — session reports and metrics.

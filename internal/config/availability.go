@@ -10,14 +10,14 @@ import (
 	"time"
 )
 
-// Unavailable records why a profile stopped being usable and when. A nil value means available.
+// Unavailable records a failure and when it occurred, independently of Disabled.
 type Unavailable struct {
 	Reason string `json:"reason"`
 	At     string `json:"at"`
 }
 
 // Available reports whether the profile takes part in default and pool selection.
-func (p Profile) Available() bool { return p.Unavailable == nil }
+func (p Profile) Available() bool { return !p.Disabled && p.Unavailable == nil }
 
 // EffectiveDefault is the default profile name, except that an unavailable default is replaced
 // by the first available profile in name order. With no available profile the saved default is
@@ -160,4 +160,21 @@ func SanitizeReason(s string) string {
 // FailureReason builds the stored reason for a classified failure.
 func FailureReason(category, message string) string {
 	return category + ": " + SanitizeReason(message)
+}
+
+// CheckEnabled rejects execution without changing failure availability.
+func (p Profile) CheckEnabled(name string) error {
+	if p.Disabled {
+		return fmt.Errorf("profile %q is disabled; enable it with: offload profile enable %s", name, name)
+	}
+	return nil
+}
+
+// ResolveForRun resolves a profile and checks the explicit administrative switch.
+func (c *Config) ResolveForRun(name string) (string, Profile, error) {
+	n, p, err := c.Resolve(name)
+	if p.Disabled {
+		err = p.CheckEnabled(n)
+	}
+	return n, p, err
 }

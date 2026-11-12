@@ -350,7 +350,7 @@ func cmdRunSaved(args []string, stdin io.Reader, stdout, stderr io.Writer, paren
 		}
 	}
 	selected = firstNonEmpty(selected, firstNonEmpty(os.Getenv("OFFLOAD_PROFILE"), cfg.EffectiveDefault()))
-	name, prof, err := cfg.Resolve(selected)
+	name, prof, err := cfg.ResolveForRun(selected)
 	if resumedProfile != "" {
 		if _, exists := cfg.Profiles[resumedProfile]; !exists {
 			name, prof = resumedProfile, config.Profile{}
@@ -384,7 +384,7 @@ func cmdRunSaved(args []string, stdin io.Reader, stdout, stderr io.Writer, paren
 		}
 	}
 	if err != nil {
-		if resumedProfile != "" {
+		if resumedProfile != "" && !prof.Disabled {
 			// Never fall back to the default profile: that would silently change the provider.
 			err = fmt.Errorf("cannot resume session %s: its profile %q is unavailable (%w). Restore that profile in %s to continue the session, "+
 				"or start a new session with -p <profile> and restate the context; offload show %s has the previous reports",
@@ -797,6 +797,9 @@ func cmdProfiles(stdout, stderr io.Writer) int {
 		tools := "tool-limits=no"
 		if p.SupportsToolRestrictions() {
 			tools = "tool-limits=yes"
+		}
+		if p.Disabled {
+			aliases += " [disabled]"
 		}
 		if p.Unavailable != nil {
 			aliases += fmt.Sprintf(" [unavailable since %s: %s]", p.Unavailable.At, config.SanitizeReason(p.Unavailable.Reason))
