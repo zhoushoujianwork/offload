@@ -35,6 +35,9 @@ var (
 )
 
 type State struct {
+	CodexAccount string `json:"codex_account,omitempty"`
+	CodexHome    string `json:"codex_home,omitempty"`
+
 	PID         int       `json:"pid"`
 	RunID       string    `json:"run_id,omitempty"` // the invocation's run_id, as in the run log and processing log
 	Phase       string    `json:"phase"`

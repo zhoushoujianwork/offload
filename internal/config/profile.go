@@ -121,6 +121,11 @@ func SaveProfile(path, name string, p Profile, add bool) error {
 			return fmt.Errorf("profiles must be a JSON object")
 		}
 	}
+	var defaultName string
+	_ = json.Unmarshal(fields["default"], &defaultName)
+	if p.Disabled && (add || name == defaultName) {
+		return fmt.Errorf("set another default first")
+	}
 	raw, exists := profiles[name]
 	if add && exists {
 		return fmt.Errorf("profile already exists")
@@ -181,7 +186,7 @@ func SaveProfile(path, name string, p Profile, add bool) error {
 	if err := json.Unmarshal(encoded, &known); err != nil {
 		return err
 	}
-	for _, key := range []string{"use_for", "codex_account", "aliases", "backend", "base_url", "model", "token", "token_cmd", "reasoning_effort", "service_tier", "idle_timeout", "endpoint"} {
+	for _, key := range []string{"disabled", "use_for", "codex_account", "aliases", "backend", "base_url", "model", "token", "token_cmd", "reasoning_effort", "service_tier", "idle_timeout", "endpoint"} {
 		delete(profile, key)
 	}
 	for key, value := range known {

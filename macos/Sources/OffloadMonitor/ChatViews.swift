@@ -307,7 +307,8 @@ struct ChatDetailView: View {
                     Picker("Profile", selection: Binding(get: { chat.profileName }, set: { chat.chooseProfile($0) })) {
                         if chat.profileName.isEmpty || chat.profileMissing { Text(chat.profileName.isEmpty ? "No profile" : "\(chat.profileName) (missing)").tag(chat.profileName) }
                         ForEach(chat.profileChoices) { p in
-                            Text(p.model.isEmpty ? p.name : "\(p.name) — \(p.model)").lineLimit(1).truncationMode(.middle).tag(p.name)
+                            Text(ProfilePresentation.pickerTitle(p)).lineLimit(1).truncationMode(.middle).tag(p.name)
+                                .disabled(p.isDisabled)
                         }
                     }
                     .controlSize(.small).frame(maxWidth: 200).disabled(chat.isBusy || chat.profileChoices.isEmpty)

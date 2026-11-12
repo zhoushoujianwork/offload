@@ -16,10 +16,12 @@ struct ProfileEntry: Codable, Equatable, Identifiable {
     var authMode: String
     /// Optional so older CLI output still decodes; nil means available.
     var available: Bool? = nil
+    var disabled: Bool? = nil
     var unavailableReason: String? = nil
     var unavailableAt: String? = nil
     var id: String { name }
-    var isUnavailable: Bool { available == false }
+    var isDisabled: Bool { disabled == true }
+    var isUnavailable: Bool { available == false && !isDisabled }
     var unavailableDate: Date? {
         guard let unavailableAt else { return nil }
         let parser = ISO8601DateFormatter()
@@ -89,16 +91,17 @@ struct ProfileSaveRequest: Encodable, Equatable, CustomStringConvertible, Custom
     var serviceTier: String?
     var authMode: String?
     var secret: String?
+    var disabled: Bool? = nil
 
     enum CodingKeys: String, CodingKey {
-        case name, create, backend, model, endpoint, secret
+        case name, create, backend, model, endpoint, secret, disabled
         case useFor = "use_for"
         case codexAccount = "codex_account"
         case baseUrl = "base_url", reasoningEffort = "reasoning_effort", serviceTier = "service_tier", authMode = "auth_mode"
     }
 
     var isEmptyPatch: Bool {
-        useFor == nil && codexAccount == nil && backend == nil && baseUrl == nil && model == nil && endpoint == nil && reasoningEffort == nil
+        disabled == nil && useFor == nil && codexAccount == nil && backend == nil && baseUrl == nil && model == nil && endpoint == nil && reasoningEffort == nil
             && serviceTier == nil && authMode == nil && secret == nil
     }
 
@@ -351,8 +354,18 @@ extension ProfileDraft {
 enum ProfilePresentation {
     static func pickerTitle(_ p: ProfileEntry) -> String {
         let base = p.model.isEmpty ? p.name : "\(p.name) — \(p.model)"
+        if p.isDisabled { return "\(base) (disabled)" }
         return p.isUnavailable ? "\(base) (unavailable)" : base
     }
     static func retestTitle(testing: Bool) -> String { testing ? "Testing…" : "Re-test" }
     static func testing(_ running: Bool) -> String? { running ? "Testing profile…" : nil }
+}
+
+/// Arguments are kept together so destructive actions always request machine-readable output.
+struct ProfileDeleteRequest: Equatable {
+    var name: String
+    var account = false
+    var arguments: [String] {
+        ["profile", "delete", name] + (account ? ["--account"] : []) + ["--json"]
+    }
 }

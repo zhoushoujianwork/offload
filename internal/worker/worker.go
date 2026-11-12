@@ -320,6 +320,9 @@ func Run(ctx context.Context, o Opts) (rec history.Record, err error) {
 	rec = history.Record{TS: started.Format("2006-01-02 15:04:05"), CodexAccount: o.Profile.CodexAccount, CodexHome: o.CodexHome, Profile: o.ProfileName, Model: o.Model,
 		EnvironmentDirectory: o.EnvironmentDirectory, ReasoningEffort: o.Profile.ReasoningEffort,
 		RunID: o.RunID, CallerRunID: o.CallerRunID, Caller: history.CallerOrUnspecified(o.Caller), ExecutionPolicy: policyName(o.ExecutionPolicy), Backend: o.Profile.BackendName(), Dir: o.Dir, AddDirs: slices.Clone(o.AddDirs), Task: o.Task, Status: "error", CostIsEstimate: true}
+	if err := o.Profile.CheckEnabled(o.ProfileName); err != nil {
+		return rec, err
+	}
 	if rec.Backend == "codex" {
 		rec.ServiceTier = o.Profile.ServiceTier
 	}
@@ -1111,6 +1114,7 @@ func newPublisher(o Opts, started time.Time) *publisher {
 	// Queued first: the run holds no slot and has started no backend. A resumed run is already in
 	// its session, so activeSessionRun can refuse an overlapping follow-up from the start.
 	p := &publisher{runID: o.RunID, st: live.State{PID: os.Getpid(), RunID: o.RunID, Phase: live.Queued, Caller: history.CallerOrUnspecified(o.Caller), Dir: o.Dir, Session: o.Resume,
+		CodexAccount: o.Profile.CodexAccount, CodexHome: o.CodexHome,
 		Task: text.Truncate(text.OneLine(o.Task), 200), Profile: o.ProfileName, Model: o.Model,
 		StartedAt: started, LastEventAt: started, Limits: limitsSummary(o)}}
 	live.Publish(p.st)

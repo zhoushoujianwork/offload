@@ -254,6 +254,9 @@ func settingsProfile(p settingsPrompt, cfg *config.Config) error {
 	for i, name := range names {
 		profile := cfg.Profiles[name]
 		label := fmt.Sprintf("%s | %s | %s", name, profile.BackendName(), firstNonEmpty(profile.Model, "(native default)"))
+		if profile.Disabled {
+			label += " | disabled"
+		}
 		if profile.Endpoint != "" {
 			label += " | endpoint: " + profile.Endpoint
 		}

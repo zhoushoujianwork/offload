@@ -15,6 +15,9 @@ import (
 )
 
 func cmdAccounts(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
+	if len(args) > 0 && args[0] == "remove" {
+		return cmdAccountRemove(args[1:], stdout, stderr)
+	}
 	if len(args) == 0 || (len(args) == 1 && args[0] == "--json") {
 		return writeSnapshotAccounts(stdout, stderr)
 	}
@@ -25,7 +28,7 @@ func cmdAccounts(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return writeSnapshotAccounts(stdout, stderr)
 	}
 	if len(args) != 2 || (args[0] != "add" && args[0] != "import") {
-		return fail(stderr, errors.New("usage: offload accounts [--json] | add <name> | import <name> (auth.json on stdin) | link <name> <absolute-auth.json>"))
+		return fail(stderr, errors.New("usage: offload accounts [--json] | remove <name> [--json] | add <name> | import <name> (auth.json on stdin) | link <name> <absolute-auth.json>"))
 	}
 	home, err := config.CreateManagedAccount(args[1])
 	if err != nil {

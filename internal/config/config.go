@@ -16,6 +16,7 @@ import (
 
 // Profile selects a worker backend and its model/configuration.
 type Profile struct {
+	Disabled        bool     `json:"disabled,omitempty"`
 	UseFor          string   `json:"use_for,omitempty"`
 	CodexAccount    string   `json:"codex_account,omitempty"`
 	Aliases         []string `json:"aliases,omitempty"`
@@ -27,7 +28,7 @@ type Profile struct {
 	ServiceTier     string   `json:"service_tier,omitempty"`
 	// Endpoint is the gateway kind: "cc" (Claude Code proxy) or "llm" (generic LLM gateway); claude backend only, informational.
 	Endpoint string `json:"endpoint,omitempty"`
-	// Unavailable is set when a run or test found an unrecoverable failure; nil means available.
+	// Unavailable is set when a run or test found an unrecoverable failure.
 	Unavailable *Unavailable `json:"unavailable,omitempty"`
 	// TokenCmd prints the token on stdout (e.g. `security find-generic-password -s offload-minimax -w`).
 	// Preferred over Token so secrets stay out of the config file.
@@ -174,8 +175,11 @@ func SetDefault(path, name string) error {
 	if name == "" {
 		return errors.New("default profile name must not be empty")
 	}
-	resolved, _, err := c.Resolve(name)
+	resolved, profile, err := c.Resolve(name)
 	if err != nil {
+		return err
+	}
+	if err := profile.CheckEnabled(resolved); err != nil {
 		return err
 	}
 	b, err := os.ReadFile(path)

@@ -183,6 +183,8 @@ struct ProfilesSettingsView: View {
     @State private var notice: String?
     /// A background refresh found the stored profile different while the form has unsaved edits.
     @State private var changedOnDisk = false
+    @State private var confirmingDelete = false
+    @State private var deleteTarget: ProfileEntry?
 
     init(profiles: ProfilesModel, initialDraft: ProfileDraft = .new()) {
         self.profiles = profiles
@@ -203,6 +205,16 @@ struct ProfilesSettingsView: View {
             }
             picker
             availability
+            if !draft.isNew, let entry = snap?.entry(draft.name) {
+                Toggle("Disabled", isOn: Binding(get: { entry.isDisabled }, set: { value in
+                    Task { await profiles.save(ProfileSaveRequest(name: entry.name, create: false, disabled: value)) }
+                }))
+                .disabled(profiles.busy || entry.name == snap?.configuredDefault)
+                if entry.name == snap?.configuredDefault {
+                    Text("Set another default before disabling this profile.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
             Divider()
             form
             Spacer(minLength: 0)
@@ -213,6 +225,17 @@ struct ProfilesSettingsView: View {
         .onAppear { profiles.refreshIfStale(); syncSelection() }
         .onChange(of: profiles.snapshot) { _ in syncSelection() }
         .onChange(of: draft) { _ in profiles.hasUnsavedEdits = draft.isDirty }
+        .alert("Delete profile \(deleteTarget?.name ?? "")?", isPresented: $confirmingDelete) {
+            Button("Delete Profile", role: .destructive) { deleteProfile(account: false) }
+            if canDeleteAccount {
+                Button("Delete Profile and Account", role: .destructive) { deleteProfile(account: true) }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text(canDeleteAccount
+                 ? "Deleting the account also removes its sign-in and session data permanently."
+                 : "The profile and its aliases will be removed.")
+        }
     }
 
     // MARK: pieces
@@ -402,15 +425,15 @@ struct ProfilesSettingsView: View {
     private var availability: some View {
         if let e = snap?.entry(selection) {
             HStack(spacing: 6) {
-                Label(ProfilePresentation.testing(profiles.testing.contains(e.name)) ?? (e.isUnavailable ? "Unavailable" : "Available"),
-                      systemImage: e.isUnavailable ? "exclamationmark.triangle.fill" : "checkmark.circle")
+                Label(ProfilePresentation.testing(profiles.testing.contains(e.name)) ?? (e.isDisabled ? "Disabled" : (e.isUnavailable ? "Unavailable" : "Available")),
+                      systemImage: e.isDisabled ? "pause.circle" : (e.isUnavailable ? "exclamationmark.triangle.fill" : "checkmark.circle"))
                     .foregroundStyle(e.isUnavailable ? .orange : .secondary).font(.system(size: 11)).lineLimit(1)
                     .help(e.isUnavailable ? e.unavailableDetail : "")
                 Spacer()
                 if profiles.testing.contains(e.name) { ProgressView().controlSize(.small) }
                 Button(profiles.testing.contains(e.name) ? "Testing…" : "Check profile") { retest(e.name) }
                     .disabled(profiles.busy || profiles.checksPaused)
-                    .help(profiles.checksPaused ? ProfilesModel.offNotice : "Make one minimal real model call; success makes the profile available again")
+                    .help(profiles.checksPaused ? ProfilesModel.offNotice : "Make one minimal real model call. Disabled profiles stay disabled.")
             }
         }
         if snap != nil {
@@ -437,7 +460,11 @@ struct ProfilesSettingsView: View {
         formError = nil
         notice = nil
         Task {
-            if await profiles.test(name) { notice = "\"\(name)\" is available." }
+            if await profiles.test(name) {
+                notice = profiles.snapshot?.entry(name)?.isDisabled == true
+                    ? "Check succeeded; \(name) remains disabled."
+                    : "\"\(name)\" is available."
+            }
         }
     }
 
@@ -445,14 +472,42 @@ struct ProfilesSettingsView: View {
         HStack {
             if !draft.isNew {
                 Button("Use profile") { use(draft.name) }
-                    .disabled(profiles.busy || draft.name == snap?.configuredDefault)
+                    .disabled(profiles.busy || draft.name == snap?.configuredDefault || snap?.entry(draft.name)?.isDisabled == true)
                     .help("Make this the default for new runs")
+            }
+            if !draft.isNew {
+                Button("Delete Profile…") {
+                    deleteTarget = snap?.entry(draft.name)
+                    formError = nil
+                    notice = nil
+                    confirmingDelete = true
+                }
+                    .disabled(profiles.busy || draft.name == snap?.configuredDefault)
             }
             Spacer()
             Button(draft.isNew ? "Create and use" : "Save") { save() }
                 .keyboardShortcut(.defaultAction)
                 .disabled(profiles.busy || snap == nil || missingSecret)
                 .help(missingSecret ? "Enter the new credential first" : "")
+        }
+    }
+
+    private var canDeleteAccount: Bool {
+        guard let entry = deleteTarget, let account = entry.codexAccount, !account.isEmpty else { return false }
+        return !(snap?.profiles.contains { $0.name != entry.name && $0.codexAccount == account } ?? true)
+    }
+
+    private func deleteProfile(account: Bool) {
+        guard let target = deleteTarget else { return }
+        let request = ProfileDeleteRequest(name: target.name, account: account)
+        Task {
+            if await profiles.delete(request) {
+                draft = ProfileDraft.new()
+                selection = ""
+                changedOnDisk = false
+                notice = "Deleted \(request.name)."
+                syncSelection()
+            }
         }
     }
 
