@@ -22,6 +22,7 @@ const (
 
 // profileEntry is one profile in the machine-readable list. It never carries token or token_cmd.
 type profileEntry struct {
+	UseFor          string `json:"use_for"`
 	CodexAccount    string `json:"codex_account"`
 	Name            string `json:"name"`
 	Backend         string `json:"backend"`
@@ -110,7 +111,7 @@ func buildProfileSnapshot(path string) (profileSnapshot, error) {
 		p := cfg.Profiles[n]
 		base, redacted := safeBaseURL(p.BaseURL)
 		snap.Profiles = append(snap.Profiles, profileEntry{CodexAccount: p.CodexAccount, Name: n, Backend: p.BackendName(), BaseURL: base,
-			BaseURLRedacted: redacted, Model: p.Model, Endpoint: p.Endpoint,
+			BaseURLRedacted: redacted, Model: p.Model, Endpoint: p.Endpoint, UseFor: p.UseFor,
 			ReasoningEffort: p.ReasoningEffort, ServiceTier: p.ServiceTier, AuthMode: authMode(p),
 			ToolRestrictions: p.SupportsToolRestrictions()}.withAvailability(p))
 	}
@@ -167,6 +168,7 @@ func cmdProfilesArgs(args []string, stdout, stderr io.Writer) int {
 // profileSaveRequest is the stdin document of `offload profile save --json`. Pointer fields
 // are patches: omitted (or null) keeps the stored value.
 type profileSaveRequest struct {
+	UseFor          *string `json:"use_for"`
 	CodexAccount    *string `json:"codex_account"`
 	Name            string  `json:"name"`
 	Create          bool    `json:"create"`
@@ -208,6 +210,9 @@ func readProfileRequest(stdin io.Reader) (profileSaveRequest, error) {
 // safeSaveErrors are the fixed config validation messages that may be shown to the caller.
 // Anything else is replaced so request values, paths and parser details never reach the output.
 var safeSaveErrors = map[string]bool{
+	"invalid Claude reasoning effort":                             true,
+	"use_for must be a single line without control characters":    true,
+	"use_for must be at most 300 characters":                      true,
 	"profile name must not be empty":                              true,
 	"profile already exists":                                      true,
 	"unknown profile":                                             true,
@@ -241,6 +246,9 @@ func applyProfileRequest(p config.Profile, req profileSaveRequest) (config.Profi
 	}
 	if req.BaseURL != nil {
 		p.BaseURL = strings.TrimSpace(*req.BaseURL)
+	}
+	if req.UseFor != nil {
+		p.UseFor = *req.UseFor
 	}
 	if req.Model != nil {
 		p.Model = strings.TrimSpace(*req.Model)

@@ -114,6 +114,25 @@ final class ProfileDraftTests: XCTestCase {
         try JSONSerialization.jsonObject(with: JSONEncoder().encode(r)) as! [String: Any]
     }
 
+    func testUseForDecodePatchAndClear() throws {
+        var e = try entry()
+        XCTAssertNil(e.useFor, "older CLI snapshots still decode")
+        e.useFor = "frontend/UI work"
+        var d = ProfileDraft(editing: e)
+        XCTAssertEqual(d.useFor, "frontend/UI work")
+        XCTAssertNil(try json(d.request(existingNames: []))["use_for"])
+        d.useFor = "  long reviews  "
+        XCTAssertEqual(try json(d.request(existingNames: []))["use_for"] as? String, "long reviews")
+        XCTAssertTrue(d.hasChanges(existingNames: []))
+        d.useFor = ""
+        XCTAssertEqual(try json(d.request(existingNames: []))["use_for"] as? String, "")
+        var codex = ProfileDraft(editing: try entry(backend: "codex", auth: "none"))
+        codex.useFor = "backend"
+        XCTAssertEqual(try json(codex.request(existingNames: []))["use_for"] as? String, "backend")
+        let encoded = try JSONEncoder().encode(e)
+        XCTAssertEqual(try JSONDecoder().decode(ProfileEntry.self, from: encoded).useFor, e.useFor)
+    }
+
     func testNewClaudeProfileRequest() throws {
         var d = ProfileDraft.new()
         d.name = "work"; d.model = "claude-x"; d.baseURL = "https://gw.example"; d.credential = .token; d.secret = "sk-123"

@@ -186,6 +186,9 @@ func hostClaudeArgs(o Opts, promptPath string) []string {
 	if o.Model != "" {
 		args = append(args, "--model", o.Model)
 	}
+	if o.Profile.ReasoningEffort != "" {
+		args = append(args, "--effort", o.Profile.ReasoningEffort)
+	}
 	for _, dir := range o.AddDirs {
 		args = append(args, "--add-dir", dir)
 	}

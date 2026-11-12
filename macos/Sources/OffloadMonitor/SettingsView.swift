@@ -258,6 +258,10 @@ struct ProfilesSettingsView: View {
                     }
                     .pickerStyle(.segmented).labelsHidden().frame(width: 200)
                 }
+                GridRow {
+                    label("Use for")
+                    TextField("optional: tasks this profile suits", text: $draft.useFor).textFieldStyle(.roundedBorder).lineLimit(1)
+                }
                 if draft.isCodex { codexRows } else { claudeRows }
             }
             Text(draft.isCodex ? "Codex uses its native sign-in."

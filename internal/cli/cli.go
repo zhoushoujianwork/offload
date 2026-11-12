@@ -35,7 +35,7 @@ import (
 const usage = `offload — hand a task to Claude Code or Codex; print only its final report.
 
 usage:
-  offload [flags] "task"        run a task (task may also come on stdin)
+  offload [flags] "task"        run a task (task may also come on stdin; -m, -effort, -fast override the profile for this run)
   offload accounts [--json]    list managed Codex accounts
   offload accounts add <name>  add a managed account using device sign-in
   offload accounts import <name>
@@ -186,6 +186,8 @@ func cmdRunSaved(args []string, stdin io.Reader, stdout, stderr io.Writer, paren
 	fs.Usage = func() { fmt.Fprint(stderr, usage); fs.PrintDefaults() }
 	profile := fs.String("p", "", "profile name or alias (default: $OFFLOAD_PROFILE, then config default)")
 	model := fs.String("m", "", "override the profile's model")
+	effort := fs.String("effort", "", "override the profile's reasoning effort for this run")
+	fast := fs.Bool("fast", false, "for this run: -fast uses the priority (fast) service tier, -fast=false the default tier; Codex profiles only")
 	write := fs.Bool("w", false, "task intent: the task may modify files (default: told to stay read-only). Instruction only; offload adds no tool or sandbox limits either way")
 	resume := fs.String("r", "", "resume a session id; reuses its original dir unless -d is given")
 	threadKey := fs.String("thread", "", "continue a named conversation: the first run with a key starts a session, later runs with the same key (and directory) resume it; cannot be combined with -r")
@@ -389,6 +391,32 @@ func cmdRunSaved(args []string, stdin io.Reader, stdout, stderr io.Writer, paren
 				*resume, resumedProfile, err, config.Path(), *resume)
 		}
 		return failRun(err)
+	}
+	var fastPassed bool
+	fs.Visit(func(f *flag.Flag) {
+		switch f.Name {
+		case "effort":
+			prof.ReasoningEffort = *effort
+		case "fast":
+			fastPassed = true
+			prof.ServiceTier = "default"
+			if *fast {
+				prof.ServiceTier = "priority"
+			}
+		}
+	})
+	if fastPassed && prof.BackendName() != "codex" {
+		return failRun(errors.New("fast mode is only supported by Codex profiles"))
+	}
+	if err := prof.ValidateCodexSettings(); err != nil {
+		return failRun(err)
+	}
+	if err := prof.ValidateClaudeSettings(); err != nil {
+		return failRun(err)
+	}
+	rec.ReasoningEffort = prof.ReasoningEffort
+	if prof.BackendName() == "codex" {
+		rec.ServiceTier = prof.ServiceTier
 	}
 	wd, err := resolveDir(*dir, *resume, logPath)
 	if err != nil {
@@ -772,6 +800,9 @@ func cmdProfiles(stdout, stderr io.Writer) int {
 		}
 		if p.Unavailable != nil {
 			aliases += fmt.Sprintf(" [unavailable since %s: %s]", p.Unavailable.At, config.SanitizeReason(p.Unavailable.Reason))
+		}
+		if p.UseFor != "" {
+			aliases += " — " + p.UseFor
 		}
 		fmt.Fprintf(stdout, "%s %-12s %-8s %-5s %-15s %-24s %s%s\n", mark, n, p.BackendName(), firstNonEmpty(p.Endpoint, "-"), tools, p.Model, p.BaseURL, aliases)
 	}

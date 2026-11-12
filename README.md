@@ -1,11 +1,15 @@
 # offload
 
-Delegate focused tasks from Codex or Claude Code to another model or account.
-Get a final report, session history, token usage and elapsed time while the
-supervising agent keeps design decisions and final review.
+A subagent for Codex and Claude Code that runs on any model you configure.
+For a clearly specified task, the main agent hands offload a self-contained
+brief instead of spawning a native subagent. The worker starts with a clean
+context, so nothing leaks between it and the main conversation, and only its
+final report comes back. The main agent keeps design decisions and final review.
 
+- **Any model per task:** pick a profile by its `use_for` hint, then override the
+  model, reasoning effort or fast mode for one run (`-m`, `-effort`, `-fast`).
 - **Two backends:** Codex CLI and Claude Code with Anthropic-compatible gateways.
-- **Named profiles:** select a model, provider or managed Codex account per task.
+- **Named profiles:** a model, provider or managed Codex account, with an optional hint about which tasks it suits.
 - **Persistent sessions:** resume related work and inspect previous reports.
 - **macOS dashboard:** track tasks, switch profiles and manage accounts.
 

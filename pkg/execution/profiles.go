@@ -14,8 +14,8 @@ import (
 // ProfileInfo describes one saved profile without any credential. It carries
 // neither a token nor a token command; AuthMode only names which kind is set.
 type ProfileInfo struct {
-	Name, Backend, Model, Endpoint, ReasoningEffort, ServiceTier string
-	CodexAccount                                                 string
+	Name, Backend, Model, Endpoint, ReasoningEffort, ServiceTier, UseFor string
+	CodexAccount                                                         string
 	// BaseURL is empty when the stored value carries userinfo, a query or a
 	// fragment; BaseURLRedacted then reports that a value was withheld.
 	BaseURL         string
@@ -60,7 +60,7 @@ func ListProfiles(path string) ([]ProfileInfo, error) {
 	for _, n := range names {
 		p := cfg.Profiles[n]
 		base, redacted := safeBaseURL(p.BaseURL)
-		info := ProfileInfo{Available: p.Available()}
+		info := ProfileInfo{Available: p.Available(), UseFor: p.UseFor}
 		if p.Unavailable != nil {
 			info.UnavailableReason, info.UnavailableAt = config.SanitizeReason(p.Unavailable.Reason), p.Unavailable.At
 		}

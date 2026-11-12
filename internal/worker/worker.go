@@ -153,6 +153,10 @@ func buildArgs(o Opts, promptPath string) []string {
 		args = append(args, "--resume", o.Resume)
 	}
 
+	if o.Profile.ReasoningEffort != "" {
+		args = append(args, "--effort", o.Profile.ReasoningEffort)
+	}
+
 	// Repeated flags precede another known flag, so Claude's variadic --add-dir cannot swallow the task.
 	for _, d := range o.AddDirs {
 		args = append(args, "--add-dir", d)
@@ -314,8 +318,11 @@ func Run(ctx context.Context, o Opts) (rec history.Record, err error) {
 		started = time.Now()
 	}
 	rec = history.Record{TS: started.Format("2006-01-02 15:04:05"), CodexAccount: o.Profile.CodexAccount, CodexHome: o.CodexHome, Profile: o.ProfileName, Model: o.Model,
-		EnvironmentDirectory: o.EnvironmentDirectory,
-		RunID:                o.RunID, CallerRunID: o.CallerRunID, Caller: history.CallerOrUnspecified(o.Caller), ExecutionPolicy: policyName(o.ExecutionPolicy), Backend: o.Profile.BackendName(), Dir: o.Dir, AddDirs: slices.Clone(o.AddDirs), Task: o.Task, Status: "error", CostIsEstimate: true}
+		EnvironmentDirectory: o.EnvironmentDirectory, ReasoningEffort: o.Profile.ReasoningEffort,
+		RunID: o.RunID, CallerRunID: o.CallerRunID, Caller: history.CallerOrUnspecified(o.Caller), ExecutionPolicy: policyName(o.ExecutionPolicy), Backend: o.Profile.BackendName(), Dir: o.Dir, AddDirs: slices.Clone(o.AddDirs), Task: o.Task, Status: "error", CostIsEstimate: true}
+	if rec.Backend == "codex" {
+		rec.ServiceTier = o.Profile.ServiceTier
+	}
 	if o.Native != nil && o.Native.CodexAppServer {
 		rec.NativeProtocol = codexAppServerProtocol
 	}
