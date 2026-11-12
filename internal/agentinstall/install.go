@@ -99,6 +99,11 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return fail(stderr, err)
 	}
+	if *scope == "user" {
+		if targets, err = respectDisabledAgents(*agent, targets, stdout); err != nil {
+			return fail(stderr, err)
+		}
+	}
 	disabled, err := config.LoadDisabled(config.Path())
 	if err != nil {
 		return fail(stderr, err)
@@ -120,6 +125,11 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		}
 		fmt.Fprintf(stdout, "%s %s\n", f.status, f.path)
 	}
+	if *scope == "user" && *agent != "all" {
+		if err := config.SetAgentsDisabled(config.Path(), []string{*agent}, false); err != nil {
+			return fail(stderr, fmt.Errorf("install-agent: %s installed but its disabled choice was not cleared: %w", *agent, err))
+		}
+	}
 	for _, target := range targets {
 		if filepath.Base(target.policyPath) == "AGENTS.md" {
 			override := filepath.Join(filepath.Dir(target.policyPath), "AGENTS.override.md")
@@ -129,6 +139,28 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 	return 0
+}
+
+// respectDisabledAgents keeps user-scope agents turned off with `offload agent disable` off when
+// every agent is refreshed (mode and global switches, plain install-agent). Naming one agent
+// explicitly installs it; Run then clears that choice.
+func respectDisabledAgents(agent string, targets []agentInstallTarget, stdout io.Writer) ([]agentInstallTarget, error) {
+	if agent != "all" {
+		return targets, nil
+	}
+	off, err := config.LoadDisabledAgents(config.Path())
+	if err != nil {
+		return nil, err
+	}
+	var kept []agentInstallTarget
+	for i, t := range targets {
+		if name := controlAgentNames[i]; off[name] {
+			fmt.Fprintf(stdout, "skipped %s: disabled by the user (offload agent enable --agent %s turns it back on)\n", name, name)
+			continue
+		}
+		kept = append(kept, t)
+	}
+	return kept, nil
 }
 
 func agentInstallTargets(agent, scope, dir string) ([]agentInstallTarget, error) {

@@ -126,6 +126,13 @@ func RunControl(args []string, stdout, stderr io.Writer) int {
 		if err != nil {
 			return fail(stderr, err)
 		}
+		names := make([]string, len(selected))
+		for k, i := range selected {
+			names[k] = controlAgentNames[i]
+		}
+		if err := config.SetAgentsDisabled(config.Path(), names, action == "disable"); err != nil {
+			return fail(stderr, fmt.Errorf("agent %s: files updated but the choice was not saved, so a later mode or global switch may undo it: %w", action, err))
+		}
 		if status, _, err = controlSnapshot(); err != nil {
 			return fail(stderr, fmt.Errorf("agent %s: changes applied but status could not be read: %w", action, err))
 		}
