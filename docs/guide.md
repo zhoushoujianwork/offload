@@ -93,7 +93,15 @@ OFFLOAD_PROFILE=deepseek offload -d /absolute/path/app "Find retry entry points,
 
 `offload default <profile>` validates the profile and saves it without changing other configuration fields. `OFFLOAD_PROFILE` still overrides the saved default for new runs. Resuming a known session reuses its original profile and directory; `-p` and `-d` explicitly override them. Additional `--add-dir` directories are inherited from the latest run unless replaced or cleared.
 
-`-m` overrides the selected profile's model for that run.
+`-m` overrides the selected profile's model for that run. `-effort <level>` overrides its reasoning effort (`low`, `medium`, `high`, `xhigh`, `max`; Codex also accepts `ultra`). On Codex profiles, `-fast` selects the priority service tier and `-fast=false` the default tier; Claude profiles reject `-fast`. Overrides apply to that run only, including a resume, and never change the saved profile.
+
+A profile may carry an optional `use_for` hint (up to 300 characters, one line), such as "frontend/UI work" or "bulk log reading". `offload profiles --json` returns it so agents can choose a profile by task, the way they would choose a subagent's model. Set it in the macOS profile editor or with `offload profile save --json`:
+
+```sh
+offload profile save --json <<'JSON'
+{"name":"claude-cc-sonnet-5-5","use_for":"frontend/UI work and long code reviews"}
+JSON
+```
 
 ## Worker limits
 
@@ -185,7 +193,7 @@ Codex's current skill locations are documented in [Build skills](https://learn.c
 
 ### Main agent and subagent workflow
 
-The installed policy asks main agents and native subagents to actually invoke offload before doing substantial bounded supporting work themselves, according to the active delegation mode. In **proactive** mode this includes bounded implementation once the design is decided; in **basic** mode it mainly covers research, localization, summaries, and bounded mechanical edits, without proactively handing off a whole feature's implementation. In both modes, the main agent owns requirements, architecture/design, tradeoffs, task decomposition, and final review/acceptance. If a worker finds the design, scope, or architecture needs to change, it reports findings/options back instead of redesigning on its own. Prefer calling the CLI directly, without native subagent overhead, and avoid duplicating work an active worker is already doing. For parallel work or independent review, a native Codex subagent can launch the external worker:
+The installed policy positions offload as the replacement for native subagents: for any clearly specified task that does not need the conversation, the main agent runs offload with a self-contained brief instead of spawning a subagent, picks the profile by its `use_for` hint, and overrides model, effort or fast mode per run. A native subagent remains only for work that needs the forked conversation or host-only tools (browser, MCP or app tools), and as the Codex result waiter. The policy also asks main agents and native subagents to actually invoke offload before doing substantial bounded supporting work themselves, according to the active delegation mode. In **proactive** mode this includes bounded implementation once the design is decided; in **basic** mode it mainly covers research, localization, summaries, and bounded mechanical edits, without proactively handing off a whole feature's implementation. In both modes, the main agent owns requirements, architecture/design, tradeoffs, task decomposition, and final review/acceptance. If a worker finds the design, scope, or architecture needs to change, it reports findings/options back instead of redesigning on its own. Call the CLI directly and avoid duplicating work an active worker is already doing. Run parallel slices as several background offload runs, and an independent review on a different profile. When a native subagent is still used, it can launch the external worker:
 
 ```text
 Main agent → optional native subagent → offload → selected Claude/Codex profile
@@ -313,6 +321,8 @@ offload version
 
   -p profile   profile name (default: $OFFLOAD_PROFILE, then config default)
   -m model     override the profile's model
+  -effort level  override the profile's reasoning effort for this run
+  -fast        Codex only: priority (fast) tier for this run; -fast=false uses the default tier
   -w           task intent: the task may modify files (default: told to stay read-only); instruction only, no tool or sandbox limit either way
   -r session   resume a session; reuses its original dir unless -d is given
   -thread key  continue a named conversation: first run starts a session, later runs with the key (and dir) resume it; not combinable with -r

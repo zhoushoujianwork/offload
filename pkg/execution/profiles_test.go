@@ -16,7 +16,7 @@ import (
 const profilesFixture = `{
   "default": "alpha",
   "profiles": {
-    "alpha": {"backend": "claude", "model": "m1", "base_url": "https://example.test/v1", "token": "SECRET-TOKEN-1"},
+    "alpha": {"use_for": "frontend/UI", "backend": "claude", "model": "m1", "base_url": "https://example.test/v1", "token": "SECRET-TOKEN-1"},
     "beta": {"backend": "codex", "model": "m2", "base_url": "https://user:SECRET-URL@example.test/?k=SECRET-Q", "token_cmd": "echo SECRET-CMD"}
   }
 }
@@ -83,7 +83,7 @@ func TestProfilesMatchCLI(t *testing.T) {
 		c := raw.Profiles[i]
 		if c["name"] != p.Name || c["backend"] != p.Backend || c["model"] != p.Model || c["base_url"] != p.BaseURL ||
 			c["base_url_redacted"] != p.BaseURLRedacted || c["auth_mode"] != p.AuthMode ||
-			c["endpoint"] != p.Endpoint || c["reasoning_effort"] != p.ReasoningEffort ||
+			c["use_for"] != p.UseFor || c["endpoint"] != p.Endpoint || c["reasoning_effort"] != p.ReasoningEffort ||
 			c["service_tier"] != p.ServiceTier || c["codex_account"] != p.CodexAccount ||
 			c["tool_restrictions"] != p.ToolRestrictions {
 			t.Fatalf("profile %d differs: lib %+v cli %v", i, p, c)

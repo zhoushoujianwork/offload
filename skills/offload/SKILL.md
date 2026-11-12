@@ -1,6 +1,6 @@
 ---
 name: offload
-description: Delegate work through the offload CLI according to the active delegation mode (basic or proactive). Supports explicit account profiles and agent-selected random account-pool routing with bounded quota failover. Both modes keep design decisions and final acceptance with the supervising agent; proactive mode additionally delegates bounded feature/bugfix implementation once the design is decided.
+description: Use the offload CLI in place of a native subagent for clearly specified tasks that do not need the conversation, choosing the model, reasoning effort and fast mode per task. Follows the active delegation mode (basic or proactive). Supports explicit account profiles and agent-selected random account-pool routing with bounded quota failover. Both modes keep design decisions and final acceptance with the supervising agent; proactive mode additionally delegates bounded feature/bugfix implementation once the design is decided.
 ---
 
 # offload
@@ -9,7 +9,7 @@ Delegation mode: proactive
 
 Follow the active mode above. `offload mode` shows the saved user default; a project installation may override it.
 
-`offload [-p profile] [-m model] [-w] [-r session] [-d dir] [--add-dir dir]... [--clear-add-dirs] [-t 30m] [-json] "task"`
+`offload [-p profile] [-m model] [-effort level] [-fast] [-w] [-r session] [-d dir] [--add-dir dir]... [--clear-add-dirs] [-t 30m] [-json] "task"`
 
 The CLI supports `claude` (default) and `codex` profile backends. Set `"backend": "codex"` in a profile to use `codex exec --json` with native Codex authentication/configuration; model is optional. Run `offload default <profile>` to save either backend as the default, or `offload default` to show the saved choice. `-p` and `OFFLOAD_PROFILE` override it for new runs. Known session resumes retain their original profile by default. Managed Codex resumes also retain the recorded account/home; changing `-p` does not migrate their authentication to a different account.
 
@@ -18,6 +18,29 @@ Default-policy Codex workers use `--dangerously-bypass-approvals-and-sandbox` fo
 For Claude profiles, the CLI starts an external `claude -p --bare` worker on the configured Anthropic-compatible gateway, such as MiniMax. It does not replace a native Codex subagent's model provider. Profiles live in `~/.config/offload/config.json`; select with `-p`, `OFFLOAD_PROFILE`, or config `default`. `offload profiles` lists them (`offload profiles --json` gives a redacted machine-readable list; `offload profile save --json` creates or edits one profile from a JSON request on stdin). Each run drops the caller's `ANTHROPIC_*` variables and sets the chosen `ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN` (Bearer), and `ANTHROPIC_MODEL` (`-m` can override). It also passes `--setting-sources ""` so user/project/local settings cannot override the profile; `--bare` alone does not isolate settings. Auth is environment-only, without `apiKeyHelper` or `--settings`.
 
 `offload agent status --json` and `offload agent enable|disable --agent codex|claude|all --json` manage this skill and the delegation policy block at user scope. Only offload-owned files and marker blocks change; modified, symlinked or unmanaged ones are reported as blocked. Status reflects files on disk, not proof that the current agent session loaded them: a session already running keeps its previously loaded copy, so start a new session after a change.
+
+## Use offload instead of a native subagent
+
+Treat an offload run as a subagent that starts with a clean context and runs on the model you choose. Whenever you would spawn a native subagent for a clearly specified task that does not need your conversation, such as research, code localization, a review, an implementation slice or a check, use offload instead. Nothing from your conversation leaks into the worker, and only its final report comes back into yours.
+
+- **Parallel work:** start several offload runs in the background, one per independent slice, instead of several native subagents.
+- **Independent review:** run the review on a different profile or model from the one that wrote the change.
+- **Keep a native subagent only** when the task needs your forked conversation, needs host-only tools the worker lacks (browser, MCP or app tools), or is the Codex result waiter (see Follow a running worker).
+
+Because the worker cannot see your conversation, its brief must stand alone: absolute `-d`, objective, decided design, allowed files, checks and report format (see Assign a bounded task).
+
+## Choose the profile and settings per task
+
+Pick the worker the way you would pick a subagent's model:
+
+1. Run `offload profiles --json`. Each profile shows its `backend`, `model`, `reasoning_effort`, `service_tier`, availability and an optional `use_for` hint written by the user, such as "frontend/UI work" or "bulk log reading".
+2. Choose the available profile whose `use_for` fits the task. When no hint fits, use the configured default, or the account-pool rules below for interchangeable Codex accounts. A profile the user names always wins.
+3. Override settings for this run only when the task needs it:
+   - `-m <model>` replaces the profile's model.
+   - `-effort <level>` sets reasoning effort: `low`, `medium`, `high`, `xhigh`, `max` on both backends, plus `ultra` on Codex. Use a lower effort for lookups and summaries and a higher one for tricky debugging or design-sensitive implementation.
+   - `-fast` uses the fast (priority) service tier and `-fast=false` the default tier. Codex profiles only; a Claude profile rejects it.
+
+Overrides apply to that run, including a `-r` resume, and never change the saved profile. Users set `use_for` in the App's profile editor or with `offload profile save --json` (`{"name": "...", "use_for": "..."}`).
 
 ## Account pool: choose a profile before dispatch
 
@@ -105,7 +128,7 @@ In **basic** mode, mainly delegate research, code localization, log/output summa
 
 In **proactive** mode, also use offload throughout implementation, regression testing, validation, and documentation, not just for bulk reading or mechanical edits. The main agent designs the requirements and the implementation details (interfaces, behavior, allowed files, acceptance checks), then actually invokes `offload -w` for the bounded implementation, tests, and docs.
 
-Both modes apply to main agents and native subagents. Prefer calling the offload CLI directly, without native subagent overhead; use a native subagent only for parallel work, independent review, or as a Codex result waiter (see Follow a running worker), and explicitly instruct it to call offload for the task and verify the report. Do not duplicate work an active worker is already doing. If already running as an external offload worker, complete the assigned task directly without recursive delegation.
+Both modes apply to main agents and native subagents. Call the offload CLI directly in place of a native subagent (see Use offload instead of a native subagent). When a native subagent is still used for one of the cases listed there, explicitly instruct it to call offload where it fits and verify the report. Do not duplicate work an active worker is already doing. If already running as an external offload worker, complete the assigned task directly without recursive delegation.
 
 In both modes, the main agent owns requirements, architecture/design, important tradeoffs, task decomposition, and final review/acceptance. It must supply a clear design/implementation plan and acceptance criteria before delegating a feature/bugfix. In proactive mode, complexity alone is not a reason to keep implementation in the main agent. If a worker determines mid-task that the design, scope, or architecture needs to change, it should report findings/options back rather than redesigning on its own.
 

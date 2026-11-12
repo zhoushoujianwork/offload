@@ -7,6 +7,8 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 )
 
 var aliasPattern = regexp.MustCompile(`^[a-z0-9-]{1,32}$`)
@@ -70,6 +72,33 @@ func (p Profile) ValidateCodexSettings() error {
 	return nil
 }
 
+// NormalizeUseFor validates and trims the optional task hint.
+func NormalizeUseFor(s string) (string, error) {
+	for _, r := range s {
+		if unicode.IsControl(r) || r == '\u2028' || r == '\u2029' {
+			return "", fmt.Errorf("use_for must be a single line without control characters")
+		}
+	}
+	s = strings.TrimSpace(s)
+	if utf8.RuneCountInString(s) > 300 {
+		return "", fmt.Errorf("use_for must be at most 300 characters")
+	}
+	return s, nil
+}
+
+// ValidateClaudeSettings checks the effort levels supported by Claude CLI.
+func (p Profile) ValidateClaudeSettings() error {
+	if p.BackendName() != "claude" {
+		return nil
+	}
+	switch p.ReasoningEffort {
+	case "", "low", "medium", "high", "xhigh", "max":
+		return nil
+	default:
+		return fmt.Errorf("invalid Claude reasoning effort")
+	}
+}
+
 // SaveProfile saves a complete bundle, preserving unknown JSON and unrelated profiles.
 // Adding selects the new profile; editing preserves the saved default.
 func SaveProfile(path, name string, p Profile, add bool) error {
@@ -103,6 +132,13 @@ func SaveProfile(path, name string, p Profile, add bool) error {
 		return fmt.Errorf("unknown backend")
 	}
 	if err := p.ValidateCodexSettings(); err != nil {
+		return err
+	}
+	if err := p.ValidateClaudeSettings(); err != nil {
+		return err
+	}
+	p.UseFor, err = NormalizeUseFor(p.UseFor)
+	if err != nil {
 		return err
 	}
 	if p.CodexAccount != "" {
@@ -145,7 +181,7 @@ func SaveProfile(path, name string, p Profile, add bool) error {
 	if err := json.Unmarshal(encoded, &known); err != nil {
 		return err
 	}
-	for _, key := range []string{"codex_account", "aliases", "backend", "base_url", "model", "token", "token_cmd", "reasoning_effort", "service_tier", "idle_timeout", "endpoint"} {
+	for _, key := range []string{"use_for", "codex_account", "aliases", "backend", "base_url", "model", "token", "token_cmd", "reasoning_effort", "service_tier", "idle_timeout", "endpoint"} {
 		delete(profile, key)
 	}
 	for key, value := range known {

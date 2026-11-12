@@ -44,6 +44,7 @@ type Record struct {
 	ObservedModel        string           `json:"observed_model,omitempty"`
 	ModelSource          string           `json:"model_source,omitempty"`
 	ModelUnavailable     string           `json:"model_unavailable,omitempty"`
+	ReasoningEffort      string           `json:"reasoning_effort,omitempty"`
 	ServiceTier          string           `json:"service_tier,omitempty"`
 	Dir                  string           `json:"dir"`
 	Task                 string           `json:"task"`

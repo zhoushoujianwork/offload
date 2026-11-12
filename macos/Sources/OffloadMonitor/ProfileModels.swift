@@ -3,6 +3,7 @@ import Foundation
 // MARK: - `offload profiles --json`
 
 struct ProfileEntry: Codable, Equatable, Identifiable {
+    var useFor: String? = nil
     var codexAccount: String? = nil
     var name: String
     var backend: String
@@ -78,6 +79,7 @@ struct ProfilesSnapshot: Codable, Equatable {
 struct ProfileSaveRequest: Encodable, Equatable, CustomStringConvertible, CustomDebugStringConvertible {
     var name: String
     var create: Bool
+    var useFor: String?
     var codexAccount: String?
     var backend: String?
     var baseUrl: String?
@@ -90,12 +92,13 @@ struct ProfileSaveRequest: Encodable, Equatable, CustomStringConvertible, Custom
 
     enum CodingKeys: String, CodingKey {
         case name, create, backend, model, endpoint, secret
+        case useFor = "use_for"
         case codexAccount = "codex_account"
         case baseUrl = "base_url", reasoningEffort = "reasoning_effort", serviceTier = "service_tier", authMode = "auth_mode"
     }
 
     var isEmptyPatch: Bool {
-        codexAccount == nil && backend == nil && baseUrl == nil && model == nil && endpoint == nil && reasoningEffort == nil
+        useFor == nil && codexAccount == nil && backend == nil && baseUrl == nil && model == nil && endpoint == nil && reasoningEffort == nil
             && serviceTier == nil && authMode == nil && secret == nil
     }
 
@@ -157,6 +160,7 @@ struct ProfileDraft: Equatable {
     var original: ProfileEntry?
     var name = ""
     var backend = "claude"
+    var useFor = ""
     var model = ""
     var baseURL = ""
     var replaceBaseURL = false
@@ -211,6 +215,7 @@ struct ProfileDraft: Equatable {
         original = e
         name = e.name
         backend = e.backend.isEmpty ? "claude" : e.backend
+        useFor = e.useFor ?? ""
         model = e.model
         baseURL = e.baseUrlRedacted ? "" : e.baseUrl
         endpoint = e.endpoint
@@ -258,6 +263,9 @@ struct ProfileDraft: Equatable {
         guard Self.tiers.contains(tier) else { throw ProfileDraftError.badTier }
         guard Self.endpoints.contains(endpoint) else { throw ProfileDraftError.badEndpoint }
 
+        let useFor = self.useFor.trimmingCharacters(in: .whitespaces)
+        if useFor != (o?.useFor ?? "") { r.useFor = useFor }
+
         if isNew || backend != (o?.backend.isEmpty == false ? o!.backend : "claude") { r.backend = backend }
 
         if isCodex {
@@ -304,7 +312,7 @@ struct ProfileDraft: Equatable {
     }
 
     private func onlyPreserve(_ r: ProfileSaveRequest) -> Bool {
-        r.backend == nil && r.baseUrl == nil && r.model == nil && r.endpoint == nil && r.reasoningEffort == nil && r.serviceTier == nil
+        r.useFor == nil && r.backend == nil && r.baseUrl == nil && r.model == nil && r.endpoint == nil && r.reasoningEffort == nil && r.serviceTier == nil
     }
 }
 
