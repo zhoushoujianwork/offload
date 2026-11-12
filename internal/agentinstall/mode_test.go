@@ -401,3 +401,69 @@ func TestAgentControlFollowsGlobalSwitch(t *testing.T) {
 		t.Fatalf("policy after enable:\n%s", got)
 	}
 }
+
+// An agent turned off with `offload agent disable` stays off through mode and global switches
+// until the user turns it back on for that agent.
+func TestDisabledAgentSurvivesModeAndGlobalSwitches(t *testing.T) {
+	home := modeHome(t)
+	claudeSkill := filepath.Join(home, ".claude", "skills", "offload")
+	codexSkill := filepath.Join(home, ".agents", "skills", "offload", "SKILL.md")
+	if code, _, errOut := runMode("proactive"); code != 0 {
+		t.Fatal(errOut)
+	}
+	controlState(t, "disable", "--agent", "claude")
+	assertOff := func(step string) {
+		t.Helper()
+		if _, err := os.Stat(claudeSkill); !os.IsNotExist(err) {
+			t.Fatalf("%s re-enabled the claude skill", step)
+		}
+		if strings.Contains(string(installTestRead(t, filepath.Join(home, ".claude", "CLAUDE.md"))), offloadPolicyBegin) {
+			t.Fatalf("%s restored the claude policy", step)
+		}
+	}
+	code, out, errOut := runMode("basic")
+	if code != 0 || !strings.Contains(out, "skipped claude") {
+		t.Fatalf("%d %s %s", code, out, errOut)
+	}
+	assertOff("mode switch")
+	if !strings.Contains(string(installTestRead(t, codexSkill)), "Delegation mode: basic") {
+		t.Fatal("codex was not refreshed")
+	}
+	for _, cmd := range []string{"disable", "enable"} {
+		var o, e bytes.Buffer
+		if code := RunSwitch([]string{cmd}, &o, &e); code != 0 {
+			t.Fatal(e.String())
+		}
+		assertOff("global " + cmd)
+	}
+	var o, e bytes.Buffer
+	if code := Run(nil, &o, &e); code != 0 {
+		t.Fatal(e.String())
+	}
+	assertOff("install-agent")
+
+	st := controlState(t, "enable", "--agent", "claude")
+	if st.Agents[1].Status != "enabled" || st.Agents[1].Mode != "basic" {
+		t.Fatalf("enable: %+v", st.Agents[1])
+	}
+	if off, _ := config.LoadDisabledAgents(config.Path()); len(off) != 0 {
+		t.Fatalf("choice not cleared: %v", off)
+	}
+	if code, out, _ := runMode("proactive"); code != 0 || strings.Contains(out, "skipped") {
+		t.Fatal(out)
+	}
+}
+
+func TestExplicitInstallClearsDisabledChoice(t *testing.T) {
+	modeHome(t)
+	if err := config.SetAgentsDisabled(config.Path(), []string{"claude"}, true); err != nil {
+		t.Fatal(err)
+	}
+	var o, e bytes.Buffer
+	if code := Run([]string{"-agent", "claude"}, &o, &e); code != 0 {
+		t.Fatal(e.String())
+	}
+	if off, _ := config.LoadDisabledAgents(config.Path()); off["claude"] {
+		t.Fatal("explicit install kept the disabled choice")
+	}
+}

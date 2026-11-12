@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 )
 
 // LoadMode does not require worker profiles or create a config file.
@@ -126,5 +127,63 @@ func SetDisabled(path string, disabled bool) error {
 		return err
 	}
 	fields["disabled"], _ = json.Marshal(disabled)
+	return writeSettings(path, fields)
+}
+
+// LoadDisabledAgents returns the agents whose Offload instructions the user turned off with
+// `offload agent disable`. Their absence on disk alone cannot tell "never installed" from
+// "turned off", so the choice is saved here and later instruction refreshes respect it.
+func LoadDisabledAgents(path string) (map[string]bool, error) {
+	fields, err := modeSettings(path)
+	if err != nil {
+		return nil, err
+	}
+	var names []string
+	if raw, ok := fields["disabled_agents"]; ok {
+		if err := json.Unmarshal(raw, &names); err != nil {
+			return nil, fmt.Errorf("invalid disabled_agents: %w", err)
+		}
+	}
+	out := map[string]bool{}
+	for _, n := range names {
+		out[n] = true
+	}
+	return out, nil
+}
+
+// SetAgentsDisabled records or clears the per-agent choice, preserving every other field.
+func SetAgentsDisabled(path string, agents []string, disabled bool) error {
+	fields, err := modeSettings(path)
+	if err != nil {
+		return err
+	}
+	current, err := LoadDisabledAgents(path)
+	if err != nil {
+		return err
+	}
+	changed := false
+	for _, a := range agents {
+		if current[a] != disabled {
+			changed = true
+		}
+		if disabled {
+			current[a] = true
+		} else {
+			delete(current, a)
+		}
+	}
+	if !changed {
+		return nil
+	}
+	if len(current) == 0 {
+		delete(fields, "disabled_agents")
+	} else {
+		names := make([]string, 0, len(current))
+		for n := range current {
+			names = append(names, n)
+		}
+		sort.Strings(names)
+		fields["disabled_agents"], _ = json.Marshal(names)
+	}
 	return writeSettings(path, fields)
 }
