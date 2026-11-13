@@ -93,7 +93,7 @@ OFFLOAD_PROFILE=deepseek offload -d /absolute/path/app "Find retry entry points,
 
 #### Disable or delete a profile
 
-Disable a profile to keep it but stop every use of it. A disabled profile is skipped for default and pool selection, reports `"disabled": true` and `"available": false` in `offload profiles --json`, and any run on it fails before a worker starts, including `-p`, `OFFLOAD_PROFILE`, resumes and scheduled runs. The configured default cannot be disabled; choose another default first.
+Disable a profile to keep it but stop every use of it. A disabled profile is skipped for default selection, reports `"disabled": true` and `"available": false` in `offload profiles --json`, and any run on it fails before a worker starts, including `-p`, `OFFLOAD_PROFILE`, resumes and scheduled runs. The configured default cannot be disabled; choose another default first.
 
 ```sh
 offload profile disable codex-old
@@ -108,7 +108,7 @@ offload profile delete codex-old --account   # also remove its managed Codex acc
 
 `-m` overrides the selected profile's model for that run. `-effort <level>` overrides its reasoning effort (`low`, `medium`, `high`, `xhigh`, `max`; Codex also accepts `ultra`). On Codex profiles, `-fast` selects the priority service tier and `-fast=false` the default tier; Claude profiles reject `-fast`. Overrides apply to that run only, including a resume, and never change the saved profile.
 
-A profile may carry an optional `use_for` hint (up to 300 characters, one line), such as "frontend/UI work" or "bulk log reading". `offload profiles --json` returns it so agents can choose a profile by task, the way they would choose a subagent's model. Set it in the macOS profile editor or with `offload profile save --json`:
+A profile may carry optional descriptive `use_for` metadata (up to 300 characters, one line), such as "frontend/UI work" or "bulk log reading". `offload profiles --json` returns it for user context, but installed agent guidance does not let it override a usable active default. Set it in the macOS profile editor or with `offload profile save --json`:
 
 ```sh
 offload profile save --json <<'JSON'
@@ -206,7 +206,7 @@ Codex's current skill locations are documented in [Build skills](https://learn.c
 
 ### Main agent and subagent workflow
 
-The installed policy positions offload as the replacement for native subagents: for any clearly specified task that does not need the conversation, the main agent runs offload with a self-contained brief instead of spawning a subagent, picks the profile by its `use_for` hint, and overrides model, effort or fast mode per run. A native subagent remains only for work that needs the forked conversation or host-only tools (browser, MCP or app tools), and as the Codex result waiter. The policy also asks main agents and native subagents to actually invoke offload before doing substantial bounded supporting work themselves, according to the active delegation mode. In **proactive** mode this includes bounded implementation once the design is decided; in **basic** mode it mainly covers research, localization, summaries, and bounded mechanical edits, without proactively handing off a whole feature's implementation. In both modes, the main agent owns requirements, architecture/design, tradeoffs, task decomposition, and final review/acceptance. If a worker finds the design, scope, or architecture needs to change, it reports findings/options back instead of redesigning on its own. Call the CLI directly and avoid duplicating work an active worker is already doing. Run parallel slices as several background offload runs, and an independent review on a different profile. When a native subagent is still used, it can launch the external worker:
+The installed policy positions offload as the replacement for native subagents: for any clearly specified task that does not need the conversation, the main agent runs offload with a self-contained brief instead of spawning a subagent. New runs normally omit profile/model/effort/tier flags and inherit `OFFLOAD_PROFILE` or the configured default; `use_for` is descriptive only. Overrides require an explicit user request, concrete task incompatibility, or verified default failure with an authorized compatible fallback, and the agent states the reason. It never randomly rotates accounts, silently changes provider/model, or automatically enables or edits an unavailable default. A native subagent remains only for work that needs the forked conversation or host-only tools (browser, MCP or app tools), and as the Codex result waiter. The policy also asks main agents and native subagents to actually invoke offload before doing substantial bounded supporting work themselves, according to the active delegation mode. In **proactive** mode this includes bounded implementation once the design is decided; in **basic** mode it mainly covers research, localization, summaries, and bounded mechanical edits, without proactively handing off a whole feature's implementation. In both modes, the main agent owns requirements, architecture/design, tradeoffs, task decomposition, and final review/acceptance. If a worker finds the design, scope, or architecture needs to change, it reports findings/options back instead of redesigning on its own. Call the CLI directly and avoid duplicating work an active worker is already doing. Run parallel slices as several background offload runs. Independent review starts a fresh session on the default; a different profile/model is used only when explicitly requested or concretely required. When a native subagent is still used, it can launch the external worker:
 
 ```text
 Main agent → optional native subagent → offload → selected Claude/Codex profile
@@ -930,11 +930,11 @@ sign-in when both the original installation and offload will remain active.
 Profiles with no account selection continue to use the system Codex account.
 Managed runs isolate authentication, session/model lookup and usage accounting.
 Resume keeps the recorded account and home even after profile edits. This
-version provides explicit account selection. The bundled agent skill also explains
-how an agent can choose a random compatible account when none is specified and
-try another account on confirmed quota/capacity failures. Selection and bounded
-failover are performed by the supervising agent using `-p`; the CLI itself still
-uses the configured default when `-p` is omitted. Resumes stay bound to their
+version provides explicit account selection. The bundled agent skill tells agents
+to omit `-p` when no account is specified, so `OFFLOAD_PROFILE` or the configured
+default remains authoritative. A compatible fallback account is selected only
+when the user requests or authorizes it after a concrete incompatibility or verified
+failure; there is no random or proactive rotation. Resumes stay bound to their
 original account, so switching accounts starts a new session and must account for
 any partial effects. Managed homes start with Codex defaults and do not copy the system
 home's skills, MCP configuration or other settings.

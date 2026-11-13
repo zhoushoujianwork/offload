@@ -1,6 +1,6 @@
 ---
 name: offload
-description: Use the offload CLI in place of a native subagent for clearly specified tasks that do not need the conversation, choosing the model, reasoning effort and fast mode per task. Follows the active delegation mode (basic or proactive). Supports explicit account profiles and agent-selected random account-pool routing with bounded quota failover. Both modes keep design decisions and final acceptance with the supervising agent; proactive mode additionally delegates bounded feature/bugfix implementation once the design is decided.
+description: Use the offload CLI in place of a native subagent for clearly specified tasks that do not need the conversation, inheriting OFFLOAD_PROFILE or the configured default unless the user requests an override, the task is concretely incompatible, or an authorized fallback follows a verified failure. Follows the active delegation mode (basic or proactive). Both modes keep design decisions and final acceptance with the supervising agent; proactive mode additionally delegates bounded feature/bugfix implementation once the design is decided.
 ---
 
 # offload
@@ -21,73 +21,42 @@ For Claude profiles, the CLI starts an external `claude -p --bare` worker on the
 
 ## Use offload instead of a native subagent
 
-Treat an offload run as a subagent that starts with a clean context and runs on the model you choose. Whenever you would spawn a native subagent for a clearly specified task that does not need your conversation, such as research, code localization, a review, an implementation slice or a check, use offload instead. Nothing from your conversation leaks into the worker, and only its final report comes back into yours.
+Treat an offload run as a subagent that starts with a clean context and normally runs on the active default profile. Whenever you would spawn a native subagent for a clearly specified task that does not need your conversation, such as research, code localization, a review, an implementation slice or a check, use offload instead. Nothing from your conversation leaks into the worker, and only its final report comes back into yours.
 
 - **Parallel work:** start several offload runs in the background, one per independent slice, instead of several native subagents.
-- **Independent review:** run the review on a different profile or model from the one that wrote the change.
+- **Independent review:** start a fresh session on the active default profile. Use a different profile or model only when the user explicitly requests it or independence requires a concretely different provider/model, and state that reason.
 - **Keep a native subagent only** when the task needs your forked conversation, needs host-only tools the worker lacks (browser, MCP or app tools), or is the Codex result waiter (see Follow a running worker).
 
 Because the worker cannot see your conversation, its brief must stand alone: absolute `-d`, objective, decided design, allowed files, checks and report format (see Assign a bounded task).
 
-## Choose the profile and settings per task
+## Use the active default profile first
 
-Pick the worker the way you would pick a subagent's model:
+For a new run, normally omit `-p`, `-m`, `-effort`, and `-fast`. A bare `offload "task"` inherits an explicit `OFFLOAD_PROFILE` first, then the configured default and that profile's model, reasoning effort, and service tier.
 
-1. Run `offload profiles --json`. Each profile shows its `backend`, `model`, `reasoning_effort`, `service_tier`, availability and an optional `use_for` hint written by the user, such as "frontend/UI work" or "bulk log reading".
-2. Choose the available profile (`available: true`, so not failed or disabled) whose `use_for` fits the task. When no hint fits, use the configured default, or the account-pool rules below for interchangeable Codex accounts. A profile the user names always wins.
-3. Override settings for this run only when the task needs it:
+Use `offload profiles --json` to inspect the active selection or diagnose a failure, not to rotate among usable profiles. Its optional `use_for` field is descriptive metadata; it must not override a usable active default. Never randomly choose or proactively rotate profiles or accounts, and never silently change provider, model, effort, or tier.
+
+Override only for an explicit user request, a concrete task incompatibility, or a verified default failure with a user-authorized compatible fallback. Explain the reason whenever you override:
+
+   - `-p <profile>` selects an explicit profile for the run.
    - `-m <model>` replaces the profile's model.
    - `-effort <level>` sets reasoning effort: `low`, `medium`, `high`, `xhigh`, `max` on both backends, plus `ultra` on Codex. Use a lower effort for lookups and summaries and a higher one for tricky debugging or design-sensitive implementation.
    - `-fast` uses the fast (priority) service tier and `-fast=false` the default tier. Codex profiles only; a Claude profile rejects it.
 
-Overrides apply to that run, including a `-r` resume, and never change the saved profile. Users set `use_for` in the App's profile editor or with `offload profile save --json` (`{"name": "...", "use_for": "..."}`).
+Overrides apply to that run and never change the saved profile. A known `-r` resume runs without selection overrides and retains its original profile/account identity by default; do not migrate it. If a different profile/account is required, start a new session and carry forward only the task and verified findings. Users set descriptive `use_for` metadata in the App's profile editor or with `offload profile save --json` (`{"name": "...", "use_for": "..."}`).
 
-## Account pool: choose a profile before dispatch
+## Compatible accounts and authorized fallback
 
-A pool is the set of compatible, configured account profiles, not a shared login.
-Each managed Codex profile has a `codex_account`; choosing `-p <name>` selects that
-account's private home, credentials and sessions. Discover names with
-`offload profiles --json`; never invent profile names or read tokens to select one.
+Each managed Codex profile has a `codex_account`; an explicitly authorized `-p <name>` selects that account's private home, credentials and sessions. Discover names with `offload profiles --json`; never invent profile names or read tokens to select one.
 
 - If the user names a profile/account, use it. If the user authorizes several,
-  choose only among those. Respect an explicit `OFFLOAD_PROFILE` unless pool
-  selection was requested. Preserve requested backend, model, tier and tool
+  choose only among those. Respect an explicit `OFFLOAD_PROFILE`. Preserve
+  requested backend, model, tier and tool
   restrictions; do not silently substitute Claude for Codex or change models.
-- If the user leaves the account unspecified, the supervising agent may randomly
-  choose a compatible managed Codex profile and pass its name with `-p`.
-  Deduplicate candidates by `codex_account`, so aliases/profiles for the same
-  account do not get extra weight. Shuffle candidates once per independent task.
-  If there are no managed candidates, use the configured default normally.
-- This randomness is **agent-side selection**: a bare `offload "task"` still uses
-  `OFFLOAD_PROFILE` or the saved default. The CLI has no automatic pool scheduler.
-  Do not change the saved default merely to dispatch one task.
-- Profiles with `"available": false` (see `unavailable_reason` and `unavailable_at`) failed with an unrecoverable error such as bad credentials, exhausted quota or a missing model. Never pick them at random and never use them as the default; run `offload profile test <name>` to re-test one, which restores it on success. An explicit `-p` still runs the named profile.
+- If the user leaves the account unspecified, omit `-p` and use the active default.
+  Do not proactively distribute work across accounts or rotate profiles.
+- Profiles with `"available": false` (see `unavailable_reason` and `unavailable_at`) failed with an unrecoverable error such as bad credentials, exhausted quota or a missing model. If the active default is unavailable or disabled, report the concrete failure unless the user authorizes a compatible fallback. Do not automatically test, enable, edit, or replace it.
 - Profiles with `"disabled": true` were switched off by the user and also report `"available": false`. Never choose them; every run on one fails, including an explicit `-p` or a resume. Only the user re-enables them (`offload profile enable <name>`), so do not enable, delete or edit profiles on your own.
-- The profile catalog proves configuration, not remaining quota. Exclude accounts
-  already known to be exhausted until their reported reset, and accounts with
-  unresolved authentication errors. Treat an untested account as unknown, not
-  confirmed available; the real task determines availability. Do not send paid
-  quota probes before every dispatch.
-
-For a Codex task without an account preference, this discovery command returns
-one random profile per managed account (filter for the task's requested settings
-before dispatch):
-
-```sh
-offload profiles --json | python3 -c '
-import json, random, sys
-profiles = json.load(sys.stdin)["profiles"]
-random.SystemRandom().shuffle(profiles)
-seen = set()
-for p in profiles:
-    account = p.get("codex_account")
-    if p["backend"] == "codex" and account and p.get("available", True) and account not in seen:
-        seen.add(account)
-        print(p["name"])
-'
-# Choose a compatible candidate from that order, then:
-offload -p <chosen-profile> -json -d /absolute/path "bounded task"
-```
+- The profile catalog proves configuration, not remaining quota. Do not send paid quota probes before every dispatch.
 
 ### Quota and capacity failover
 
@@ -99,11 +68,7 @@ the provider error too. A successful report mentioning limits is not a failure.
 Authentication failures need reauthentication; syntax, permission and task failures
 are not reasons to rotate accounts.
 
-When quota/capacity blocks a task and the user has not restricted it to one account,
-select the next compatible account from the shuffled order. Try each account at
-most once for that task; stop when one succeeds or all candidates are exhausted.
-Remember reported reset times and skip exhausted accounts during the current work.
-Do not assume quota exhaustion means another model on the same account is usable.
+When quota/capacity blocks the active default, report the concrete failure. Retry on a compatible account only when the user has already authorized fallback accounts or explicitly requests one after the failure. Preserve the requested provider/model/tier and try only authorized compatible profiles, at most once each for that task. Do not assume quota exhaustion means another model on the same account is usable.
 
 A different account requires a **new session** with `-p <other-profile>`, not
 `-r <failed-session>`. Carry forward the objective and verified findings. Before
@@ -111,8 +76,7 @@ retrying, inspect the failed run and any partial effects. Read-only tasks can
 usually be retried; for writes or external actions, identify completed effects
 and dispatch only the remaining work. If the outcome is uncertain, report the
 blocker rather than replaying the task. Never rerun a completed external mutation.
-If a single account was explicitly required, report its quota failure and obtain
-an alternative account choice instead of silently switching.
+If fallback was not authorized, obtain an alternative account choice instead of silently switching.
 
 Report attempted profiles, account names, sessions, failure/reset evidence and
 final result. Keep failed attempts in history; do not present a fallback's success

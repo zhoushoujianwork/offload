@@ -6,8 +6,8 @@ brief instead of spawning a native subagent. The worker starts with a clean
 context, so nothing leaks between it and the main conversation, and only its
 final report comes back. The main agent keeps design decisions and final review.
 
-- **Any model per task:** pick a profile by its `use_for` hint, then override the
-  model, reasoning effort or fast mode for one run (`-m`, `-effort`, `-fast`).
+- **Default profile first:** new runs inherit `OFFLOAD_PROFILE` or the configured
+  default; explicit per-run overrides remain available when requested or required.
 - **Two backends:** Codex CLI and Claude Code with Anthropic-compatible gateways.
 - **Named profiles:** a model, provider or managed Codex account, with an optional hint about which tasks it suits.
 - **Persistent sessions:** resume related work and inspect previous reports.
@@ -82,9 +82,9 @@ backup. Only Codex's file credential store is supported (verified with Codex CLI
 0.167.0). Sharing the file does not serialize concurrent network token refreshes;
 avoid refreshing the same account concurrently in multiple clients.
 
-The [agent skill](skills/offload/SKILL.md) explains random account selection and
-bounded failover on quota errors. This selection happens in the supervising
-agent; a CLI call without `-p` still uses the configured default.
+The [agent skill](skills/offload/SKILL.md) tells supervising agents to omit `-p`
+and use the active default. Compatible account fallbacks are used only when the
+user requests or authorizes them; quota errors never trigger silent rotation.
 [Account setup and routing details →](docs/guide.md#managed-codex-accounts)
 
 ## Agent integration

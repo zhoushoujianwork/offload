@@ -394,3 +394,24 @@ func TestSessionReuseWorkflowAgreesAcrossPolicySkillAndGuide(t *testing.T) {
 		t.Error("both modes must carry the shared session reuse policy")
 	}
 }
+
+func TestDefaultProfileFirstGuidanceAcrossModesAndEmbeddedSkill(t *testing.T) {
+	docs := map[string]string{
+		"skill":            string(skills.Offload),
+		"policy-basic":     policyForMode(config.ModeBasic),
+		"policy-proactive": policyForMode(config.ModeProactive),
+	}
+	for name, doc := range docs {
+		doc = strings.ReplaceAll(doc, "`", "")
+		for _, want := range []string{"omit -p", "OFFLOAD_PROFILE", "configured default", "use_for", "descriptive", "explicit user request", "concrete task incompatibility", "verified default failure", "user-authorized compatible fallback", "Never randomly", "never silently change", "unavailable or disabled", "without selection overrides", "original profile/account"} {
+			if !strings.Contains(doc, want) {
+				t.Errorf("%s missing default-first boundary %q", name, want)
+			}
+		}
+		for _, forbidden := range []string{"pick the one whose use_for", "agent-selected random", "may randomly choose", "shuffled order", "independent review means an offload run on another profile"} {
+			if strings.Contains(doc, forbidden) {
+				t.Errorf("%s contains obsolete profile-selection guidance %q", name, forbidden)
+			}
+		}
+	}
+}
