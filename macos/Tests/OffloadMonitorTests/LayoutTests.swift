@@ -34,6 +34,17 @@ final class PaginationTests: XCTestCase {
         XCTAssertEqual(Pagination.rangeLabel(page: 0, total: 9, size: 4), "1–4 of 9")
         XCTAssertEqual(Pagination.rangeLabel(page: 2, total: 9, size: 4), "9–9 of 9")
         XCTAssertEqual(Pagination.rangeLabel(page: 9, total: 9, size: 4), "9–9 of 9")
+        XCTAssertEqual(Pagination.pageLabel(page: 0, total: 9, size: 4), "Page 1 of 3")
+        XCTAssertEqual(Pagination.pageLabel(page: 9, total: 9, size: 4), "Page 3 of 3")
+    }
+
+    func testFourTaskRowsAndFourHistoryRowsFitTheListRegion() {
+        XCTAssertEqual(Layout.taskPageSize, 4)
+        XCTAssertEqual(Layout.rowPageSize, 4)
+        XCTAssertLessThanOrEqual(CGFloat(4) * Layout.taskRow + 3 * 3 + Layout.pager, Layout.list)
+        XCTAssertLessThanOrEqual(CGFloat(4) * Layout.historyRow + 3 * 3 + Layout.pager, Layout.list)
+        XCTAssertEqual(Pagination.slice(Array(1...10), page: 2, size: 4), [9, 10])
+        XCTAssertEqual(Pagination.clamp(2, total: 3, size: 4), 0, "shrinking data clamps to the remaining page")
     }
 }
 

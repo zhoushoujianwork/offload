@@ -46,7 +46,7 @@ type statsOutput struct {
 	Daily    statsDaily    `json:"daily"`
 }
 
-const statsUsage = "usage: offload stats [--json] [--period today|week|month|all] [--caller ID]"
+const statsUsage = "usage: offload stats [--json] [--period today|last7|last30|week|month|all] [--caller ID]"
 
 func cmdStats(args []string, stdout, stderr io.Writer) int {
 	return runStats(args, time.Now(), stdout, stderr)
@@ -59,7 +59,7 @@ func runStats(args []string, now time.Time, stdout, stderr io.Writer) int {
 	var caller callerFlag
 	fs.Var(&caller, "caller", "filter completed-run metrics by caller ID; workload and daily goals remain computer-wide")
 	asJSON := fs.Bool("json", false, "print one JSON document")
-	period := fs.String("period", history.PeriodToday, "today, week (from Monday), month or all")
+	period := fs.String("period", history.PeriodToday, "today, last7, last30, week (from Monday), month or all")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}

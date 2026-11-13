@@ -19,7 +19,15 @@ struct Preferences {
     init(defaults: UserDefaults = .standard) { self.defaults = defaults }
 
     var period: StatsPeriod {
-        get { defaults.string(forKey: Key.period).flatMap(StatsPeriod.init(rawValue:)) ?? .today }
+        get {
+            switch defaults.string(forKey: Key.period) {
+            case "today": return .today
+            case "last30", "month": return .last30
+            case "all": return .all
+            case "last7", "week", nil: return .last7
+            default: return .last7
+            }
+        }
         nonmutating set { defaults.set(newValue.rawValue, forKey: Key.period) }
     }
     /// Default on.

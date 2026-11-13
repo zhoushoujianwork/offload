@@ -65,6 +65,9 @@ final class PanelRenderTests: XCTestCase {
         return [
             State(name: "idle", model: MonitorModel(testingSnapshot: try snapshot(active: []))),
             State(name: "working", model: MonitorModel(testingSnapshot: try snapshot(active: (0..<3).map { task("running", pid: 100 + $0) }))),
+            State(name: "four-long-tasks", model: MonitorModel(testingSnapshot: try snapshot(active: (0..<4).map {
+                task("running", pid: 700 + $0, text: String(repeating: "long task text ", count: 20))
+            }))),
             State(name: "queued", model: MonitorModel(testingSnapshot: try snapshot(active: (0..<2).map { task("queued", pid: 200 + $0) }))),
             State(name: "needs-attention", model: MonitorModel(testingSnapshot: try snapshot(active: [
                 task("running", pid: 300, stalled: true), task("lost", pid: 301), task("unresolved", pid: 302)]))),
@@ -121,7 +124,7 @@ final class PanelRenderTests: XCTestCase {
             try FileManager.default.createDirectory(at: output!, withIntermediateDirectories: true)
         }
         let all = try states()
-        XCTAssertEqual(all.count, 10)
+        XCTAssertEqual(all.count, 11)
         var violations: [String] = []
         for s in all {
             // Natural size: the content is not forced into the fixed height, so overflow shows up as a larger height.

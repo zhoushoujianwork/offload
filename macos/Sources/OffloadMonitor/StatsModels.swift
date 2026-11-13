@@ -11,14 +11,22 @@ enum AppIdentity {
 }
 
 enum StatsPeriod: String, CaseIterable, Identifiable, Codable {
-    case today, week, month, all
+    case today, last7, last30, all
     var id: String { rawValue }
     var label: String {
         switch self {
         case .today: return "Today"
-        case .week: return "Week"
-        case .month: return "Month"
+        case .last7: return "7 Days"
+        case .last30: return "30 Days"
         case .all: return "All"
+        }
+    }
+    var explanation: String {
+        switch self {
+        case .today: return "Today, from local midnight through now."
+        case .last7: return "The last 7 local calendar days, including today."
+        case .last30: return "The last 30 local calendar days, including today."
+        case .all: return "All recorded history."
         }
     }
 }

@@ -178,6 +178,8 @@ func TestPeriodBoundariesAndTimezone(t *testing.T) {
 	now := time.Date(2026, 10, 29, 12, 0, 0, 0, loc) // Thursday
 	cases := []struct{ period, start string }{
 		{PeriodToday, "2026-10-29 00:00:00"},
+		{PeriodLast7, "2026-10-23 00:00:00"},
+		{PeriodLast30, "2026-09-30 00:00:00"},
 		{PeriodWeek, "2026-10-26 00:00:00"}, // Monday
 		{PeriodMonth, "2026-10-01 00:00:00"},
 	}
@@ -221,6 +223,63 @@ func TestPeriodBoundariesAndTimezone(t *testing.T) {
 	}
 	if _, err := Aggregate(nil, "year", now); err == nil {
 		t.Error("invalid period accepted")
+	}
+}
+
+func TestRollingPeriodBoundsDSTMonthYearAndAggregation(t *testing.T) {
+	loc, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		t.Skip("no tz database: ", err)
+	}
+	now := time.Date(2026, 3, 10, 12, 0, 0, 0, loc)
+	start7, err := PeriodStart(PeriodLast7, now)
+	if err != nil || start7.Format(time.RFC3339) != "2026-03-04T00:00:00-05:00" {
+		t.Fatalf("last7 start: %s %v", start7.Format(time.RFC3339), err)
+	}
+	start30, err := PeriodStart(PeriodLast30, now)
+	if err != nil || start30.Format(time.RFC3339) != "2026-02-09T00:00:00-05:00" {
+		t.Fatalf("last30 start: %s %v", start30.Format(time.RFC3339), err)
+	}
+	yearNow := time.Date(2027, 1, 3, 9, 0, 0, 0, loc)
+	if start, _ := PeriodStart(PeriodLast30, yearNow); start.Format(time.RFC3339) != "2026-12-05T00:00:00-05:00" {
+		t.Fatalf("cross-year last30 start: %s", start.Format(time.RFC3339))
+	}
+
+	rs := []Record{
+		{TS: start30.Add(-time.Second).Format(time.RFC3339), Status: "ok", Session: "before30"},
+		{TS: start30.Format(time.RFC3339), Status: "ok", Session: "first30"},
+		{TS: start7.Add(-time.Second).Format(time.RFC3339), Status: "ok", Session: "before"},
+		{TS: start7.Format(time.RFC3339), Status: "ok", Session: "first"},
+		{TS: now.Format(time.RFC3339), Status: "ok", Session: "now"},
+		{TS: now.Add(time.Second).Format(time.RFC3339), Status: "ok", Session: "future"},
+	}
+	st, err := Aggregate(rs, PeriodLast7, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Totals.Runs != 2 || st.Totals.Sessions != 2 || len(st.Trend.Points) != 7 || st.Trend.Label != "Last 7 days" {
+		t.Fatalf("last7 aggregate: totals=%+v trend=%+v", st.Totals, st.Trend)
+	}
+	if st.Trend.Points[0].Start != "2026-03-04T00:00:00-05:00" || st.Trend.Points[4].Start != "2026-03-08T00:00:00-05:00" || st.Trend.Points[5].Start != "2026-03-09T00:00:00-04:00" {
+		t.Fatalf("last7 DST buckets: %+v", st.Trend.Points)
+	}
+	var trendRuns int
+	for _, p := range st.Trend.Points {
+		trendRuns += p.Totals.Runs
+	}
+	if trendRuns != st.Totals.Runs {
+		t.Fatalf("trend runs %d != total runs %d", trendRuns, st.Totals.Runs)
+	}
+	last30, err := Aggregate(rs, PeriodLast30, now)
+	if err != nil || len(last30.Trend.Points) != 30 || last30.Trend.Label != "Last 30 days" || last30.Totals.Runs != 4 {
+		t.Fatalf("last30 trend: %d %q total=%d %v", len(last30.Trend.Points), last30.Trend.Label, last30.Totals.Runs, err)
+	}
+	trendRuns = 0
+	for _, p := range last30.Trend.Points {
+		trendRuns += p.Totals.Runs
+	}
+	if trendRuns != last30.Totals.Runs {
+		t.Fatalf("last30 trend runs %d != total runs %d", trendRuns, last30.Totals.Runs)
 	}
 }
 

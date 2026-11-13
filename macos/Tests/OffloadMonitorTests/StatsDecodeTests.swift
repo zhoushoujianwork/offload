@@ -155,8 +155,8 @@ final class StatsDecodeTests: XCTestCase {
         let ok = StatsClient(executable: try script("cat <<'EOF'\n\(Self.empty)\nEOF"))
         let all = try await ok.fetch(period: .all)
         XCTAssertEqual(all.period, "all")
-        do { _ = try await ok.fetch(period: .week); XCTFail() } catch {
-            XCTAssertEqual(error as? StatsError, .periodMismatch(expected: "week", got: "all"))
+        do { _ = try await ok.fetch(period: .last7); XCTFail() } catch {
+            XCTAssertEqual(error as? StatsError, .periodMismatch(expected: "last7", got: "all"))
         }
         var slow = StatsClient(executable: try script("sleep 30"))
         slow.timeout = 0.5
@@ -170,14 +170,29 @@ final class StatsDecodeTests: XCTestCase {
         let d = UserDefaults(suiteName: suite)!
         defer { d.removePersistentDomain(forName: suite) }
         let p = Preferences(defaults: d)
-        XCTAssertEqual(p.period, .today)
+        XCTAssertEqual(p.period, .last7)
         XCTAssertTrue(p.autoCheck)
         XCTAssertFalse(p.autoInstall)
-        p.period = .month; p.autoCheck = false; p.autoInstall = true
+        p.period = .last30; p.autoCheck = false; p.autoInstall = true
         let q = Preferences(defaults: d)
-        XCTAssertEqual(q.period, .month)
+        XCTAssertEqual(q.period, .last30)
         XCTAssertFalse(q.autoCheck)
         XCTAssertTrue(q.autoInstall)
+    }
+
+    func testPreferencesMigratesLegacyCalendarPeriods() {
+        let suite = "test-\(UUID().uuidString)"
+        let d = UserDefaults(suiteName: suite)!
+        defer { d.removePersistentDomain(forName: suite) }
+        let p = Preferences(defaults: d)
+        d.set("week", forKey: "statsPeriod")
+        XCTAssertEqual(p.period, .last7)
+        d.set("month", forKey: "statsPeriod")
+        XCTAssertEqual(p.period, .last30)
+        d.set("today", forKey: "statsPeriod")
+        XCTAssertEqual(p.period, .today)
+        d.set("all", forKey: "statsPeriod")
+        XCTAssertEqual(p.period, .all)
     }
 
     func testDashboardShownOnFirstLaunchOnly() {

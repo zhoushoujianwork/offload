@@ -152,4 +152,33 @@ final class WorkloadLayoutTests: XCTestCase {
         XCTAssertLessThanOrEqual(host.fittingSize.width, Layout.width)
         XCTAssertLessThan(host.fittingSize.height, 200)
     }
+
+    func testCompactWorkloadStatesFitAndRenderOffscreen() throws {
+        let cases: [(String, String, String)] = [
+            ("huge", WorkloadDecodeTests.workload(processing: "99999", queued: "88888", stalled: "77"),
+             WorkloadDecodeTests.daily(todayCalls: "98765432", peak: "99999", avg: "54321000.0")),
+            ("unknown", WorkloadDecodeTests.workload(processing: "null", queued: "null", status: "unavailable", limit: "null"),
+             WorkloadDecodeTests.daily(todayCalls: "0", peak: "null", peakCov: "unavailable", avg: "null", cov: "unavailable", covered: 0, met: false)),
+            ("partial", WorkloadDecodeTests.workload(status: "partial", stalled: "9", limit: "null"),
+             WorkloadDecodeTests.daily(peak: "12", peakCov: "partial", avg: "4200.4", cov: "partial", covered: 2, met: false)),
+        ]
+        let output = ProcessInfo.processInfo.environment["OFFLOAD_PANEL_RENDER_DIR"].map(URL.init(fileURLWithPath:))
+        if let output { try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true) }
+        for (name, workload, daily) in cases {
+            let snapshot = try StatsDecoder.decode(WorkloadDecodeTests.doc(workload: workload, daily: daily))
+            let host = NSHostingView(rootView: WorkloadPanel(snapshot: snapshot, compact: true)
+                .frame(width: Layout.width - 24).background(Color(nsColor: .windowBackgroundColor)))
+            host.appearance = NSAppearance(named: .aqua)
+            host.layoutSubtreeIfNeeded()
+            XCTAssertLessThanOrEqual(host.fittingSize.width, Layout.width - 24, name)
+            XCTAssertLessThanOrEqual(host.fittingSize.height, 64, "\(name) compact workload needs \(host.fittingSize.height)pt")
+            host.frame = NSRect(origin: .zero, size: host.fittingSize)
+            host.layoutSubtreeIfNeeded()
+            let bitmap = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+            host.cacheDisplay(in: host.bounds, to: bitmap)
+            let data = try XCTUnwrap(bitmap.representation(using: .png, properties: [:]))
+            XCTAssertGreaterThan(data.count, 1000, "\(name) compact render looks empty")
+            if let output { try data.write(to: output.appendingPathComponent("workload-compact-\(name).png")) }
+        }
+    }
 }

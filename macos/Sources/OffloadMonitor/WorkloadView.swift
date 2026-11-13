@@ -4,11 +4,21 @@ import SwiftUI
 /// this view only formats them. Goals are observability targets, not limits or measured capacity.
 struct WorkloadPanel: View {
     let snapshot: StatsSnapshot
+    var compact = false
 
+    @ViewBuilder
     var body: some View {
         let w = snapshot.workload
         let d = snapshot.daily
         let g = snapshot.goals
+        if compact {
+            compactBody(w, d, g)
+        } else {
+            fullBody(w, d, g)
+        }
+    }
+
+    private func fullBody(_ w: Workload?, _ d: Daily?, _ g: WorkloadGoals) -> some View {
         Card(tint: .omTeal) {
             VStack(alignment: .leading, spacing: 3) {
                 HStack(alignment: .top, spacing: 10) {
@@ -40,6 +50,95 @@ struct WorkloadPanel: View {
                     .help(w?.scope ?? "Counts cover this computer's Offload state directory.")
             }
         }
+    }
+
+    private func compactBody(_ w: Workload?, _ d: Daily?, _ g: WorkloadGoals) -> some View {
+        Card(tint: .omTeal) {
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 6) {
+                    compactPrimary(title: "Processing now", value: WorkloadPresentation.processingValue(w), goal: g.processing,
+                                   detail: processingDetail(w, goal: g.processing),
+                                   warn: (w?.stalled ?? 0) > 0 || w?.status == "partial")
+                    compactPrimary(title: "Calls today", value: WorkloadPresentation.callsValue(d), goal: g.dailyCalls,
+                                   detail: callsDetail(d, goal: g.dailyCalls), warn: false)
+                }
+                HStack(spacing: 8) {
+                    compactSecondary(title: "Peak today", value: WorkloadPresentation.peakValue(d),
+                                     detail: peakDetail(d, goal: g.processing), warn: d?.today.peakCoverage == "partial")
+                    compactSecondary(title: "7-day avg", value: WorkloadPresentation.averageValue(d),
+                                     detail: averageDetail(d, goal: g.dailyCalls),
+                                     warn: d != nil && d?.average.coverage != "complete")
+                    compactSecondary(title: "Queued", value: WorkloadPresentation.number(w?.queued),
+                                     detail: queueDetail(w), warn: false)
+                }
+            }
+        }
+    }
+
+    private func compactPrimary(title: String, value: String, goal: Int, detail: String, warn: Bool) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 2) {
+            Text(title).font(.system(size: 9.5)).foregroundStyle(Color.secondary).lineLimit(1).minimumScaleFactor(0.8)
+                .frame(width: 78, alignment: .leading)
+            if warn { warningIcon }
+            Text(value).font(.system(size: 16, weight: .semibold).monospacedDigit()).lineLimit(1).minimumScaleFactor(0.55)
+                .frame(maxWidth: .infinity, alignment: .trailing)
+            Text("/ \(WorkloadPresentation.exact(goal))").font(.system(size: 9).monospacedDigit()).foregroundStyle(Color.secondary)
+                .lineLimit(1).fixedSize(horizontal: true, vertical: false)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .help(detail)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(title)
+        .accessibilityValue("\(value) of \(WorkloadPresentation.exact(goal))")
+        .accessibilityHint(detail)
+    }
+
+    private func compactSecondary(title: String, value: String, detail: String, warn: Bool) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 3) {
+            Text(title).font(.system(size: 9)).foregroundStyle(Color.secondary).lineLimit(1).minimumScaleFactor(0.75)
+            Spacer(minLength: 1)
+            if warn { warningIcon }
+            Text(value).font(.system(size: 10, weight: .semibold).monospacedDigit()).lineLimit(1).minimumScaleFactor(0.55)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .help(detail)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(title)
+        .accessibilityValue(value)
+        .accessibilityHint(detail)
+    }
+
+    private var warningIcon: some View {
+        Image(systemName: "exclamationmark.triangle.fill")
+            .font(.system(size: 8)).foregroundStyle(Color.orange)
+            .accessibilityHidden(true)
+    }
+
+    private func scope(_ w: Workload?) -> String {
+        guard let scope = w?.scope.trimmingCharacters(in: .whitespacesAndNewlines), !scope.isEmpty else {
+            return "Counts cover this computer's Offload state directory."
+        }
+        return scope
+    }
+
+    private func processingDetail(_ w: Workload?, goal: Int) -> String {
+        "\(WorkloadPresentation.processingNote(w)). Goal \(WorkloadPresentation.exact(goal)); goals are targets, not measured capacity. \(scope(w))"
+    }
+
+    private func callsDetail(_ d: Daily?, goal: Int) -> String {
+        "\(WorkloadPresentation.callsNote(d, goal: goal)). Goal \(WorkloadPresentation.exact(goal)); goals are targets, not measured capacity. Counts cover this computer."
+    }
+
+    private func peakDetail(_ d: Daily?, goal: Int) -> String {
+        "\(WorkloadPresentation.peakNote(d)). Processing goal \(WorkloadPresentation.exact(goal)). Counts cover this computer."
+    }
+
+    private func averageDetail(_ d: Daily?, goal: Int) -> String {
+        "\(WorkloadPresentation.averageNote(d)). Daily-calls goal \(WorkloadPresentation.exact(goal)). Counts cover this computer."
+    }
+
+    private func queueDetail(_ w: Workload?) -> String {
+        [WorkloadPresentation.queueLine(w), WorkloadPresentation.admissionLine(w), scope(w)].compactMap { $0 }.joined(separator: ". ")
     }
 
     private func tile(title: String, value: String, goal: Int, note: String, fill: Double, over: Bool, tint: Color, warn: Bool) -> some View {

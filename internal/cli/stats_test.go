@@ -84,6 +84,31 @@ func TestStatsJSONEmptyContract(t *testing.T) {
 	}
 }
 
+func TestStatsRollingPeriodsAndLegacyCalendarPeriods(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	now := time.Date(2026, 10, 29, 12, 0, 0, 0, time.FixedZone("X", 3600))
+	for period, wantLabel := range map[string]string{
+		"last7": "Last 7 days", "last30": "Last 30 days", "week": "This week", "month": "This month",
+	} {
+		code, out, errOut := statsRun(t, now, "--json", "--period", period)
+		if code != 0 {
+			t.Fatalf("%s: code=%d stderr=%q", period, code, errOut)
+		}
+		var got struct {
+			Period string `json:"period"`
+			Trend  struct {
+				Label string `json:"label"`
+			} `json:"trend"`
+		}
+		if err := json.Unmarshal([]byte(out), &got); err != nil {
+			t.Fatal(err)
+		}
+		if got.Period != period || got.Trend.Label != wantLabel {
+			t.Errorf("%s: %+v", period, got)
+		}
+	}
+}
+
 func TestStatsJSONRecordsAndActive(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	// A fixed instant keeps the record inside the period and the idle times deterministic. The

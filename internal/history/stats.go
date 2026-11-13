@@ -10,10 +10,12 @@ import (
 
 // Stats periods accepted by Aggregate.
 const (
-	PeriodToday = "today"
-	PeriodWeek  = "week"
-	PeriodMonth = "month"
-	PeriodAll   = "all"
+	PeriodToday  = "today"
+	PeriodLast7  = "last7"
+	PeriodLast30 = "last30"
+	PeriodWeek   = "week"
+	PeriodMonth  = "month"
+	PeriodAll    = "all"
 )
 
 const (
@@ -131,19 +133,25 @@ type Stats struct {
 // ValidPeriod reports whether p is a period Aggregate accepts.
 func ValidPeriod(p string) bool {
 	switch p {
-	case PeriodToday, PeriodWeek, PeriodMonth, PeriodAll:
+	case PeriodToday, PeriodLast7, PeriodLast30, PeriodWeek, PeriodMonth, PeriodAll:
 		return true
 	}
 	return false
 }
 
-// PeriodStart is the first instant of the period in now's location: the calendar day, the week
-// starting Monday, or the calendar month. For "all" it is the zero time.
+// PeriodStart is the first instant of the period in now's location: the calendar day, the last
+// 7 or 30 calendar days including today, the week starting Monday, or the calendar month. For
+// "all" it is the zero time.
 func PeriodStart(period string, now time.Time) (time.Time, error) {
 	y, m, d := now.Date()
+	today := time.Date(y, m, d, 0, 0, 0, 0, now.Location())
 	switch period {
 	case PeriodToday:
-		return time.Date(y, m, d, 0, 0, 0, 0, now.Location()), nil
+		return today, nil
+	case PeriodLast7:
+		return today.AddDate(0, 0, -6), nil
+	case PeriodLast30:
+		return today.AddDate(0, 0, -29), nil
 	case PeriodWeek:
 		return time.Date(y, m, d-(int(now.Weekday())+6)%7, 0, 0, 0, 0, now.Location()), nil
 	case PeriodMonth:
@@ -151,7 +159,7 @@ func PeriodStart(period string, now time.Time) (time.Time, error) {
 	case PeriodAll:
 		return time.Time{}, nil
 	}
-	return time.Time{}, fmt.Errorf("unknown period %q; use today, week, month or all", period)
+	return time.Time{}, fmt.Errorf("unknown period %q; use today, last7, last30, week, month or all", period)
 }
 
 // ParseTS reads a record timestamp: the local "2006-01-02 15:04:05" layout (interpreted in loc)
@@ -294,6 +302,10 @@ func trendStarts(period string, now time.Time) (interval, label string, starts [
 			starts = append(starts, t)
 		}
 		return
+	case PeriodLast7:
+		label = "Last 7 days"
+	case PeriodLast30:
+		label = "Last 30 days"
 	case PeriodWeek:
 		label = "This week"
 	case PeriodMonth:
@@ -303,6 +315,10 @@ func trendStarts(period string, now time.Time) (interval, label string, starts [
 	}
 	first := today
 	switch period {
+	case PeriodLast7:
+		first = today.AddDate(0, 0, -6)
+	case PeriodLast30:
+		first = today.AddDate(0, 0, -29)
 	case PeriodWeek:
 		first = today.AddDate(0, 0, -((int(now.Weekday()) + 6) % 7))
 	case PeriodMonth:
