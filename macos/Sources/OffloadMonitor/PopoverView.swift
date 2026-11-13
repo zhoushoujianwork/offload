@@ -70,7 +70,8 @@ struct PopoverView: View {
                 PanelAction(symbol: "gearshape", title: "Settings (⌘,)") { AppState.shared.showSettings() }
             }
             HStack(spacing: 12) {
-                PanelSegments("Period", values: StatsPeriod.allCases, selection: $model.period) { $0.label }
+                PanelSegments("Period", values: StatsPeriod.allCases, selection: $model.period,
+                              help: { $0.explanation }) { $0.label }
                 ProfileMenu(profiles: profiles)
             }
         }
@@ -80,7 +81,7 @@ struct PopoverView: View {
 
     @ViewBuilder private var content: some View {
         if let s = model.snapshot {
-            SnapshotView(snapshot: s, callerFilter: $model.callerFilter, callerGroups: model.callerGroups)
+            SnapshotView(snapshot: s, period: model.period, callerFilter: $model.callerFilter, callerGroups: model.callerGroups)
         } else if model.lastError == nil {
             HStack { ProgressView().controlSize(.small); Text("Loading…").font(.caption).foregroundStyle(.secondary) }
                 .frame(maxWidth: .infinity, minHeight: 120)
@@ -156,11 +157,14 @@ struct PanelSegments<Selection: Hashable>: View {
     let values: [Selection]
     @Binding var selection: Selection
     let label: (Selection) -> String
+    let valueHelp: ((Selection) -> String)?
 
-    init(_ title: String, values: [Selection], selection: Binding<Selection>, label: @escaping (Selection) -> String) {
+    init(_ title: String, values: [Selection], selection: Binding<Selection>,
+         help: ((Selection) -> String)? = nil, label: @escaping (Selection) -> String) {
         self.title = title
         self.values = values
         self._selection = selection
+        self.valueHelp = help
         self.label = label
     }
 
@@ -177,6 +181,9 @@ struct PanelSegments<Selection: Hashable>: View {
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+                .help(valueHelp?(value) ?? label(value))
+                .accessibilityLabel(label(value))
+                .accessibilityHint(valueHelp?(value) ?? "")
                 .accessibilityAddTraits(selection == value ? .isSelected : [])
             }
         }
@@ -506,6 +513,7 @@ enum DetailTab: String, CaseIterable, Identifiable {
 
 struct SnapshotView: View {
     let snapshot: StatsSnapshot
+    let period: StatsPeriod
     @Binding var callerFilter: String?
     var callerGroups: [StatsGroup]
     @State private var tab: DetailTab = .tasks
@@ -513,7 +521,7 @@ struct SnapshotView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            WorkloadPanel(snapshot: snapshot)
+            WorkloadPanel(snapshot: snapshot, compact: true)
             HStack {
                 Text(callerFilter == nil ? "All callers" : "Caller: \(callerFilter!)").font(.system(size: 10, weight: .medium)).lineLimit(1)
                 Spacer(minLength: 4)
@@ -531,6 +539,8 @@ struct SnapshotView: View {
                 t == .tasks && !snapshot.active.isEmpty ? "Tasks (\(snapshot.active.count))" : t.rawValue
             }
             .onChange(of: tab) { _ in page = 0 }
+            .onChange(of: period) { _ in page = 0 }
+            .onChange(of: callerFilter) { _ in page = 0 }
             list
             HStack(spacing: 12) {
                 Button { AppState.shared.showDetails() } label: { Label("Token and cost detail", systemImage: "chart.bar.doc.horizontal") }
@@ -591,14 +601,19 @@ struct SnapshotView: View {
                 Spacer(minLength: 0)
                 HStack(spacing: 6) {
                     Text(Pagination.rangeLabel(page: p, total: items.count, size: size)).font(.system(size: 9)).foregroundStyle(.secondary)
+                    Text(Pagination.pageLabel(page: p, total: items.count, size: size)).font(.system(size: 9)).foregroundStyle(.secondary)
                     Spacer()
                     if tab == .history {
                         Button("Browse all") { AppState.shared.browseHistory() }
                             .help("Search and open every conversation")
                     }
                     if pages > 1 {
-                        Button { page = p - 1 } label: { Image(systemName: "chevron.left") }.disabled(p == 0).help("Previous page")
-                        Button { page = p + 1 } label: { Image(systemName: "chevron.right") }.disabled(p >= pages - 1).help("Next page")
+                        Button { page = p - 1 } label: { Image(systemName: "chevron.left") }
+                            .disabled(p == 0).help("Previous page").accessibilityLabel("Previous page")
+                            .accessibilityHint("Shows page \(max(1, p)) of \(pages)")
+                        Button { page = p + 1 } label: { Image(systemName: "chevron.right") }
+                            .disabled(p >= pages - 1).help("Next page").accessibilityLabel("Next page")
+                            .accessibilityHint("Shows page \(min(p + 2, pages)) of \(pages)")
                     }
                 }
                 .buttonStyle(.borderless)
@@ -745,14 +760,14 @@ struct ActiveRow: View {
 
     @ViewBuilder private var row: some View {
         let t = task
-        HStack(spacing: 9) {
+        HStack(spacing: 7) {
             Image(systemName: stateSymbol)
                 .font(.system(size: 15, weight: .medium)).symbolRenderingMode(.hierarchical)
                 .foregroundStyle(stateTint)
-                .frame(width: 28, height: 28)
+                .frame(width: 24, height: 24)
                 .background(stateTint.opacity(0.10), in: RoundedRectangle(cornerRadius: 8))
                 .help(task.stalled ? "No recent progress reported" : "Task state: \(task.phase)")
-            VStack(alignment: .leading, spacing: 2) {
+            VStack(alignment: .leading, spacing: 1) {
                 HStack(spacing: 4) {
                     Text("Caller: \(t.callerName)")
                         .font(.system(size: 9, weight: .semibold))

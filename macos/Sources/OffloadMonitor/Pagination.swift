@@ -25,6 +25,11 @@ enum Pagination {
         let p = clamp(page, total: total, size: size)
         return "\(p * size + 1)–\(min(total, p * size + size)) of \(total)"
     }
+
+    static func pageLabel(page: Int, total: Int, size: Int) -> String {
+        let pages = pageCount(total: total, size: size)
+        return "Page \(clamp(page, total: total, size: size) + 1) of \(pages)"
+    }
 }
 
 /// Fixed panel geometry. The main panel never scrolls, so every region has a set height.
@@ -33,11 +38,11 @@ enum Layout {
     static let height: CGFloat = 720
     static let notice: CGFloat = 36
     static let chart: CGFloat = 48
-    static let list: CGFloat = 132
+    static let list: CGFloat = 206
     static let pager: CGFloat = 20
-    static let taskPageSize = 2
-    static let rowPageSize = 3
-    static let taskRow: CGFloat = 52
+    static let taskPageSize = 4
+    static let rowPageSize = 4
+    static let taskRow: CGFloat = 44
     static let historyRow: CGFloat = 36
     static let groupRow: CGFloat = 30
 }

@@ -215,7 +215,7 @@ final class MonitorPulseTests: XCTestCase {
         let (m, _) = model()
         m.ingest(try snapshot(active: [try task(1)]), at: t0)
         m.period = .all
-        m.period = .week
+        m.period = .last7
         m.ingest(try snapshot(active: [try task(1)]), at: t0.addingTimeInterval(5))
         XCTAssertNil(m.pulse)
     }

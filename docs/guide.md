@@ -316,7 +316,7 @@ offload config               open interactive settings (terminal only)
 offload ls [n]                list the last n runs (default 10)
 offload show <session>        print every report of a session
 offload status                what each worker is doing right now
-offload stats [--json] [--period today|week|month|all]
+offload stats [--json] [--period today|last7|last30|week|month|all]
                               run, token and cost totals for a period (default today)
 offload watch [-t dur]        one line per event (started, progress, STALLED, finished) until all workers end;
                               with -t, stop after dur and exit 124 if workers are still active
@@ -442,6 +442,8 @@ Native clients can use `offload history list --json` and `offload history show -
 offload stats                       # today, local time
 offload stats --period week         # since Monday 00:00
 offload stats --period month        # since the 1st, 00:00
+offload stats --period last7        # last 7 local calendar days, including today
+offload stats --period last30       # last 30 local calendar days, including today
 offload stats --period all          # entire history
 offload stats --json --period week  # one JSON document for tools
 ```
@@ -497,7 +499,9 @@ Plain text adds `processing now`, `queued`, `recorded calls today`, `peak proces
 
 **Peak processing** is the highest overlap of processing spans on a local day. A span runs from admission (the run starts processing, after queue wait) until the worker stops (cleanup, finish or cancellation); a salvage step belongs to the same span, and queue wait, cleanup and unresolved leftovers do not. Spans are half-open `[start, end)`, so a run that ends when another starts does not overlap it, and a span crossing midnight counts on both days. Offload writes the span boundaries with nanosecond timestamps to `processing.jsonl` next to `runs.jsonl`, keyed by `run_id`; live files and UI polling are not used, so short tasks between polls and a restarted app are covered. `peak_coverage` is `full`, `partial` (a lower bound: the log starts mid-day, a run has no recorded end because offload was killed, lines are damaged, or admitted runs have no events because they predate the log) or `unavailable` with `peak_processing` `null`. Days before the first event are never reported as a peak of zero. A run with no recorded end also makes every later day's peak a lower bound (`partial`), since it may have kept processing past midnight. `stats` keeps report bodies in memory only for the newest runs that `recent` can list.
 
-The native panel shows processing now / 100, calls today / 10,000, peak today and the 7-day average at the top, with queued work on its own line. Goal bars saturate, but the number next to them keeps the raw value. This is separate from caller aggregation (`caller_run_id`) and release verification, which are unchanged.
+The native panel offers Today, 7 Days, 30 Days and All. It defaults to 7 Days; saved Week/Month choices map to 7/30 Days, including today in the local time zone. This changes the viewing window without deleting recorded history. CLI `week` and `month` retain their calendar-period meanings.
+
+Each panel list shows up to four entries per page, with the visible range and page count. Changing the period, caller filter or detail tab returns to the first page. A compact two-line overview shows processing now / 100, calls today / 10,000, peak today, the 7-day average and queued work. Warning icons keep stalled or partial coverage visible; help and accessibility descriptions retain coverage, admission, scope and goal explanations. These workload metrics remain computer-wide when filtering callers or periods.
 
 To build and open the menu bar monitor on macOS:
 
