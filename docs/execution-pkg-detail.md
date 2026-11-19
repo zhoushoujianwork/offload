@@ -150,16 +150,20 @@ explicitly in `config.skills.config` for both thread start and resume; arbitrary
 native config-file contents are never forwarded. Unsupported writes, malformed
 responses and state mismatches fail closed without starting or resuming a thread.
 Ambient apps, cloud and bundled Skills, plugins, project instructions and MCP
-configuration are replaced by the explicit request configuration. Images,
-forks, tool-free execution,
+configuration are replaced by the explicit request configuration. Up to four
+validated images are sent inline after the task text, in caller order; optional
+names are separate safely quoted text items. Forks, tool-free execution,
 extraction, restricted reads and tool allowlists remain unsupported on this path.
 
 App-server raw callbacks carry `NativeProtocol="codex-app-server"` and preserve
-the original JSON-RPC method and params. Matching thread/turn completion is the
-only success terminal. Model evidence comes from thread start/resume and native
-reroute notifications; missing model, usage and cost remain unavailable. On
-cancellation Offload first requests `turn/interrupt`, then closes and reaps the
-same owned process group under the normal worker bounds.
+protocol metadata. Returned image data-URL payloads are replaced, before parsing
+or retention, by their digest and byte count; malformed or oversized image-bearing
+frames become bounded omission records. This applies to observers, transcript
+captures, diagnostics and fresh or resumed history results. Matching thread/turn
+completion is the only success terminal. Model evidence comes from thread
+start/resume and native reroute notifications; missing model, usage and cost remain
+unavailable. On cancellation Offload first requests `turn/interrupt`, then closes
+and reaps the same owned process group under the normal worker bounds.
 The initialize request opts into the experimental API required by explicit Skill
 roots. Native app-server responses may omit the optional `jsonrpc` member; an
 explicit version other than `2.0` is rejected.
@@ -167,9 +171,10 @@ Completed agent-message items are authoritative final text when deltas or termin
 turn items are absent. Malformed response envelopes fail before dispatch, and a
 failed turn retains only a bounded single-line provider diagnostic.
 
-For Native calls, callbacks retain complete events up to 32 MiB (bounded image
-envelopes included), including a final unterminated line. Larger events fail
-explicitly. The default 256 KiB callback contract is unchanged for other callers.
+For Native calls, callbacks retain complete events up to 32 MiB (with Codex
+app-server image payloads redacted first), including a final unterminated line.
+Larger events fail explicitly. The default 256 KiB callback contract is unchanged
+for other callers.
 After process exit, idle pipe reads are bounded independently of callback time.
 Native caller-context cancellation freezes and stops the owned descendant tree,
 including native Bash children in separate sessions; it never selects by command

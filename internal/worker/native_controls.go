@@ -49,8 +49,11 @@ func (n *NativeControls) Validate(backend, resume string, toolsDisabled bool) er
 		if toolsDisabled || n.Extraction || n.RestrictedReadOnly || len(n.AllowedTools) > 0 {
 			return errors.New("Codex host controls cannot enforce tool-free execution or native tool allowlists")
 		}
-		if n.SkillDirectory != "" || len(n.Images) > 0 || n.ForkFromSessionID != "" {
-			return errors.New("Codex host controls do not yet support plugin Skills, images or forks")
+		if n.SkillDirectory != "" || n.ForkFromSessionID != "" {
+			return errors.New("Codex host controls do not yet support plugin Skills or forks")
+		}
+		if len(n.Images) > 0 && !n.CodexAppServer {
+			return errors.New("Codex image input requires the app-server protocol")
 		}
 		if n.PermissionMode != "bypassPermissions" {
 			return errors.New("Codex host controls require explicit owner bypassPermissions")

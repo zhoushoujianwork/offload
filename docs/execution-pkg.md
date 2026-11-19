@@ -69,9 +69,10 @@ a normalized or complete UI transcript.
 
 Optional `Request.Native` controls let an embedding Host preserve Claude session
 IDs/forks, exact MCP and Skills mounts, permissions, structured extraction and
-image input through the same worker. `CallerContext` keeps caller-supplied
-instructions and task separate from Offload's delegation role. Set `Caller` and
-`CallerRunID` on business and internal requests so history keeps attribution.
+image input through the same worker. Codex image input requires its explicit
+app-server mode; legacy Codex execution still rejects it. `CallerContext` keeps
+caller-supplied instructions and task separate from Offload's delegation role.
+Set `Caller` and `CallerRunID` on business and internal requests so history keeps attribution.
 Unsupported backend controls fail before launch; ordinary Codex requests remain
 supported. This adds no Host policy, message routing or automatic session adoption.
 

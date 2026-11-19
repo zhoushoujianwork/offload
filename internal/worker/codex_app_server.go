@@ -1,6 +1,7 @@
 package worker
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -17,6 +18,8 @@ import (
 )
 
 const codexAppServerProtocol = "codex-app-server"
+
+const codexAppServerMaxFrame = 32 << 20
 
 type appServerMessage struct {
 	JSONRPC string          `json:"jsonrpc"`
@@ -227,7 +230,7 @@ func (p *appServerParser) write(v any) error {
 	if err != nil {
 		return err
 	}
-	if len(b) > maxLineKept {
+	if len(b) > codexAppServerMaxFrame {
 		return errors.New("Codex app-server request exceeds frame limit")
 	}
 	b = append(b, '\n')
@@ -304,7 +307,7 @@ func (p *appServerParser) initialize() error {
 	p.threadID, p.s.Session = thread.Thread.ID, thread.Thread.ID
 	p.s.ObservedModel = firstNonEmpty(thread.Model, thread.Thread.Model)
 	p.mu.Unlock()
-	turn := map[string]any{"threadId": thread.Thread.ID, "input": []any{map[string]any{"type": "text", "text": p.o.Task}}, "cwd": p.o.Dir, "runtimeWorkspaceRoots": roots}
+	turn := appServerTurnParams(p.o, thread.Thread.ID, roots)
 	if p.o.Native.JSONSchema != "" {
 		var schema any
 		_ = json.Unmarshal([]byte(p.o.Native.JSONSchema), &schema)
@@ -326,6 +329,18 @@ func (p *appServerParser) initialize() error {
 	p.turnID = started.Turn.ID
 	p.mu.Unlock()
 	return nil
+}
+
+func appServerTurnParams(o Opts, threadID string, roots []string) map[string]any {
+	input := []any{map[string]any{"type": "text", "text": o.Task}}
+	for _, image := range o.Native.Images {
+		if image.Name != "" {
+			name, _ := json.Marshal(image.Name)
+			input = append(input, map[string]any{"type": "text", "text": "Image name: " + string(name)})
+		}
+		input = append(input, map[string]any{"type": "image", "url": "data:" + image.MediaType + ";base64," + base64.StdEncoding.EncodeToString(image.Data)})
+	}
+	return map[string]any{"threadId": threadID, "input": input, "cwd": o.Dir, "runtimeWorkspaceRoots": roots}
 }
 
 func (p *appServerParser) initializeExactSkills() error {

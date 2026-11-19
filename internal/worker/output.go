@@ -56,12 +56,13 @@ type activityWriter struct {
 	mu              sync.Mutex
 	lineMu          sync.Mutex // keeps onLine calls in stream order without holding mu during the callback
 	parser          eventParser
-	onLine          func([]byte) error // optional; sees each complete line of at most maxCallbackLine bytes
-	tap             lineTap            // optional; sees every complete line kept, and notes of what was not kept
-	lines           [][]byte           // lines completed by the current Write, delivered after mu is released
-	pending         []byte             // bytes of the current, unfinished line
-	skipping        bool               // inside a line longer than maxLineKept; discard up to its newline
-	skippedN        int                // bytes of that line seen so far
+	lineFilter      func([]byte) []byte // optional; sanitizes complete lines before every retained or external use
+	onLine          func([]byte) error  // optional; sees each complete line of at most maxCallbackLine bytes
+	tap             lineTap             // optional; sees every complete line kept, and notes of what was not kept
+	lines           [][]byte            // lines completed by the current Write, delivered after mu is released
+	pending         []byte              // bytes of the current, unfinished line
+	skipping        bool                // inside a line longer than maxLineKept; discard up to its newline
+	skippedN        int                 // bytes of that line seen so far
 	raw             []byte
 	rawCapped       bool
 	last            atomic.Int64 // 相对 activityEpoch 的单调时钟纳秒数
@@ -69,6 +70,9 @@ type activityWriter struct {
 
 func newActivityWriter(p eventParser) *activityWriter {
 	w := &activityWriter{parser: p, callbackLimit: maxCallbackLine, lineLimit: maxLineKept}
+	if _, ok := p.(*appServerParser); ok {
+		w.lineFilter = sanitizeCodexAppServerLine
+	}
 	w.last.Store(time.Since(activityEpoch).Nanoseconds())
 	return w
 }
@@ -95,11 +99,13 @@ func (w *activityWriter) Write(p []byte) (int, error) {
 }
 
 func (w *activityWriter) write(p []byte) {
-	if room := maxRawKept - len(w.raw); room > 0 {
-		w.raw = append(w.raw, p[:min(room, len(p))]...)
-	}
-	if len(w.raw) >= maxRawKept {
-		w.rawCapped = true
+	if w.lineFilter == nil {
+		if room := maxRawKept - len(w.raw); room > 0 {
+			w.raw = append(w.raw, p[:min(room, len(p))]...)
+		}
+		if len(w.raw) >= maxRawKept {
+			w.rawCapped = true
+		}
 	}
 	for data := p; len(data) > 0; {
 		i := bytes.IndexByte(data, '\n')
@@ -134,28 +140,20 @@ func (w *activityWriter) addPending(b []byte) {
 }
 
 func (w *activityWriter) endLine(emit bool) {
-	if w.skipping && w.tap != nil {
-		w.tap.Skipped("line_too_large", w.skippedN)
+	if w.skipping {
+		if w.tap != nil {
+			w.tap.Skipped("line_too_large", w.skippedN)
+		}
+		if w.lineFilter != nil {
+			w.deliverLine(imageOmissionFrame("line_too_large", w.skippedN), emit)
+		}
 	}
 	if !w.skipping {
 		if line := bytes.TrimSpace(w.pending); len(line) > 0 {
-			if w.parser != nil {
-				w.parser.feed(line)
+			if w.lineFilter != nil {
+				line = w.lineFilter(line)
 			}
-			if w.tap != nil {
-				if emit || json.Valid(line) {
-					w.tap.Line(line)
-				} else {
-					w.tap.Skipped("unterminated_final_line", len(line))
-				}
-			}
-			limit := w.callbackLimit
-			if limit == 0 {
-				limit = maxCallbackLine
-			}
-			if emit && w.onLine != nil && len(line) <= limit {
-				w.lines = append(w.lines, bytes.Clone(line))
-			}
+			w.deliverLine(line, emit)
 		}
 	}
 	w.skipping, w.skippedN = false, 0
@@ -166,12 +164,55 @@ func (w *activityWriter) endLine(emit bool) {
 	}
 }
 
+func (w *activityWriter) deliverLine(line []byte, emit bool) {
+	if w.lineFilter != nil {
+		w.appendRawLine(line, emit)
+	}
+	if w.parser != nil {
+		w.parser.feed(line)
+	}
+	if w.tap != nil {
+		if emit || json.Valid(line) {
+			w.tap.Line(line)
+		} else {
+			w.tap.Skipped("unterminated_final_line", len(line))
+		}
+	}
+	limit := w.callbackLimit
+	if limit == 0 {
+		limit = maxCallbackLine
+	}
+	if emit && w.onLine != nil && len(line) <= limit {
+		w.lines = append(w.lines, bytes.Clone(line))
+	}
+}
+
+func (w *activityWriter) appendRawLine(line []byte, newline bool) {
+	wanted := len(line)
+	if newline {
+		wanted++
+	}
+	room := maxRawKept - len(w.raw)
+	if wanted > room {
+		w.rawCapped = true
+	}
+	if room > 0 {
+		kept := min(room, len(line))
+		w.raw = append(w.raw, line[:kept]...)
+		room -= kept
+		if kept == len(line) && newline && room > 0 {
+			w.raw = append(w.raw, '\n')
+			room--
+		}
+	}
+}
+
 // finish parses a final line that had no trailing newline. Call it once the worker has exited.
 func (w *activityWriter) finish() error {
 	w.lineMu.Lock()
 	defer w.lineMu.Unlock()
 	w.mu.Lock()
-	if len(w.pending) > 0 {
+	if len(w.pending) > 0 || w.lineFilter != nil && w.skipping {
 		w.endLine(w.callbackTail)
 	}
 	lines := w.lines
