@@ -57,9 +57,6 @@ func TestCodexAppServerControlsRemainExplicit(t *testing.T) {
 	for _, mutate := range []func(*NativeControls){
 		func(v *NativeControls) { v.CallerContext = false },
 		func(v *NativeControls) { v.PermissionMode = "default" },
-		func(v *NativeControls) {
-			v.Images = []NativeImage{{Name: "x", MediaType: "image/png", Data: []byte("x")}}
-		},
 		func(v *NativeControls) { v.ForkFromSessionID = "fork" },
 		func(v *NativeControls) { v.AllowedTools = []string{"Read"} },
 	} {
@@ -68,6 +65,17 @@ func TestCodexAppServerControlsRemainExplicit(t *testing.T) {
 		if copy.Validate("codex", "", false) == nil {
 			t.Fatal("unsupported app-server control accepted")
 		}
+	}
+	withImage := *n
+	withImage.Images = []NativeImage{{Name: "x", MediaType: "image/png", Data: []byte("x")}}
+	if err := withImage.Validate("codex", "", false); err != nil {
+		t.Fatalf("app-server image rejected: %v", err)
+	}
+	legacy := withImage
+	legacy.CodexAppServer = false
+	legacy.SkillRoots, legacy.JSONSchema = nil, ""
+	if err := legacy.Validate("codex", "", false); err == nil || !strings.Contains(err.Error(), "app-server") {
+		t.Fatalf("legacy Codex image accepted: %v", err)
 	}
 }
 
