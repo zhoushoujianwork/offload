@@ -136,11 +136,12 @@ enum ProfileDraftError: LocalizedError, Equatable {
 
 struct ProfileDraft: Equatable {
     enum Credential: String, CaseIterable, Identifiable {
-        case keep, none, token, tokenCmd
+        case keep, native, none, token, tokenCmd
         var id: String { rawValue }
         var label: String {
             switch self {
             case .keep: return "Keep saved"
+            case .native: return "Claude sign-in"
             case .none: return "None"
             case .token: return "API token"
             case .tokenCmd: return "Token command"
@@ -149,6 +150,7 @@ struct ProfileDraft: Equatable {
         var authMode: String {
             switch self {
             case .keep: return "preserve"
+            case .native: return "native"
             case .none: return "none"
             case .token: return "token"
             case .tokenCmd: return "token_cmd"
@@ -225,7 +227,7 @@ struct ProfileDraft: Equatable {
         reasoning = e.reasoningEffort
         tier = e.serviceTier
         codexAccount = e.codexAccount ?? ""
-        credential = e.authMode == "none" ? .token : .keep
+        credential = e.authMode == "native" ? .native : (e.authMode == "none" ? .token : .keep)
     }
 
     var baseURLHidden: Bool { original?.baseUrlRedacted == true }
@@ -233,8 +235,9 @@ struct ProfileDraft: Equatable {
     /// The credential choices the backend accepts. A Claude profile needs a token or a token command. Keeping the
     /// saved credential is offered only when the profile has one (a profile switched from Codex has none).
     var credentialChoices: [Credential] {
-        guard let o = original, o.authMode != "none" else { return [.token, .tokenCmd] }
-        return [.keep, .token, .tokenCmd]
+        guard let o = original, o.authMode != "none" else { return [.native, .token, .tokenCmd] }
+        if o.authMode == "native" { return [.native, .token, .tokenCmd] }
+        return [.keep, .native, .token, .tokenCmd]
     }
 
     static func validName(_ n: String) -> Bool {
@@ -284,16 +287,21 @@ struct ProfileDraft: Equatable {
         guard !model.isEmpty else { throw ProfileDraftError.modelRequired }
         if isNew || model != (o?.model ?? "") { r.model = model }
 
-        if baseURLHidden && !replaceBaseURL {
-            // Withheld by the CLI: keep the stored value, send nothing.
-        } else {
-            guard !url.isEmpty else { throw ProfileDraftError.urlRequired }
-            guard Self.validURL(url) else { throw ProfileDraftError.urlInvalid }
-            if isNew || replaceBaseURL || url != (o?.baseUrl ?? "") { r.baseUrl = url }
+        if credential != .native && credential != .none {
+            if baseURLHidden && !replaceBaseURL {
+                // Withheld by the CLI: keep the stored value, send nothing.
+            } else {
+                guard !url.isEmpty else { throw ProfileDraftError.urlRequired }
+                guard Self.validURL(url) else { throw ProfileDraftError.urlInvalid }
+                if isNew || replaceBaseURL || url != (o?.baseUrl ?? "") { r.baseUrl = url }
+            }
+            if isNew ? !endpoint.isEmpty : endpoint != (o?.endpoint ?? "") { r.endpoint = endpoint }
         }
-        if isNew ? !endpoint.isEmpty : endpoint != (o?.endpoint ?? "") { r.endpoint = endpoint }
 
         switch credential {
+        case .native:
+            if isNew || o?.authMode != "native" { r.authMode = "native" }
+            if let o, !o.endpoint.isEmpty { r.endpoint = "" }
         case .keep:
             guard !isNew, o?.authMode != "none" else { throw ProfileDraftError.secretRequired("API token or token command") }
             r.authMode = "preserve"

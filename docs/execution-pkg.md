@@ -15,7 +15,9 @@ events, cancellation, timeout and process cleanup. Execution completion never
 implies business acceptance or memory publication.
 
 Configuration is explicit: construct a client with a resolved profile, or load a
-named profile from an explicit absolute configuration path. A request supplies
+named profile from an explicit absolute configuration path. A Claude profile with
+`AuthMode: "native"` uses the installed Claude Code's official login and needs no
+`BaseURL`, `Token` or `TokenCmd`; an empty `AuthMode` is the gateway mode. A request supplies
 the task, working directory, internal instructions and optional native session.
 The caller cancels through its context; the package installs no process-wide
 signal handlers and does not change cwd or environment.

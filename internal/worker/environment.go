@@ -127,6 +127,9 @@ func (o *Opts) prepareEnvironment(sourceHome string) (func() error, error) {
 	if o.EnvironmentDirectory == "" {
 		return func() error { return nil }, nil
 	}
+	if o.Profile.UsesNativeAuth() {
+		return nil, errors.New("a native-auth Claude profile cannot be combined with an isolated environment: the environment replaces the home that holds the official login")
+	}
 	root := o.EnvironmentDirectory
 	if err := environmentDirectory(root); err != nil {
 		return nil, err

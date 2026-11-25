@@ -6,9 +6,11 @@ brief instead of spawning a native subagent. The worker starts with a clean
 context, so nothing leaks between it and the main conversation, and only its
 final report comes back. The main agent keeps design decisions and final review.
 
-- **Default profile first:** new runs inherit `OFFLOAD_PROFILE` or the configured
-  default; explicit per-run overrides remain available when requested or required.
-- **Two backends:** Codex CLI and Claude Code with Anthropic-compatible gateways.
+- **Default profile first:** new runs inherit `OFFLOAD_PROFILE`, the default for an
+  explicit `--caller`, or the configured default; explicit per-run overrides remain
+  available when requested or required.
+- **Two backends:** Codex CLI and Claude Code, through Anthropic-compatible gateways
+  or Claude Code's own official login (`"auth_mode": "native"`).
 - **Named profiles:** a model, provider or managed Codex account, with an optional hint about which tasks it suits.
 - **Persistent sessions:** resume related work and inspect previous reports.
 - **macOS dashboard:** track tasks, switch profiles and manage accounts.
@@ -51,8 +53,9 @@ offload stats                            # usage and estimated costs
 ```
 
 `-p` selects a profile for one task; `offload default <name>` changes the saved
-default. `OFFLOAD_PROFILE` overrides that default. Resumes retain their recorded
-account. Costs are estimates when available, not billing records.
+default. `OFFLOAD_PROFILE` overrides that default. `offload default --caller <id>
+<name>` sets a profile for runs that pass `--caller <id>`, a routing convenience and
+not access control. Resumes retain their recorded profile and account. Costs are estimates when available, not billing records.
 
 **Execution scope:** default-policy Codex workers bypass approvals and sandboxing.
 `-w` communicates write intent; it does not enforce a filesystem boundary. Give

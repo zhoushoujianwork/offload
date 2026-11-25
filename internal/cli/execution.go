@@ -57,6 +57,6 @@ func publicExecutionConfig(o worker.Opts) execution.Config {
 	return execution.Config{ProfileName: o.ProfileName,
 		Profile: execution.Profile{Backend: p.Backend, BaseURL: p.BaseURL, Model: p.Model,
 			ReasoningEffort: p.ReasoningEffort, ServiceTier: p.ServiceTier, CodexAccount: p.CodexAccount,
-			IdleTimeout: p.IdleTimeout, Endpoint: p.Endpoint, TokenCmd: p.TokenCmd, Token: p.Token},
+			IdleTimeout: p.IdleTimeout, Endpoint: p.Endpoint, AuthMode: p.AuthMode, TokenCmd: p.TokenCmd, Token: p.Token},
 		Limits: execution.Limits{MaxWorkers: limit, GoMaxProcs: o.Limits.GoMaxProcs, GoParallelism: o.Limits.GoParallelism}}
 }

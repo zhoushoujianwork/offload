@@ -28,6 +28,9 @@ type Profile struct {
 	ServiceTier     string   `json:"service_tier,omitempty"`
 	// Endpoint is the gateway kind: "cc" (Claude Code proxy) or "llm" (generic LLM gateway); claude backend only, informational.
 	Endpoint string `json:"endpoint,omitempty"`
+	// AuthMode is empty for a gateway profile (base_url plus token or token_cmd) or "native" for a
+	// Claude profile that uses the installed Claude Code's own official login. Claude backend only.
+	AuthMode string `json:"auth_mode,omitempty"`
 	// Unavailable is set when a run or test found an unrecoverable failure.
 	Unavailable *Unavailable `json:"unavailable,omitempty"`
 	// TokenCmd prints the token on stdout (e.g. `security find-generic-password -s offload-minimax -w`).
@@ -44,6 +47,10 @@ type Config struct {
 	DelegationMode string `json:"delegation_mode,omitempty"`
 	// Limits caps concurrent workers and sets build defaults for their child processes.
 	Limits Limits `json:"limits,omitempty"`
+	// CallerDefaults maps a --caller ID to the profile its new runs use when neither -p nor
+	// OFFLOAD_PROFILE is set. Values are canonical profile names. It selects a profile; it is not
+	// authentication or access control.
+	CallerDefaults map[string]string `json:"caller_defaults,omitempty"`
 }
 
 // Gateway kinds accepted in Profile.Endpoint.
@@ -106,6 +113,9 @@ func Load(path string) (*Config, error) {
 	if err := c.ValidateAliases(); err != nil {
 		return nil, fmt.Errorf("parse %s: %w", path, err)
 	}
+	if err := c.ValidateCallerDefaults(); err != nil {
+		return nil, fmt.Errorf("parse %s: %w", path, err)
+	}
 	return &c, nil
 }
 
@@ -138,7 +148,10 @@ func (c *Config) resolveNamed(name string) (string, Profile, error) {
 	if p.BackendName() != "claude" && p.BackendName() != "codex" {
 		return name, p, fmt.Errorf("profile %q has unknown backend %q", name, p.Backend)
 	}
-	if p.BackendName() == "claude" && (p.BaseURL == "" || p.Model == "") {
+	if err := p.ValidateAuthMode(); err != nil {
+		return name, p, fmt.Errorf("profile %q: %w", name, err)
+	}
+	if p.BackendName() == "claude" && !p.UsesNativeAuth() && (p.BaseURL == "" || p.Model == "") {
 		return name, p, fmt.Errorf("profile %q needs base_url and model", name)
 	}
 	if err := p.ValidateCodexSettings(); err != nil {
@@ -157,6 +170,37 @@ func (c *Config) resolveNamed(name string) (string, Profile, error) {
 // lists. Claude forwards them to the CLI; Codex has no equivalent control.
 func (p Profile) SupportsToolRestrictions() bool {
 	return p.BackendName() != "codex"
+}
+
+// AuthModeNative marks a Claude profile that uses the installed Claude Code's official login.
+const AuthModeNative = "native"
+
+// UsesNativeAuth reports whether the profile runs Claude with its own official login instead of a
+// gateway. It is true only for a Claude profile with auth_mode "native".
+func (p Profile) UsesNativeAuth() bool {
+	return p.AuthMode == AuthModeNative && p.BackendName() == "claude"
+}
+
+// ValidateAuthMode checks the persisted auth_mode. Native profiles are Claude-only, need a model and
+// carry no gateway settings, because the worker neither sets nor reads them.
+func (p Profile) ValidateAuthMode() error {
+	switch p.AuthMode {
+	case "":
+		return nil
+	case AuthModeNative:
+	default:
+		return fmt.Errorf("unknown profile auth_mode (want native or unset)")
+	}
+	if p.BackendName() != "claude" {
+		return fmt.Errorf("auth_mode applies only to claude profiles")
+	}
+	if strings.TrimSpace(p.Model) == "" {
+		return fmt.Errorf("model is required")
+	}
+	if p.BaseURL != "" || p.Token != "" || p.TokenCmd != "" || p.Endpoint != "" {
+		return fmt.Errorf("native auth cannot be combined with base_url, token, token_cmd or endpoint")
+	}
+	return nil
 }
 
 func (p Profile) BackendName() string {

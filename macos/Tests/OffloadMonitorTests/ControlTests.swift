@@ -147,6 +147,15 @@ final class ProfileDraftTests: XCTestCase {
         XCTAssertNil(j["service_tier"], "Claude omits the new Codex Fast default")
     }
 
+    func testNewNativeClaudeSonnetProfileRequest() throws {
+        var d = ProfileDraft.new()
+        d.name = "claude-sonnet"; d.model = "sonnet"; d.credential = .native
+        let j = try json(d.request(existingNames: []))
+        XCTAssertEqual(j["auth_mode"] as? String, "native")
+        XCTAssertEqual(j["model"] as? String, "sonnet")
+        XCTAssertNil(j["base_url"]); XCTAssertNil(j["secret"]); XCTAssertNil(j["endpoint"])
+    }
+
     func testNewProfileValidation() {
         var d = ProfileDraft.new()
         XCTAssertThrowsError(try d.request(existingNames: [])) { XCTAssertEqual($0 as? ProfileDraftError, .nameRequired) }
@@ -280,9 +289,9 @@ final class ProfileDraftTests: XCTestCase {
     }
 
     func testCredentialChoicesForNewAndExisting() throws {
-        XCTAssertEqual(ProfileDraft.new().credentialChoices, [.token, .tokenCmd], "a new Claude profile cannot choose no credential")
+        XCTAssertEqual(ProfileDraft.new().credentialChoices, [.native, .token, .tokenCmd])
         XCTAssertEqual(ProfileDraft.new().credential, .token)
-        XCTAssertEqual(ProfileDraft(editing: try entry()).credentialChoices, [.keep, .token, .tokenCmd])
+        XCTAssertEqual(ProfileDraft(editing: try entry()).credentialChoices, [.keep, .native, .token, .tokenCmd])
         XCTAssertEqual(ProfileDraft(editing: try entry()).credential, .keep)
     }
 
@@ -299,7 +308,7 @@ final class ProfileDraftTests: XCTestCase {
     func testClaudeEditedFromCodexMustSupplyCredential() throws {
         let codex = try entry(backend: "codex", auth: "none")
         var d = ProfileDraft(editing: codex)
-        XCTAssertEqual(d.credentialChoices, [.token, .tokenCmd])
+        XCTAssertEqual(d.credentialChoices, [.native, .token, .tokenCmd])
         XCTAssertEqual(d.credential, .token)
         d.backend = "claude"; d.model = "m"; d.baseURL = "https://x.example"
         XCTAssertThrowsError(try d.request(existingNames: ["work"]))

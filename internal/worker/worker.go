@@ -140,7 +140,7 @@ var SalvageTimeout = 4 * time.Minute
 func buildArgs(o Opts, promptPath string) []string {
 	if o.Native != nil {
 		args := hostClaudeArgs(o, promptPath)
-		if o.EnvironmentDirectory != "" {
+		if o.EnvironmentDirectory != "" && !o.Profile.UsesNativeAuth() {
 			args = append(args, "--bare")
 		}
 		return args
@@ -149,6 +149,11 @@ func buildArgs(o Opts, promptPath string) []string {
 	// --bare still loads settings; disable user/project/local sources so their env cannot
 	// override the selected profile's gateway, credentials or model.
 	args := []string{"-p", "--bare", "--setting-sources", "", "--output-format", "stream-json", "--verbose"}
+	if o.Profile.UsesNativeAuth() {
+		// --bare never reads OAuth or the keychain, so a native profile omits it. Settings sources stay
+		// disabled, and the model travels in argv because no ANTHROPIC_MODEL is set.
+		args = []string{"-p", "--setting-sources", "", "--output-format", "stream-json", "--verbose", "--model", o.Model}
+	}
 	if o.Resume != "" {
 		args = append(args, "--resume", o.Resume)
 	}
@@ -260,7 +265,8 @@ func writeWorkerPrompt(o Opts) (string, error) {
 
 // childEnv makes the profile the worker's only gateway: every caller ANTHROPIC_* variable is
 // dropped, then exactly base URL, token and model are set. buildArgs disables settings sources
-// so user/project/local settings cannot override these.
+// so user/project/local settings cannot override these. A native-auth profile drops the same
+// variables but sets none, so the installed Claude Code uses its own official login.
 func childEnv(base []string, o Opts, token string) []string {
 	env := make([]string, 0, len(base)+3)
 	for _, kv := range base {
@@ -279,6 +285,15 @@ func childEnv(base []string, o Opts, token string) []string {
 		for k, v := range o.Native.StreamEnvironment {
 			env = append(env, k+"="+v)
 		}
+	}
+	if o.Profile.UsesNativeAuth() {
+		// Without --bare the worker would otherwise write auto-memory into the user's Claude home.
+		for _, kv := range env {
+			if kv == "CLAUDE_CODE_DISABLE_AUTO_MEMORY=1" {
+				return env
+			}
+		}
+		return append(env, "CLAUDE_CODE_DISABLE_AUTO_MEMORY=1")
 	}
 	return append(env, "ANTHROPIC_BASE_URL="+o.Profile.BaseURL, "ANTHROPIC_AUTH_TOKEN="+token, "ANTHROPIC_MODEL="+o.Model)
 }
@@ -475,12 +490,14 @@ func Run(ctx context.Context, o Opts) (rec history.Record, err error) {
 			return rec, fmt.Errorf("codex CLI not found: %w", err)
 		}
 	} else {
-		token, err = o.Profile.ResolveTokenContext(ctx)
-		if err != nil {
-			return rec, err
-		}
-		if o.Transcript != nil {
-			o.Transcript.AddSecrets(token, o.Profile.Token)
+		if !o.Profile.UsesNativeAuth() {
+			token, err = o.Profile.ResolveTokenContext(ctx)
+			if err != nil {
+				return rec, err
+			}
+			if o.Transcript != nil {
+				o.Transcript.AddSecrets(token, o.Profile.Token)
+			}
 		}
 		rec.ErrorKind = "launch"
 		if o.Native != nil && o.Native.Executable != "" {
@@ -491,8 +508,10 @@ func Run(ctx context.Context, o Opts) (rec history.Record, err error) {
 		if err != nil {
 			return rec, fmt.Errorf("claude CLI not found: %w", err)
 		}
-		if err := Preflight(o.Profile.BaseURL); err != nil {
-			return rec, err
+		if !o.Profile.UsesNativeAuth() {
+			if err := Preflight(o.Profile.BaseURL); err != nil {
+				return rec, err
+			}
 		}
 	}
 	rec.ErrorKind = "launch"

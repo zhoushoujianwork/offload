@@ -21,7 +21,7 @@ type ProfileInfo struct {
 	// fragment; BaseURLRedacted then reports that a value was withheld.
 	BaseURL         string
 	BaseURLRedacted bool
-	// AuthMode is "token", "token_cmd" or "none".
+	// AuthMode is "token", "token_cmd", "native" (the installed Claude Code's official login) or "none".
 	AuthMode string
 	// ToolRestrictions reports whether the backend enforces tool restrictions.
 	ToolRestrictions bool
@@ -96,6 +96,8 @@ func SetDefaultProfile(path, name string) error {
 
 func profileAuthMode(p config.Profile) string {
 	switch {
+	case p.UsesNativeAuth():
+		return "native"
 	case p.TokenCmd != "":
 		return "token_cmd"
 	case p.Token != "":

@@ -29,8 +29,13 @@ type Profile struct {
 	Disabled                                              bool
 	Backend, BaseURL, Model, ReasoningEffort, ServiceTier string
 	CodexAccount, IdleTimeout, Endpoint                   string
-	TokenCmd                                              string `json:"-"`
-	Token                                                 string `json:"-"`
+	// AuthMode is empty for a gateway Claude profile (BaseURL plus Token or TokenCmd) or "native" for a
+	// Claude profile that uses the installed Claude Code's own official login. A native profile has no
+	// BaseURL, Token, TokenCmd or Endpoint and needs a Model. Empty is omitted from ProfileFingerprint,
+	// so existing gateway and Codex fingerprints are unchanged.
+	AuthMode string `json:",omitempty"`
+	TokenCmd string `json:"-"`
+	Token    string `json:"-"`
 }
 
 // Limits sets shared admission and child build defaults, not OS containment.
@@ -182,7 +187,7 @@ var activeRuns sync.Map
 func internalProfile(p Profile) config.Profile {
 	return config.Profile{Disabled: p.Disabled, Backend: p.Backend, BaseURL: p.BaseURL, Model: p.Model,
 		ReasoningEffort: p.ReasoningEffort, ServiceTier: p.ServiceTier, CodexAccount: p.CodexAccount,
-		IdleTimeout: p.IdleTimeout, Endpoint: p.Endpoint, TokenCmd: p.TokenCmd, Token: p.Token}
+		IdleTimeout: p.IdleTimeout, Endpoint: p.Endpoint, AuthMode: p.AuthMode, TokenCmd: p.TokenCmd, Token: p.Token}
 }
 
 // New validates explicit configuration; it starts no process and loads no
@@ -216,7 +221,7 @@ func LoadConfig(path, name string) (Config, error) {
 	}
 	return Config{ProfileName: canonical, Profile: Profile{Disabled: p.Disabled, Backend: p.Backend, BaseURL: p.BaseURL,
 		Model: p.Model, ReasoningEffort: p.ReasoningEffort, ServiceTier: p.ServiceTier,
-		CodexAccount: p.CodexAccount, IdleTimeout: p.IdleTimeout, Endpoint: p.Endpoint, TokenCmd: p.TokenCmd, Token: p.Token},
+		CodexAccount: p.CodexAccount, IdleTimeout: p.IdleTimeout, Endpoint: p.Endpoint, AuthMode: p.AuthMode, TokenCmd: p.TokenCmd, Token: p.Token},
 		Limits: Limits{MaxWorkers: c.Limits.MaxWorkers, GoMaxProcs: c.Limits.GoMaxProcs, GoParallelism: c.Limits.GoParallelism}}, nil
 }
 
