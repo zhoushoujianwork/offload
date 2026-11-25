@@ -22,6 +22,13 @@ func SetProfileDisabled(path, name string, disabled bool) error {
 	if disabled && name == def {
 		return fmt.Errorf("set another default first")
 	}
+	if disabled {
+		if used, err := callerDefaultsUse(fields, name); err != nil {
+			return err
+		} else if used {
+			return ErrCallerDefaultInUse
+		}
+	}
 	var profiles map[string]json.RawMessage
 	if err := json.Unmarshal(fields["profiles"], &profiles); err != nil {
 		return err
@@ -54,6 +61,11 @@ func DeleteProfile(path, name string) error {
 	}
 	if name == def {
 		return fmt.Errorf("set another default first")
+	}
+	if used, err := callerDefaultsUse(fields, name); err != nil {
+		return err
+	} else if used {
+		return ErrCallerDefaultInUse
 	}
 	var profiles map[string]json.RawMessage
 	if err := json.Unmarshal(fields["profiles"], &profiles); err != nil {

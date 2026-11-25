@@ -93,6 +93,10 @@ func cmdProfileLifecycle(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return fail(stderr, err)
 	}
+	if callers := cfg.CallersUsing(name); len(callers) > 0 && (args[0] == "disable" || args[0] == "delete") {
+		return fail(stderr, fmt.Errorf("profile %q is the default for caller %s; set another caller default first (offload default --caller <caller> <profile>)",
+			name, strings.Join(callers, ", ")))
+	}
 	if args[0] != "delete" {
 		err = config.SetProfileDisabled(config.Path(), name, args[0] == "disable")
 	} else {

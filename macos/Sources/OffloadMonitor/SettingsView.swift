@@ -288,7 +288,8 @@ struct ProfilesSettingsView: View {
                 if draft.isCodex { codexRows } else { claudeRows }
             }
             Text(draft.isCodex ? "Codex uses its native sign-in."
-                               : "Tokens are saved in your local offload config file, readable only by you. They are never shown again.")
+                               : (draft.credential == .native ? "Claude uses the official Claude Code sign-in on this Mac."
+                                  : "Tokens are saved in your local offload config file, readable only by you. They are never shown again."))
                 .font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(2).fixedSize(horizontal: false, vertical: true)
         }
     }
@@ -298,24 +299,26 @@ struct ProfilesSettingsView: View {
             label("Model")
             TextField("required", text: $draft.model).textFieldStyle(.roundedBorder)
         }
-        GridRow {
-            label("Gateway URL")
-            VStack(alignment: .leading, spacing: 4) {
-                if draft.baseURLHidden && !draft.replaceBaseURL {
-                    Text("Saved (hidden: it contains private parts)").foregroundStyle(.secondary)
-                    Toggle("Replace gateway URL", isOn: $draft.replaceBaseURL).controlSize(.small)
-                } else {
-                    TextField("https://…", text: $draft.baseURL).textFieldStyle(.roundedBorder)
-                    if draft.baseURLHidden { Toggle("Replace gateway URL", isOn: $draft.replaceBaseURL).controlSize(.small) }
+        if draft.credential != .native {
+            GridRow {
+                label("Gateway URL")
+                VStack(alignment: .leading, spacing: 4) {
+                    if draft.baseURLHidden && !draft.replaceBaseURL {
+                        Text("Saved (hidden: it contains private parts)").foregroundStyle(.secondary)
+                        Toggle("Replace gateway URL", isOn: $draft.replaceBaseURL).controlSize(.small)
+                    } else {
+                        TextField("https://…", text: $draft.baseURL).textFieldStyle(.roundedBorder)
+                        if draft.baseURLHidden { Toggle("Replace gateway URL", isOn: $draft.replaceBaseURL).controlSize(.small) }
+                    }
                 }
             }
-        }
-        GridRow {
-            label("Endpoint")
-            Picker("Endpoint", selection: $draft.endpoint) {
-                Text("none").tag(""); Text("cc").tag("cc"); Text("llm").tag("llm")
+            GridRow {
+                label("Endpoint")
+                Picker("Endpoint", selection: $draft.endpoint) {
+                    Text("none").tag(""); Text("cc").tag("cc"); Text("llm").tag("llm")
+                }
+                .pickerStyle(.segmented).labelsHidden().frame(width: 200)
             }
-            .pickerStyle(.segmented).labelsHidden().frame(width: 200)
         }
         GridRow {
             label("Credential")
@@ -524,6 +527,7 @@ struct ProfilesSettingsView: View {
         switch mode {
         case "token": return "API token saved"
         case "token_cmd": return "token command saved"
+        case "native": return "Claude sign-in"
         default: return "no credential"
         }
     }

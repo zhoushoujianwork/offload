@@ -55,6 +55,19 @@ Run `offload config`, select **Profile**, then **Add profile** to save a bundle 
 
 Optional `endpoint` (`cc` for a Claude Code proxy, `llm` for a generic LLM gateway) applies to Claude profiles only. It is an informational label shown by `offload profiles` and in the settings wizard; it does not change requests. Unknown values and Codex profiles with an endpoint are rejected.
 
+### Official Claude (native login)
+
+A Claude profile with `"auth_mode": "native"` runs the installed Claude Code with its own official login (OAuth or keychain) instead of a gateway. Sign in once with the `claude` CLI. A native profile needs a `model` (an alias such as `sonnet`, or a full model name) and must not set `base_url`, `token`, `token_cmd` or `endpoint`; an empty or absent `auth_mode` keeps the gateway behavior above. Native auth applies to Claude profiles only.
+
+```sh
+offload profile save --json <<'JSON'
+{"name":"claude-sonnet","create":true,"backend":"claude","model":"sonnet","auth_mode":"native"}
+JSON
+offload -p claude-sonnet -d /absolute/path/app "Summarize README.md, max 5 bullets."
+```
+
+For a native run, offload still drops every caller `ANTHROPIC_*` variable and keeps `--setting-sources ""`, so an ambient key, token or gateway URL cannot redirect the worker. It sets no `ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN` or `ANTHROPIC_MODEL`, runs no token command, makes no gateway reachability check, and passes the model as `--model` instead. It omits `--bare`, because `--bare` never reads OAuth or the keychain, and sets `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1`. Permission and tool behavior match gateway runs. A native profile cannot be combined with an isolated execution environment, which replaces the home that holds the login. `offload profiles --json` reports `auth_mode: "native"` with an empty `base_url`. Switch an existing profile with `{"name":"…","auth_mode":"native"}` (this clears its gateway settings) or back with `auth_mode` `token` or `token_cmd` plus a `base_url` and `secret`.
+
 ### How switching works
 
 Profiles select a `backend`: `claude` (the default for existing profiles) or `codex`. Claude profiles provide the three variables Claude Code reads. For each Claude run, offload drops every `ANTHROPIC_*` variable from the caller's environment and sets exactly:
@@ -77,9 +90,25 @@ Interrupted Codex runs retain progress and a resume command. Automatic tool-less
 
 ### Choosing a profile
 
-Choose per run with `-p name`, per shell with `OFFLOAD_PROFILE=name`, otherwise through `default` in the config. `offload profiles` lists profiles (name, backend, endpoint or `-`, model, base URL), with `*` marking the selected default; it never prints tokens.
+Choose per run with `-p name`, per shell with `OFFLOAD_PROFILE=name`, per calling tool with a [caller default](#per-caller-default-profiles), otherwise through `default` in the config. `offload profiles` lists profiles (name, backend, endpoint or `-`, model, base URL), with `*` marking the selected default; it never prints tokens.
 
 Profiles may declare `"aliases": ["cc", "fast"]`. Each alias must match `[a-z0-9-]{1,32}`, be unique across all profiles, and differ from every profile name. Use aliases with `-p cc`, `OFFLOAD_PROFILE=cc`, or `offload default cc`; the saved default and run records use the resolved full name. JSON results and history also include `profile_alias` when an alias selected the run. Resuming a session keeps its stored profile name. `offload profiles` displays aliases, and `offload config` lets you edit a comma-separated alias list (clear it to remove all aliases).
+
+### Per-caller default profiles
+
+An external main agent can have its own default profile, so Claude Code and Codex each delegate through the profile that suits them. The key is the `--caller` ID that agent passes on every call:
+
+```sh
+offload default --caller claude claude-sonnet   # saved as caller_defaults.claude
+offload default --caller codex codex
+offload default --caller claude                 # print it (the global default if none is set)
+```
+
+The profile may be an alias; the canonical name is saved. The caller follows the `--caller` rules (lowercase `[a-z0-9][a-z0-9._-]{0,63}`; `unspecified` is refused). There is no clearing syntax yet; point the caller at another profile, or edit `caller_defaults` in `config.json`.
+
+New runs choose the profile in this order: `-p`; the profile a resumed session or named thread is bound to; `OFFLOAD_PROFILE`; the default mapped to an **explicitly supplied** `--caller`; the global default. A run without `--caller`, or with a caller that has no mapping, uses the global default; `unspecified` never matches. A mapped profile that is missing or disabled fails the run instead of falling back; one that is only marked unavailable is still selected, like `-p`. Resuming (`-r`, `-thread`, `offload resume`) keeps the session's original profile after any default changes. A profile that a caller default names cannot be disabled or deleted until that caller points elsewhere.
+
+`--caller` is a routing convenience, not authentication or access control: any process can pass any caller ID. `offload profiles --json` adds a `caller_defaults` object (empty when none); `configured_default`, `active` and `active_source` stay global.
 
 ```bash
 offload profiles
@@ -325,6 +354,8 @@ offload schedule add|list|show|update|pause|resume|delete|results|start|status
 offload profiles [--json]     list profiles (* = the one a run would use); --json is a redacted machine-readable list
 offload profile save --json   create or edit one profile from a JSON request on stdin
 offload default [profile]     show or set the saved default profile
+offload default --caller ID [profile]
+                              show or set the profile new runs with --caller ID use
 offload mode [basic|proactive] show or set the saved delegation mode
 offload install-agent [flags] install skills and delegation agent instructions
 offload agent status [--json] user-scope skill/instruction state for Codex and Claude Code
@@ -332,7 +363,7 @@ offload agent enable|disable --agent codex|claude|all [--json]
 offload feedback              print the project homepage URL and open it in the default browser
 offload version
 
-  -p profile   profile name (default: $OFFLOAD_PROFILE, then config default)
+  -p profile   profile name (default: $OFFLOAD_PROFILE, then the --caller default, then config default)
   -m model     override the profile's model
   -effort level  override the profile's reasoning effort for this run
   -fast        Codex only: priority (fast) tier for this run; -fast=false uses the default tier
@@ -729,7 +760,7 @@ See [execution-transcript.md](execution-transcript.md).
 
 `-caller ID` (also `--caller ID`) optionally names the tool that invoked this run. It is
 metadata only and is separate from `-caller-run-id`, which correlates one run with one
-supervisor job. It changes no execution, authentication, profile or sandbox behavior.
+supervisor job. It changes no execution, authentication or sandbox behavior. Its only effect on profile selection is the optional [per-caller default](#per-caller-default-profiles), and it is a routing convenience, not authentication or access control.
 
 ```sh
 offload -json -caller agh -p codex -d /absolute/repo "Implement the assigned task"

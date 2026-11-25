@@ -126,6 +126,13 @@ func SaveProfile(path, name string, p Profile, add bool) error {
 	if p.Disabled && (add || name == defaultName) {
 		return fmt.Errorf("set another default first")
 	}
+	if p.Disabled && !add {
+		if used, err := callerDefaultsUse(fields, name); err != nil {
+			return err
+		} else if used {
+			return ErrCallerDefaultInUse
+		}
+	}
 	raw, exists := profiles[name]
 	if add && exists {
 		return fmt.Errorf("profile already exists")
@@ -157,7 +164,10 @@ func SaveProfile(path, name string, p Profile, add bool) error {
 	if p.Endpoint != "" && p.BackendName() != "claude" {
 		return fmt.Errorf("endpoint applies only to claude profiles")
 	}
-	if p.BackendName() == "claude" {
+	if err := p.ValidateAuthMode(); err != nil {
+		return err
+	}
+	if p.BackendName() == "claude" && !p.UsesNativeAuth() {
 		u, err := url.Parse(p.BaseURL)
 		if err != nil || u.Hostname() == "" || (u.Scheme != "http" && u.Scheme != "https") {
 			return fmt.Errorf("base URL must be http(s) with a host")
@@ -186,7 +196,7 @@ func SaveProfile(path, name string, p Profile, add bool) error {
 	if err := json.Unmarshal(encoded, &known); err != nil {
 		return err
 	}
-	for _, key := range []string{"disabled", "use_for", "codex_account", "aliases", "backend", "base_url", "model", "token", "token_cmd", "reasoning_effort", "service_tier", "idle_timeout", "endpoint"} {
+	for _, key := range []string{"disabled", "use_for", "codex_account", "aliases", "backend", "base_url", "model", "token", "token_cmd", "reasoning_effort", "service_tier", "idle_timeout", "endpoint", "auth_mode"} {
 		delete(profile, key)
 	}
 	for key, value := range known {

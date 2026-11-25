@@ -9,7 +9,13 @@
 No exported signature requires importing an `internal` package. `New` validates
 and snapshots the explicit profile without starting a native process.
 `LoadConfig` reads the given absolute config file and resolves the named profile;
-it never saves config or changes global defaults. Requests use an existing
+it never saves config or changes global defaults, and it copies `AuthMode`.
+`Profile.AuthMode` is empty (gateway) or `native`; it is omitted from
+`ProfileFingerprint` when empty, so fingerprints of existing gateway and Codex
+profiles are unchanged, while a native profile hashes differently from the same
+profile in gateway mode. `ListProfiles` reports `AuthMode` `native` for it.
+Per-caller default profiles are a CLI selection feature; the package still takes
+an explicit profile name and never reads `caller_defaults`. Requests use an existing
 absolute directory; native continuation is explicit, with no automatic lookup
 or retry on a missing native session.
 
@@ -129,7 +135,13 @@ assembly. Caller instructions use a private temporary file, the task uses stdin,
 and images use native stream-JSON blocks. Normal native project discovery remains
 owned by Claude; extraction and restricted reads exclude ambient instructions.
 Credentials always come from the selected Offload profile, never an ambient
-native profile's settings or caller ANTHROPIC variables. The optional stream
+native profile's settings or caller ANTHROPIC variables. A Claude profile with
+`AuthMode: "native"` is the one exception: it sets no gateway variables, resolves
+no token and makes no gateway reachability check, passes `--model`, omits
+`--bare` (which never reads the official login) and still removes every caller
+`ANTHROPIC_*` variable and passes `--setting-sources ""`. It requires a `Model`
+and no `BaseURL`, `Token`, `TokenCmd` or `Endpoint`, applies to Claude only, and
+cannot be combined with an isolated `EnvironmentDirectory`. The optional stream
 environment accepts only the validated streaming-recovery switch and positive
 output-token limit; it is applied consistently to child environment and settings.
 

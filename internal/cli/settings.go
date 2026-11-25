@@ -372,6 +372,12 @@ func settingsWizard(p settingsPrompt, cfg *config.Config, name string, add bool)
 		if err != nil {
 			return err
 		}
+	} else if profile.UsesNativeAuth() {
+		// A native profile has no gateway, token or endpoint; only the model is editable here.
+		profile.Model, err = p.Ask("Model (required, e.g. sonnet)", profile.Model)
+		if err != nil {
+			return err
+		}
 	} else {
 		profile.BaseURL, err = p.Ask("Base URL", profile.BaseURL)
 		if err != nil {

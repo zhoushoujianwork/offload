@@ -206,7 +206,10 @@ func hostClaudeArgs(o Opts, promptPath string) []string {
 		args = append(args, "--tools", "", "--disable-slash-commands", "--no-chrome")
 	}
 	if n.RestrictedReadOnly {
-		args = append(args, "--bare", "--tools", "Read,Glob,Grep", "--disallowedTools", "Bash,Edit,Write,NotebookEdit,Agent,Task", "--disable-slash-commands", "--no-chrome")
+		if !o.Profile.UsesNativeAuth() { // --bare never reads the official login
+			args = append(args, "--bare")
+		}
+		args = append(args, "--tools", "Read,Glob,Grep", "--disallowedTools", "Bash,Edit,Write,NotebookEdit,Agent,Task", "--disable-slash-commands", "--no-chrome")
 	}
 	if n.SkillDirectory != "" {
 		args = append(args, "--plugin-dir", n.SkillDirectory)

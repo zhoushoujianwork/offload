@@ -63,6 +63,9 @@ usage:
   offload profiles [--json]     list profiles (* = the one a run would use)
   offload profile save --json   create or edit a profile from a JSON request on stdin
   offload default [profile]     show or set the saved default profile
+  offload default --caller ID [profile]
+                                show or set the profile new runs with --caller ID use
+                                (a routing convenience, not authentication or access control)
   offload disable / enable [--json]
                                 persistently block / allow every new worker and model call (running tasks are not stopped)
   offload mode [basic|proactive] show or switch delegation mode and agent rules
@@ -184,7 +187,7 @@ func cmdRunSaved(args []string, stdin io.Reader, stdout, stderr io.Writer, paren
 	fs := flag.NewFlagSet("offload", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = func() { fmt.Fprint(stderr, usage); fs.PrintDefaults() }
-	profile := fs.String("p", "", "profile name or alias (default: $OFFLOAD_PROFILE, then config default)")
+	profile := fs.String("p", "", "profile name or alias (default: $OFFLOAD_PROFILE, then the --caller default, then config default)")
 	model := fs.String("m", "", "override the profile's model")
 	effort := fs.String("effort", "", "override the profile's reasoning effort for this run")
 	fast := fs.Bool("fast", false, "for this run: -fast uses the priority (fast) service tier, -fast=false the default tier; Codex profiles only")
@@ -349,8 +352,20 @@ func cmdRunSaved(args []string, stdin io.Reader, stdout, stderr io.Writer, paren
 			resumedProfile = selected
 		}
 	}
+	// Precedence for a new run: -p, then the profile a resume or thread is bound to (both set
+	// selected above), then OFFLOAD_PROFILE, then the default mapped to an explicit --caller, then
+	// the global default. The caller only routes the choice; it is not authentication.
+	callerMapped := ""
+	if selected == "" && os.Getenv("OFFLOAD_PROFILE") == "" && caller.set {
+		if mapped, ok := cfg.DefaultFor(caller.value); ok {
+			selected, callerMapped = mapped, caller.value
+		}
+	}
 	selected = firstNonEmpty(selected, firstNonEmpty(os.Getenv("OFFLOAD_PROFILE"), cfg.EffectiveDefault()))
 	name, prof, err := cfg.ResolveForRun(selected)
+	if err != nil && callerMapped != "" {
+		err = fmt.Errorf("default profile for --caller %s: %w", callerMapped, err)
+	}
 	if resumedProfile != "" {
 		if _, exists := cfg.Profiles[resumedProfile]; !exists {
 			name, prof = resumedProfile, config.Profile{}
@@ -807,14 +822,23 @@ func cmdProfiles(stdout, stderr io.Writer) int {
 		if p.UseFor != "" {
 			aliases += " — " + p.UseFor
 		}
-		fmt.Fprintf(stdout, "%s %-12s %-8s %-5s %-15s %-24s %s%s\n", mark, n, p.BackendName(), firstNonEmpty(p.Endpoint, "-"), tools, p.Model, p.BaseURL, aliases)
+		gateway := p.BaseURL
+		if p.UsesNativeAuth() {
+			gateway = "native official login"
+		}
+		fmt.Fprintf(stdout, "%s %-12s %-8s %-5s %-15s %-24s %s%s\n", mark, n, p.BackendName(), firstNonEmpty(p.Endpoint, "-"), tools, p.Model, gateway, aliases)
 	}
 	return 0
 }
 
+const defaultUsage = "usage: offload default [profile] | offload default --caller <caller> [profile]"
+
 func cmdDefault(args []string, stdout, stderr io.Writer) int {
+	if len(args) > 0 && (args[0] == "--caller" || args[0] == "-caller") {
+		return cmdCallerDefault(args[1:], stdout, stderr)
+	}
 	if len(args) > 1 {
-		return fail(stderr, errors.New("usage: offload default [profile]"))
+		return fail(stderr, errors.New(defaultUsage))
 	}
 	if len(args) == 1 {
 		if err := config.SetDefault(config.Path(), args[0]); err != nil {
@@ -824,6 +848,34 @@ func cmdDefault(args []string, stdout, stderr io.Writer) int {
 	cfg, err := config.Load(config.Path())
 	if err != nil {
 		return fail(stderr, err)
+	}
+	fmt.Fprintln(stdout, cfg.Default)
+	return 0
+}
+
+// cmdCallerDefault shows or sets the default profile for one explicit --caller ID. Setting stores
+// the canonical profile name, resolving an alias. Showing prints the mapped profile, or the global
+// default when the caller has none.
+func cmdCallerDefault(args []string, stdout, stderr io.Writer) int {
+	if len(args) < 1 || len(args) > 2 {
+		return fail(stderr, errors.New(defaultUsage))
+	}
+	caller, err := config.NormalizeCallerDefaultKey(args[0])
+	if err != nil {
+		return fail(stderr, err)
+	}
+	if len(args) == 2 {
+		if err := config.SetCallerDefault(config.Path(), caller, args[1]); err != nil {
+			return fail(stderr, err)
+		}
+	}
+	cfg, err := config.Load(config.Path())
+	if err != nil {
+		return fail(stderr, err)
+	}
+	if name, ok := cfg.CallerDefaults[caller]; ok {
+		fmt.Fprintln(stdout, name)
+		return 0
 	}
 	fmt.Fprintln(stdout, cfg.Default)
 	return 0

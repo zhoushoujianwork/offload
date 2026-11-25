@@ -45,15 +45,18 @@ type profileEntry struct {
 
 // profileSnapshot is the `offload profiles --json` document (schema_version 1).
 type profileSnapshot struct {
-	ManagedAccounts   []string       `json:"managed_accounts"`
-	SchemaVersion     int            `json:"schema_version"`
-	ConfigExists      bool           `json:"config_exists"`
-	ConfiguredDefault string         `json:"configured_default"`
-	Active            string         `json:"active"`
-	ActiveSource      string         `json:"active_source"`
-	DelegationMode    string         `json:"delegation_mode"`
-	Profiles          []profileEntry `json:"profiles"`
-	Warnings          []string       `json:"warnings"`
+	ManagedAccounts   []string `json:"managed_accounts"`
+	SchemaVersion     int      `json:"schema_version"`
+	ConfigExists      bool     `json:"config_exists"`
+	ConfiguredDefault string   `json:"configured_default"`
+	Active            string   `json:"active"`
+	ActiveSource      string   `json:"active_source"`
+	DelegationMode    string   `json:"delegation_mode"`
+	// CallerDefaults maps an explicit --caller ID to its default profile. It never changes
+	// configured_default, active or active_source, which stay global.
+	CallerDefaults map[string]string `json:"caller_defaults"`
+	Profiles       []profileEntry    `json:"profiles"`
+	Warnings       []string          `json:"warnings"`
 }
 
 var errConfigUnreadable = errors.New("config could not be read or is invalid")
@@ -74,6 +77,8 @@ func safeBaseURL(raw string) (string, bool) {
 
 func authMode(p config.Profile) string {
 	switch {
+	case p.UsesNativeAuth():
+		return "native"
 	case p.TokenCmd != "":
 		return "token_cmd"
 	case p.Token != "":
@@ -86,7 +91,7 @@ func authMode(p config.Profile) string {
 // run token_cmd and never copies credentials into the result.
 func buildProfileSnapshot(path string) (profileSnapshot, error) {
 	snap := profileSnapshot{ManagedAccounts: config.ManagedAccountNames(), SchemaVersion: profilesSchemaVersion, ActiveSource: "none",
-		DelegationMode: config.ModeProactive, Profiles: []profileEntry{}, Warnings: []string{}}
+		DelegationMode: config.ModeProactive, CallerDefaults: map[string]string{}, Profiles: []profileEntry{}, Warnings: []string{}}
 	if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
 		return snap, nil
 	}
@@ -96,6 +101,9 @@ func buildProfileSnapshot(path string) (profileSnapshot, error) {
 	}
 	snap.ConfigExists = true
 	snap.ConfiguredDefault = cfg.Default
+	for caller, name := range cfg.CallerDefaults {
+		snap.CallerDefaults[caller] = name
+	}
 	if cfg.DelegationMode != "" {
 		if config.ValidMode(cfg.DelegationMode) {
 			snap.DelegationMode = cfg.DelegationMode
@@ -212,24 +220,27 @@ func readProfileRequest(stdin io.Reader) (profileSaveRequest, error) {
 // safeSaveErrors are the fixed config validation messages that may be shown to the caller.
 // Anything else is replaced so request values, paths and parser details never reach the output.
 var safeSaveErrors = map[string]bool{
-	"set another default first":                                   true,
-	"invalid Claude reasoning effort":                             true,
-	"use_for must be a single line without control characters":    true,
-	"use_for must be at most 300 characters":                      true,
-	"profile name must not be empty":                              true,
-	"profile already exists":                                      true,
-	"unknown profile":                                             true,
-	"unknown backend":                                             true,
-	"invalid Codex reasoning effort":                              true,
-	"invalid Codex service tier":                                  true,
-	"endpoint applies only to claude profiles":                    true,
-	"base URL must be http(s) with a host":                        true,
-	"model is required":                                           true,
-	"authentication is required":                                  true,
-	"unknown endpoint (want cc or llm)":                           true,
-	"secret is required for token or token_cmd":                   true,
-	"secret is only allowed with token or token_cmd":              true,
-	"unknown auth_mode (want preserve, token, token_cmd or none)": true,
+	"set another default first":                                                  true,
+	"invalid Claude reasoning effort":                                            true,
+	"use_for must be a single line without control characters":                   true,
+	"use_for must be at most 300 characters":                                     true,
+	"profile name must not be empty":                                             true,
+	"profile already exists":                                                     true,
+	"unknown profile":                                                            true,
+	"unknown backend":                                                            true,
+	"invalid Codex reasoning effort":                                             true,
+	"invalid Codex service tier":                                                 true,
+	"endpoint applies only to claude profiles":                                   true,
+	"base URL must be http(s) with a host":                                       true,
+	"model is required":                                                          true,
+	"authentication is required":                                                 true,
+	"unknown endpoint (want cc or llm)":                                          true,
+	"secret is required for token or token_cmd":                                  true,
+	"secret is only allowed with token or token_cmd":                             true,
+	"unknown auth_mode (want preserve, token, token_cmd, none or native)":        true,
+	"auth_mode applies only to claude profiles":                                  true,
+	"native auth cannot be combined with base_url, token, token_cmd or endpoint": true,
+	"set another caller default first":                                           true,
 }
 
 func safeSaveError(err error) error {
@@ -303,10 +314,28 @@ func applyProfileRequest(p config.Profile, req profileSaveRequest) (config.Profi
 		if mode == "none" {
 			p.Token, p.TokenCmd = "", ""
 		}
+	case "native":
+		if req.Secret != nil {
+			return p, errors.New("secret is only allowed with token or token_cmd")
+		}
+		if p.BackendName() != "claude" {
+			return p, errors.New("auth_mode applies only to claude profiles")
+		}
+		// Switching an existing gateway profile to native drops its gateway settings. Fields the
+		// request sets explicitly are kept so SaveProfile rejects a contradictory request.
+		p.AuthMode = config.AuthModeNative
+		p.Token, p.TokenCmd = "", ""
+		if req.BaseURL == nil {
+			p.BaseURL = ""
+		}
+		if req.Endpoint == nil {
+			p.Endpoint = ""
+		}
 	case "token", "token_cmd":
 		if secret == "" {
 			return p, errors.New("secret is required for token or token_cmd")
 		}
+		p.AuthMode = "" // a credential selects the gateway path
 		p.Token, p.TokenCmd = "", ""
 		if mode == "token" {
 			p.Token = secret
@@ -314,7 +343,7 @@ func applyProfileRequest(p config.Profile, req profileSaveRequest) (config.Profi
 			p.TokenCmd = secret
 		}
 	default:
-		return p, errors.New("unknown auth_mode (want preserve, token, token_cmd or none)")
+		return p, errors.New("unknown auth_mode (want preserve, token, token_cmd, none or native)")
 	}
 	return p, nil
 }

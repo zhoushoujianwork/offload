@@ -43,7 +43,7 @@ var probeProfile = func(ctx context.Context, path, name string) probeOutcome {
 	cfg := execution.Config{ProfileName: canonical, Profile: execution.Profile{
 		Backend: p.Backend, BaseURL: p.BaseURL, Model: p.Model, ReasoningEffort: p.ReasoningEffort,
 		ServiceTier: p.ServiceTier, CodexAccount: p.CodexAccount, IdleTimeout: p.IdleTimeout,
-		Endpoint: p.Endpoint, TokenCmd: p.TokenCmd, Token: p.Token}, Limits: execution.Limits{
+		Endpoint: p.Endpoint, AuthMode: p.AuthMode, TokenCmd: p.TokenCmd, Token: p.Token}, Limits: execution.Limits{
 		MaxWorkers: saved.Limits.MaxWorkers, GoMaxProcs: saved.Limits.GoMaxProcs, GoParallelism: saved.Limits.GoParallelism}}
 	client, err := execution.New(cfg)
 	if err != nil {
