@@ -111,6 +111,40 @@ func SetCallerDefault(path, caller, name string) error {
 	return writeSettings(path, fields)
 }
 
+// ClearCallerDefault removes the saved default profile for one caller, so its runs follow the
+// global default again. Clearing a caller that has no mapping succeeds without touching the file.
+// The mapped profile need not exist, so a mapping to a hand-deleted profile can be cleared. Other
+// fields, including unknown JSON, are preserved; the caller_defaults key is dropped when it
+// becomes empty.
+func ClearCallerDefault(path, caller string) error {
+	key, err := NormalizeCallerDefaultKey(caller)
+	if err != nil {
+		return err
+	}
+	fields, err := modeSettings(path)
+	if err != nil {
+		return err
+	}
+	raw, ok := fields["caller_defaults"]
+	if !ok {
+		return nil
+	}
+	var defaults map[string]string
+	if err := json.Unmarshal(raw, &defaults); err != nil || defaults == nil {
+		return errors.New("caller_defaults must be a JSON object of profile names")
+	}
+	if _, mapped := defaults[key]; !mapped {
+		return nil
+	}
+	delete(defaults, key)
+	if len(defaults) == 0 {
+		delete(fields, "caller_defaults")
+	} else if fields["caller_defaults"], err = json.Marshal(defaults); err != nil {
+		return err
+	}
+	return writeSettings(path, fields)
+}
+
 // callerDefaultsUse reports whether any stored caller default names the profile, by canonical name
 // or alias.
 func callerDefaultsUse(fields map[string]json.RawMessage, profile string) (bool, error) {

@@ -199,6 +199,84 @@ func TestSetCallerDefaultRejectsBadInputAndLeavesConfigUntouched(t *testing.T) {
 	}
 }
 
+func TestClearCallerDefaultRemovesOneMappingAndPreservesFields(t *testing.T) {
+	path := writeCallerCfg(t, callerCfg)
+	for caller, profile := range map[string]string{"claude": "sonnet", "codex": "cx"} {
+		if err := SetCallerDefault(path, caller, profile); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := ClearCallerDefault(path, "Claude"); err != nil {
+		t.Fatal(err)
+	}
+	c, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := c.CallerDefaults["claude"]; ok || c.CallerDefaults["codex"] != "cx" || len(c.CallerDefaults) != 1 {
+		t.Fatalf("only the claude mapping may go: %v", c.CallerDefaults)
+	}
+	if name, mapped := c.DefaultFor("claude"); name != "gw" || mapped {
+		t.Fatalf("a cleared caller must follow the global default: %q %v", name, mapped)
+	}
+	if b, _ := os.ReadFile(path); !strings.Contains(string(b), `"keep": true`) || c.Default != "gw" {
+		t.Fatalf("unknown fields or the global default changed:\n%s", b)
+	}
+	// Clearing the last mapping drops the key; the profile is released for disable and delete.
+	if err := ClearCallerDefault(path, "codex"); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(path); strings.Contains(string(b), "caller_defaults") || !strings.Contains(string(b), `"keep": true`) {
+		t.Fatalf("an empty caller_defaults must be removed:\n%s", b)
+	}
+	if err := SetProfileDisabled(path, "cx", true); err != nil {
+		t.Fatalf("a cleared caller default must not block disable: %v", err)
+	}
+}
+
+func TestClearCallerDefaultIsIdempotentAndValidatesInput(t *testing.T) {
+	path := writeCallerCfg(t, callerCfg)
+	before, _ := os.ReadFile(path)
+	if err := ClearCallerDefault(path, "claude"); err != nil {
+		t.Fatalf("clearing a caller with no caller_defaults key must succeed: %v", err)
+	}
+	if after, _ := os.ReadFile(path); string(after) != string(before) {
+		t.Fatal("a no-op clear rewrote the config")
+	}
+	if err := SetCallerDefault(path, "codex", "cx"); err != nil {
+		t.Fatal(err)
+	}
+	mapped, _ := os.ReadFile(path)
+	if err := ClearCallerDefault(path, "claude"); err != nil {
+		t.Fatal(err)
+	}
+	if after, _ := os.ReadFile(path); string(after) != string(mapped) {
+		t.Fatal("clearing an unmapped caller rewrote the config")
+	}
+	for _, caller := range []string{"", "has space", "unspecified"} {
+		if err := ClearCallerDefault(path, caller); err == nil {
+			t.Errorf("ClearCallerDefault(%q) succeeded", caller)
+		}
+	}
+	bad := strings.Replace(callerCfg, `"future"`, `"caller_defaults":["x"],"future"`, 1)
+	badPath := writeCallerCfg(t, bad)
+	if err := ClearCallerDefault(badPath, "claude"); err == nil || !strings.Contains(err.Error(), "JSON object") {
+		t.Fatalf("a malformed caller_defaults must be refused: %v", err)
+	}
+}
+
+func TestClearCallerDefaultWorksForMissingOrDisabledTargets(t *testing.T) {
+	gone := strings.Replace(callerCfg, `"future"`, `"caller_defaults":{"claude":"gone","codex":"cx"},"future"`, 1)
+	path := writeCallerCfg(t, gone)
+	if err := ClearCallerDefault(path, "claude"); err != nil {
+		t.Fatalf("a mapping to a missing profile must be clearable: %v", err)
+	}
+	c, err := Load(path)
+	if err != nil || len(c.CallerDefaults) != 1 || c.CallerDefaults["codex"] != "cx" {
+		t.Fatalf("%v %v", err, c.CallerDefaults)
+	}
+}
+
 func TestDefaultForOnlyMapsAnExplicitCaller(t *testing.T) {
 	path := writeCallerCfg(t, callerCfg)
 	if err := SetCallerDefault(path, "claude", "sonnet"); err != nil {

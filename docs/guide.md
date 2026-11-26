@@ -102,9 +102,12 @@ An external main agent can have its own default profile, so Claude Code and Code
 offload default --caller claude claude-sonnet   # saved as caller_defaults.claude
 offload default --caller codex codex
 offload default --caller claude                 # print it (the global default if none is set)
+offload default --caller claude --clear         # remove the mapping; the caller follows the global default again
 ```
 
-The profile may be an alias; the canonical name is saved. The caller follows the `--caller` rules (lowercase `[a-z0-9][a-z0-9._-]{0,63}`; `unspecified` is refused). There is no clearing syntax yet; point the caller at another profile, or edit `caller_defaults` in `config.json`.
+The profile may be an alias; the canonical name is saved. The caller follows the `--caller` rules (lowercase `[a-z0-9][a-z0-9._-]{0,63}`; `unspecified` is refused). `--clear` removes only that caller's entry, keeps every other config field, and succeeds without changing the file when the caller has no mapping. It also clears a mapping to a profile that was deleted by hand. Like showing, clearing prints the profile the caller now uses.
+
+In the macOS App, **Settings > Profiles** has a **Caller defaults** section with one picker for Codex (`--caller codex`) and one for Claude (`--caller claude`). Each lists **Follow global default** (with the configured default named) and every enabled profile. Choosing one runs the commands above at once and refreshes the list; the pickers are disabled while another profile action runs. A saved mapping to a disabled or missing profile stays selected and is labelled "(disabled)" or "(not found)" instead of being replaced. The App edits only the Codex and Claude callers; use the CLI for other caller IDs. The routing rules below apply unchanged: the run must pass the caller ID, and `-p` or `OFFLOAD_PROFILE` still override the mapping.
 
 New runs choose the profile in this order: `-p`; the profile a resumed session or named thread is bound to; `OFFLOAD_PROFILE`; the default mapped to an **explicitly supplied** `--caller`; the global default. A run without `--caller`, or with a caller that has no mapping, uses the global default; `unspecified` never matches. A mapped profile that is missing or disabled fails the run instead of falling back; one that is only marked unavailable is still selected, like `-p`. Resuming (`-r`, `-thread`, `offload resume`) keeps the session's original profile after any default changes. A profile that a caller default names cannot be disabled or deleted until that caller points elsewhere.
 

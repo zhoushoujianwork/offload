@@ -230,6 +230,77 @@ func TestDefaultCallerCommand(t *testing.T) {
 	}
 }
 
+func TestDefaultCallerClearCommand(t *testing.T) {
+	setup(t, okReply)
+	writeCallerDefaultsCfg(t, func(s string) string {
+		return strings.Replace(s, `"default":"glob"`, `"default":"glob","future":{"keep":true}`, 1)
+	})
+	for _, args := range [][]string{{"claude", "son"}, {"codex", "cx"}} {
+		if code, _, e := runCLI(append([]string{"default", "--caller"}, args...)...); code != 0 {
+			t.Fatal(e)
+		}
+	}
+	code, out, e := runCLI("default", "--caller", "Claude", "--clear")
+	if code != 0 || strings.TrimSpace(out) != "glob" {
+		t.Fatalf("clear prints the global default the caller now follows: %d %q %s", code, out, e)
+	}
+	if code, out, _ := runCLI("default", "--caller", "claude"); code != 0 || strings.TrimSpace(out) != "glob" {
+		t.Fatalf("show after clear: %d %q", code, out)
+	}
+	if code, out, _ := runCLI("default", "--caller", "codex"); code != 0 || strings.TrimSpace(out) != "cx" {
+		t.Fatalf("the other caller must keep its mapping: %d %q", code, out)
+	}
+	if code, out, _ := runCLI("default"); code != 0 || strings.TrimSpace(out) != "glob" {
+		t.Fatalf("the global default must not change: %q", out)
+	}
+	raw, _ := os.ReadFile(config.Path())
+	var f struct {
+		CallerDefaults map[string]string `json:"caller_defaults"`
+		Future         json.RawMessage   `json:"future"`
+	}
+	if err := json.Unmarshal(raw, &f); err != nil || len(f.CallerDefaults) != 1 || f.CallerDefaults["codex"] != "cx" || !strings.Contains(string(f.Future), "keep") {
+		t.Fatalf("%v %s", err, raw)
+	}
+	// Clearing twice, or an unmapped caller, is a successful no-op that leaves the file alone.
+	before, _ := os.ReadFile(config.Path())
+	for _, caller := range []string{"claude", "never-set"} {
+		if code, out, e := runCLI("default", "--caller", caller, "--clear"); code != 0 || strings.TrimSpace(out) != "glob" {
+			t.Fatalf("clear %s: %d %q %s", caller, code, out, e)
+		}
+	}
+	if after, _ := os.ReadFile(config.Path()); string(after) != string(before) {
+		t.Fatal("a no-op clear modified the config")
+	}
+	// Invalid callers and extra arguments are refused without changing the config.
+	for _, args := range [][]string{{"unspecified", "--clear"}, {"bad caller", "--clear"}, {"codex", "--clear", "extra"}, {"--clear"}} {
+		if code, _, _ := runCLI(append([]string{"default", "--caller"}, args...)...); code != 2 {
+			t.Errorf("%q: code %d", args, code)
+		}
+	}
+	if after, _ := os.ReadFile(config.Path()); string(after) != string(before) {
+		t.Fatal("a rejected clear modified the config")
+	}
+	// A cleared caller routes new runs to the global default again.
+	work, _ := setup(t, okReply)
+	writeCallerDefaultsCfg(t, nil)
+	if code, _, e := runCLI("default", "--caller", "claude", "claude-sonnet"); code != 0 {
+		t.Fatal(e)
+	}
+	if code, _, e := runCLI("default", "--caller", "claude", "--clear"); code != 0 {
+		t.Fatal(e)
+	}
+	if code, _, e := runCLI("-d", work, "--caller", "claude", "task"); code != 0 {
+		t.Fatal(e)
+	}
+	if got := ranProfile(t); got != "glob" {
+		t.Fatalf("a cleared caller ran on %q, want the global default", got)
+	}
+	// Clearing releases the profile for disable.
+	if code, _, e := runCLI("profile", "disable", "claude-sonnet"); code != 0 {
+		t.Fatalf("disable after clear: %s", e)
+	}
+}
+
 func TestProfileLifecycleRefusesCallerDefaultTargets(t *testing.T) {
 	setup(t, okReply)
 	writeCallerDefaultsCfg(t, nil)
@@ -399,7 +470,7 @@ func TestProfilesJSONCallerDefaultsAreAdditiveAndGlobalFieldsStayGlobal(t *testi
 func TestHelpDocumentsCallerDefaultAndRoutingOnly(t *testing.T) {
 	_, out, e := runCLI("-h")
 	text := out + e
-	for _, want := range []string{"offload default --caller ID [profile]", "not authentication or access control", "--caller default"} {
+	for _, want := range []string{"offload default --caller ID [profile|--clear]", "not authentication or access control", "--caller default"} {
 		if !strings.Contains(text, want) {
 			t.Errorf("help missing %q", want)
 		}

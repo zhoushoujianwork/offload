@@ -46,8 +46,29 @@ struct ProfilesSnapshot: Codable, Equatable {
     var active: String
     var activeSource: String
     var delegationMode: String
+    /// Saved default profile per `--caller` ID (`caller_defaults`). Empty when none, or when an older CLI omits it.
+    var callerDefaults: [String: String] = [:]
     var profiles: [ProfileEntry]
     var warnings: [String]
+
+    private enum CodingKeys: String, CodingKey {
+        case managedAccounts, schemaVersion, configExists, configuredDefault, active, activeSource, delegationMode
+        case callerDefaults, profiles, warnings
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        managedAccounts = try c.decodeIfPresent([String].self, forKey: .managedAccounts)
+        schemaVersion = try c.decode(Int.self, forKey: .schemaVersion)
+        configExists = try c.decode(Bool.self, forKey: .configExists)
+        configuredDefault = try c.decode(String.self, forKey: .configuredDefault)
+        active = try c.decode(String.self, forKey: .active)
+        activeSource = try c.decode(String.self, forKey: .activeSource)
+        delegationMode = try c.decode(String.self, forKey: .delegationMode)
+        callerDefaults = try c.decodeIfPresent([String: String].self, forKey: .callerDefaults) ?? [:]
+        profiles = try c.decode([ProfileEntry].self, forKey: .profiles)
+        warnings = try c.decode([String].self, forKey: .warnings)
+    }
 
     static func decode(_ data: Data) throws -> ProfilesSnapshot {
         let d = JSONDecoder()
@@ -73,6 +94,54 @@ struct ProfilesSnapshot: Codable, Equatable {
         }
     }
     var overriddenByEnvironment: Bool { activeSource == "environment" }
+}
+
+// MARK: - Caller defaults
+
+/// The main agents whose default profile the App can set. The caller ID is the `--caller` value the agent
+/// passes on every call.
+enum CallerDefaultCaller: String, CaseIterable, Identifiable {
+    case codex, claude
+    var id: String { rawValue }
+    var label: String { self == .codex ? "Codex" : "Claude" }
+}
+
+/// One row of a caller-default picker. An empty `value` means "follow the global default".
+struct CallerDefaultOption: Equatable, Identifiable {
+    var value: String
+    var title: String
+    var id: String { value }
+}
+
+extension ProfilesSnapshot {
+    /// The profile saved for the caller, or "" when it follows the global default.
+    func callerDefault(for caller: CallerDefaultCaller) -> String { callerDefaults[caller.rawValue] ?? "" }
+
+    func followGlobalTitle() -> String {
+        configuredDefault.isEmpty ? "Follow global default (none set)" : "Follow global default (\(configuredDefault))"
+    }
+
+    /// Follow-global first, then every enabled profile. A saved mapping to a disabled or missing profile stays
+    /// listed and labelled, so the picker never silently shows or saves something else.
+    func callerDefaultOptions(for caller: CallerDefaultCaller) -> [CallerDefaultOption] {
+        var options = [CallerDefaultOption(value: "", title: followGlobalTitle())]
+        options += profiles.filter { !$0.isDisabled }.map { CallerDefaultOption(value: $0.name, title: ProfilePresentation.pickerTitle($0)) }
+        let current = callerDefault(for: caller)
+        if !current.isEmpty, !options.contains(where: { $0.value == current }) {
+            let title = entry(current).map(ProfilePresentation.pickerTitle) ?? "\(current) (not found)"
+            options.append(CallerDefaultOption(value: current, title: title))
+        }
+        return options
+    }
+}
+
+enum CallerDefaultPresentation {
+    static let explanation = "Needs --caller codex or --caller claude on the run. -p and OFFLOAD_PROFILE still override it."
+
+    static func notice(_ caller: CallerDefaultCaller, profile: String?) -> String {
+        guard let profile else { return "\(caller.label) callers now follow the global default." }
+        return "\(caller.label) callers now use \"\(profile)\"."
+    }
 }
 
 // MARK: - `offload profile save --json` request
