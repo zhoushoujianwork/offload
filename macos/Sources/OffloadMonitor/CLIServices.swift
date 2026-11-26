@@ -91,6 +91,21 @@ struct OffloadCLI {
         _ = try await run(["default", name])
     }
 
+    /// Arguments for `offload default --caller <id> <profile>` (set) or `... --clear` (follow the global default).
+    static func callerDefaultArguments(_ caller: CallerDefaultCaller, profile: String?) -> [String]? {
+        guard let profile else { return ["default", "--caller", caller.rawValue, "--clear"] }
+        guard validArgumentName(profile) else { return nil }
+        return ["default", "--caller", caller.rawValue, profile]
+    }
+
+    /// Sets (or, with a nil profile, clears) the default profile of one caller. The global default is untouched.
+    func setCallerDefault(_ caller: CallerDefaultCaller, profile: String?) async throws {
+        guard let args = Self.callerDefaultArguments(caller, profile: profile) else {
+            throw CLIError.invalidArgument("That profile name cannot be selected from here.")
+        }
+        _ = try await run(args)
+    }
+
     struct ProfileTestResult {
         var snapshot: ProfilesSnapshot
         var succeeded: Bool

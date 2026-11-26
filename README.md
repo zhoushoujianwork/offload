@@ -54,8 +54,10 @@ offload stats                            # usage and estimated costs
 
 `-p` selects a profile for one task; `offload default <name>` changes the saved
 default. `OFFLOAD_PROFILE` overrides that default. `offload default --caller <id>
-<name>` sets a profile for runs that pass `--caller <id>`, a routing convenience and
-not access control. Resumes retain their recorded profile and account. Costs are estimates when available, not billing records.
+<name>` sets a profile for runs that pass `--caller <id>`, and `offload default
+--caller <id> --clear` removes it. This is a routing convenience, not access control.
+The macOS App sets the Codex and Claude callers in Settings > Profiles > Caller defaults.
+Resumes retain their recorded profile and account. Costs are estimates when available, not billing records.
 
 **Execution scope:** default-policy Codex workers bypass approvals and sandboxing.
 `-w` communicates write intent; it does not enforce a filesystem boundary. Give

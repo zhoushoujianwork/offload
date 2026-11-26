@@ -13,7 +13,7 @@ final class SettingsNavigator: ObservableObject {
 
 enum SettingsLayout {
     static let width: CGFloat = 580
-    static let height: CGFloat = 560
+    static let height: CGFloat = 640
 }
 
 /// The native Settings window. Fixed size; every tab is laid out to fit without scrolling.
@@ -202,6 +202,7 @@ struct ProfilesSettingsView: View {
                     .lineLimit(3).fixedSize(horizontal: false, vertical: true)
                 Text("Choosing a profile affects new runs only. Workers that are already running keep the profile they started with.")
                     .font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(2).fixedSize(horizontal: false, vertical: true)
+                callerDefaults(s)
             }
             picker
             availability
@@ -239,6 +240,48 @@ struct ProfilesSettingsView: View {
     }
 
     // MARK: pieces
+
+    /// Per-caller default profiles (`offload default --caller <id>`). Each pick runs the CLI at once; the list
+    /// is refreshed from the CLI afterwards, so a failed change leaves the previous choice on screen.
+    private func callerDefaults(_ s: ProfilesSnapshot) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text("Caller defaults").font(.system(size: 11, weight: .semibold))
+            HStack(spacing: 12) {
+                ForEach(CallerDefaultCaller.allCases) { caller in
+                    HStack(spacing: 6) {
+                        Text(caller.label).foregroundStyle(.secondary)
+                        Picker("\(caller.label) default profile", selection: Binding(
+                            get: { s.callerDefault(for: caller) },
+                            set: { setCallerDefault(caller, to: $0, current: s.callerDefault(for: caller)) })) {
+                            ForEach(s.callerDefaultOptions(for: caller)) { option in
+                                Text(option.title).lineLimit(1).truncationMode(.middle).tag(option.value)
+                            }
+                        }
+                        .labelsHidden()
+                        .frame(maxWidth: .infinity)
+                        .disabled(profiles.busy)
+                        .help("Profile for new runs that pass --caller \(caller.rawValue)")
+                        .accessibilityLabel("\(caller.label) default profile")
+                    }
+                    .frame(maxWidth: .infinity)
+                }
+            }
+            Text(CallerDefaultPresentation.explanation)
+                .font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(1).truncationMode(.tail)
+        }
+    }
+
+    private func setCallerDefault(_ caller: CallerDefaultCaller, to value: String, current: String) {
+        guard value != current, !profiles.busy else { return }
+        formError = nil
+        notice = nil
+        let profile = value.isEmpty ? nil : value
+        Task {
+            if await profiles.setCallerDefault(caller, profile: profile) {
+                notice = CallerDefaultPresentation.notice(caller, profile: profile)
+            }
+        }
+    }
 
     private var picker: some View {
         HStack(spacing: 8) {

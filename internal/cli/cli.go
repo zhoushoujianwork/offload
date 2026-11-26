@@ -63,8 +63,8 @@ usage:
   offload profiles [--json]     list profiles (* = the one a run would use)
   offload profile save --json   create or edit a profile from a JSON request on stdin
   offload default [profile]     show or set the saved default profile
-  offload default --caller ID [profile]
-                                show or set the profile new runs with --caller ID use
+  offload default --caller ID [profile|--clear]
+                                show, set or clear (--clear) the profile new runs with --caller ID use
                                 (a routing convenience, not authentication or access control)
   offload disable / enable [--json]
                                 persistently block / allow every new worker and model call (running tasks are not stopped)
@@ -831,7 +831,7 @@ func cmdProfiles(stdout, stderr io.Writer) int {
 	return 0
 }
 
-const defaultUsage = "usage: offload default [profile] | offload default --caller <caller> [profile]"
+const defaultUsage = "usage: offload default [profile] | offload default --caller <caller> [profile|--clear]"
 
 func cmdDefault(args []string, stdout, stderr io.Writer) int {
 	if len(args) > 0 && (args[0] == "--caller" || args[0] == "-caller") {
@@ -853,9 +853,10 @@ func cmdDefault(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
-// cmdCallerDefault shows or sets the default profile for one explicit --caller ID. Setting stores
-// the canonical profile name, resolving an alias. Showing prints the mapped profile, or the global
-// default when the caller has none.
+// cmdCallerDefault shows, sets or clears the default profile for one explicit --caller ID. Setting
+// stores the canonical profile name, resolving an alias. Clearing (--clear) removes the mapping so
+// the caller follows the global default. Showing, and the output after setting or clearing, is the
+// mapped profile, or the global default when the caller has none.
 func cmdCallerDefault(args []string, stdout, stderr io.Writer) int {
 	if len(args) < 1 || len(args) > 2 {
 		return fail(stderr, errors.New(defaultUsage))
@@ -865,7 +866,12 @@ func cmdCallerDefault(args []string, stdout, stderr io.Writer) int {
 		return fail(stderr, err)
 	}
 	if len(args) == 2 {
-		if err := config.SetCallerDefault(config.Path(), caller, args[1]); err != nil {
+		if args[1] == "--clear" || args[1] == "-clear" {
+			err = config.ClearCallerDefault(config.Path(), caller)
+		} else {
+			err = config.SetCallerDefault(config.Path(), caller, args[1])
+		}
+		if err != nil {
 			return fail(stderr, err)
 		}
 	}

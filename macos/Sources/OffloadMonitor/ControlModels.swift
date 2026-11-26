@@ -183,6 +183,22 @@ final class ProfilesModel: ObservableObject {
         return true
     }
 
+    /// Sets (nil profile: clears) the default profile of one caller, then re-reads. Serialized with every other
+    /// action through `busy`. A failed command changes nothing, shows its message and re-reads nothing.
+    @discardableResult
+    func setCallerDefault(_ caller: CallerDefaultCaller, profile: String?) async -> Bool {
+        guard let cli, !busy else { return false }
+        busy = true
+        defer { busy = false }
+        actionError = nil
+        do { try await cli.setCallerDefault(caller, profile: profile) } catch {
+            actionError = message(error)
+            return false
+        }
+        if !(await fetch(cli)) { actionError = "Saved, but the profile list could not be refreshed." }
+        return true
+    }
+
     /// Creates or patches a profile. The reply is the refreshed redacted list.
     @discardableResult
     func save(_ request: ProfileSaveRequest) async -> Bool {
