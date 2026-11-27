@@ -823,7 +823,7 @@ func cmdProfiles(stdout, stderr io.Writer) int {
 			aliases += " — " + p.UseFor
 		}
 		gateway := p.BaseURL
-		if p.UsesNativeAuth() {
+		if p.UsesNativeAuth() || p.BackendName() == "agy" {
 			gateway = "native official login"
 		}
 		fmt.Fprintf(stdout, "%s %-12s %-8s %-5s %-15s %-24s %s%s\n", mark, n, p.BackendName(), firstNonEmpty(p.Endpoint, "-"), tools, p.Model, gateway, aliases)

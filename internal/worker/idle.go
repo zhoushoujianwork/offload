@@ -118,6 +118,9 @@ type sessionActivity struct {
 func newSessionActivity(o Opts) *sessionActivity {
 	home, _ := os.UserHomeDir()
 	a := &sessionActivity{codex: o.Profile.BackendName() == "codex", sizes: map[string]int64{}}
+	if o.Profile.BackendName() == "agy" {
+		return a // ACP activity is reported on the process streams.
+	}
 	if a.codex {
 		root := os.Getenv("CODEX_HOME")
 		if root == "" {
@@ -137,7 +140,7 @@ func newSessionActivity(o Opts) *sessionActivity {
 
 func (a *sessionActivity) grew(session string) bool {
 	// 会话标识来自子进程，禁止路径及 glob 元字符。
-	if session == "" || strings.ContainsAny(session, "/\\*?[]") || session == "." || session == ".." {
+	if a.root == "" || session == "" || strings.ContainsAny(session, "/\\*?[]") || session == "." || session == ".." {
 		return false
 	}
 	pattern := filepath.Join(a.root, "*", session+".jsonl")

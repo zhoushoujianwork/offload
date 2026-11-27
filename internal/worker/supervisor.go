@@ -104,6 +104,12 @@ func CheckToolRestrictions(o *Opts) (notEnforced bool, err error) {
 
 // Validate checks supervisor constraints before any provider is started.
 func Validate(o *Opts) error {
+	if !o.Profile.ValidBackend() {
+		return errors.New("unknown backend")
+	}
+	if err := o.Profile.ValidateAgySettings(); err != nil {
+		return err
+	}
 	if err := o.Native.Validate(o.Profile.BackendName(), o.Resume, o.ToolsDisabled); err != nil {
 		return err
 	}
@@ -112,6 +118,9 @@ func Validate(o *Opts) error {
 		return errors.New("invalid execution-policy")
 	}
 	managed := o.ExecutionPolicy == "managed-development"
+	if o.Profile.BackendName() == "agy" && (managed || o.EnvironmentDirectory != "") {
+		return &configError{"configuration", errors.New("agy requires the default execution policy and the native CLI environment")}
+	}
 	if managed && !o.Write {
 		return errors.New("managed-development requires -w")
 	}

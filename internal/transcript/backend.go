@@ -33,6 +33,10 @@ func (r *Recorder) Line(line []byte) {
 		r.gapLocked("unparseable_backend_line", len(line))
 		return
 	}
+	if r.id.Backend == "agy" {
+		r.acpLine(head.Method, line)
+		return
+	}
 	// codex app-server speaks JSON-RPC: notifications carry "method", responses carry "id".
 	if head.Type == "" && r.id.Backend == "codex" && (head.Method != "" || len(head.ID) > 0) {
 		r.appServerLine(head.Method, line)
@@ -53,6 +57,92 @@ func (r *Recorder) Line(line []byte) {
 		r.codexLine(head.Type, line)
 	default:
 		r.claudeLine(head.Type, line)
+	}
+}
+
+func (r *Recorder) flushACPText() {
+	if body := r.acpText.String(); strings.TrimSpace(body) != "" {
+		r.emitLocked(Event{Type: TypeMessage, Role: "assistant", Origin: "backend", Text: body}, false)
+	}
+	r.acpText.Reset()
+}
+
+func (r *Recorder) acpLine(method string, line []byte) {
+	var event struct {
+		Params struct {
+			SessionID string
+			Update    struct {
+				SessionUpdate, ToolCallID, Title, Kind, Status string
+				Content                                        json.RawMessage
+			}
+		}
+		Result struct{ SessionID, StopReason string }
+		Error  *struct{ Message string }
+	}
+	if json.Unmarshal(line, &event) != nil {
+		r.gapLocked("undecodable_backend_event", len(line))
+		return
+	}
+	switch method {
+	case "":
+		r.setSession(event.Result.SessionID)
+		if event.Result.StopReason != "" || event.Error != nil {
+			r.flushACPText()
+		}
+		if event.Error != nil {
+			r.emitLocked(Event{Type: TypeBackendError, Text: event.Error.Message}, false)
+		}
+		return
+	case "session/update":
+		if !validSession(event.Params.SessionID) || r.session != "" && r.session != event.Params.SessionID {
+			return
+		}
+		r.setSession(event.Params.SessionID)
+	default:
+		return
+	}
+	u := event.Params.Update
+	switch u.SessionUpdate {
+	case "agent_message_chunk":
+		var content struct{ Type, Text string }
+		if json.Unmarshal(u.Content, &content) != nil || content.Type != "text" {
+			r.sum.SkippedBlocks++
+			return
+		}
+		if r.acpText.Len()+len(content.Text) > MaxLineBytes {
+			r.flushACPText()
+		}
+		if len(content.Text) > MaxLineBytes {
+			r.gapLocked("acp_text_chunk_too_large", len(content.Text))
+			return
+		}
+		r.acpText.WriteString(content.Text)
+	case "agent_thought_chunk", "plan":
+		r.sum.SkippedBlocks++
+	case "tool_call":
+		r.flushACPText()
+		r.toolCallLocked(u.ToolCallID, u.Title, acpToolCategory(u.Kind), "")
+		fallthrough
+	case "tool_call_update":
+		if !r.open[u.ToolCallID] || (u.Status != "completed" && u.Status != "failed") {
+			return
+		}
+		failed := u.Status == "failed"
+		delete(r.open, u.ToolCallID)
+		r.emitLocked(Event{Type: TypeToolResult, ToolCallID: u.ToolCallID, ToolName: r.tools[u.ToolCallID], IsError: &failed}, false)
+	}
+}
+
+func acpToolCategory(kind string) string {
+	switch kind {
+	case "execute":
+		return "shell"
+	case "read", "edit", "delete", "move", "search":
+		return "file"
+	case "fetch":
+		return "web"
+	default:
+		return "other"
 	}
 }
 

@@ -247,7 +247,7 @@ func applyClaudeAccounting(rec *history.Record, res *claudeResult, o Opts, base 
 // markClaudeNoResult records that a normal Claude run ended without a final result, so neither
 // usage nor cost is known. Codex accounting is applied separately.
 func markClaudeNoResult(rec *history.Record) {
-	if rec.Backend == "codex" {
+	if rec.Backend != "claude" {
 		return
 	}
 	rec.UsageSource = claudeUsageSource

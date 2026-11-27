@@ -21,7 +21,7 @@ type Profile struct {
 	CodexAccount    string   `json:"codex_account,omitempty"`
 	Aliases         []string `json:"aliases,omitempty"`
 	IdleTimeout     string   `json:"idle_timeout,omitempty"`
-	Backend         string   `json:"backend,omitempty"` // claude (default) or codex
+	Backend         string   `json:"backend,omitempty"` // claude (default), codex, or agy
 	BaseURL         string   `json:"base_url"`
 	Model           string   `json:"model"`
 	ReasoningEffort string   `json:"reasoning_effort,omitempty"`
@@ -145,8 +145,11 @@ func (c *Config) resolveNamed(name string) (string, Profile, error) {
 		}
 		name = match
 	}
-	if p.BackendName() != "claude" && p.BackendName() != "codex" {
+	if !p.ValidBackend() {
 		return name, p, fmt.Errorf("profile %q has unknown backend %q", name, p.Backend)
+	}
+	if err := p.ValidateAgySettings(); err != nil {
+		return name, p, err
 	}
 	if err := p.ValidateAuthMode(); err != nil {
 		return name, p, fmt.Errorf("profile %q: %w", name, err)
@@ -167,9 +170,9 @@ func (c *Config) resolveNamed(name string) (string, Profile, error) {
 }
 
 // SupportsToolRestrictions reports whether the backend can enforce explicit tool allow or deny
-// lists. Claude forwards them to the CLI; Codex has no equivalent control.
+// lists. Claude forwards them to the CLI.
 func (p Profile) SupportsToolRestrictions() bool {
-	return p.BackendName() != "codex"
+	return p.BackendName() == "claude"
 }
 
 // AuthModeNative marks a Claude profile that uses the installed Claude Code's official login.
@@ -208,6 +211,15 @@ func (p Profile) BackendName() string {
 		return "claude"
 	}
 	return p.Backend
+}
+
+func (p Profile) ValidBackend() bool {
+	switch p.BackendName() {
+	case "claude", "codex", "agy":
+		return true
+	default:
+		return false
+	}
 }
 
 // SetDefault updates only the default field, preserving other configuration fields.

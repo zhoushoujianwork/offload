@@ -77,7 +77,7 @@ func safeBaseURL(raw string) (string, bool) {
 
 func authMode(p config.Profile) string {
 	switch {
-	case p.UsesNativeAuth():
+	case p.UsesNativeAuth() || p.BackendName() == "agy":
 		return "native"
 	case p.TokenCmd != "":
 		return "token_cmd"
@@ -230,6 +230,9 @@ var safeSaveErrors = map[string]bool{
 	"unknown backend":                                                            true,
 	"invalid Codex reasoning effort":                                             true,
 	"invalid Codex service tier":                                                 true,
+	"invalid agy reasoning effort":                                               true,
+	"agy uses native credentials and cannot use Offload gateway settings":        true,
+	"agy cannot use Codex account or service tier settings":                      true,
 	"endpoint applies only to claude profiles":                                   true,
 	"base URL must be http(s) with a host":                                       true,
 	"model is required":                                                          true,
@@ -266,6 +269,10 @@ func applyProfileRequest(p config.Profile, req profileSaveRequest) (config.Profi
 		p.Backend = "claude"
 	}
 	if req.Backend != nil {
+		if p.BackendName() != "agy" && *req.Backend == "agy" {
+			p.BaseURL, p.Endpoint, p.AuthMode, p.Token, p.TokenCmd = "", "", "", "", ""
+			p.ServiceTier, p.ReasoningEffort = "", ""
+		}
 		p.Backend = *req.Backend
 	}
 	if req.BaseURL != nil {
@@ -317,6 +324,9 @@ func applyProfileRequest(p config.Profile, req profileSaveRequest) (config.Profi
 	case "native":
 		if req.Secret != nil {
 			return p, errors.New("secret is only allowed with token or token_cmd")
+		}
+		if p.BackendName() == "agy" {
+			break // Native credentials are inherent to the agy backend.
 		}
 		if p.BackendName() != "claude" {
 			return p, errors.New("auth_mode applies only to claude profiles")

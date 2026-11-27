@@ -1,4 +1,4 @@
-// Package worker runs one task through Claude Code or Codex and reports what the worker did.
+// Package worker runs one task through a local backend and reports what the worker did.
 package worker
 
 import (
@@ -344,6 +344,11 @@ func Run(ctx context.Context, o Opts) (rec history.Record, err error) {
 	if o.Native != nil && o.Native.CodexAppServer {
 		rec.NativeProtocol = codexAppServerProtocol
 	}
+	if rec.Backend == "agy" {
+		rec.NativeProtocol = AgyProtocol
+		rec.UsageUnavailable = "Antigravity ACP emitted no trusted per-run token usage"
+		rec.CostUnavailable = "Antigravity ACP emitted no trusted per-run cost"
+	}
 	if rec.Backend == "claude" {
 		rec.ClaudeHome = os.Getenv("CLAUDE_CONFIG_DIR")
 		if o.Native != nil && o.Native.ProfileDirectory != "" {
@@ -369,7 +374,7 @@ func Run(ctx context.Context, o Opts) (rec history.Record, err error) {
 			return rec, errors.New("isolated Codex account home changed")
 		}
 	}
-	if o.EnvironmentDirectory != "" {
+	if o.EnvironmentDirectory != "" && rec.Backend != "agy" {
 		_, setupErr := o.prepareEnvironment(sourceHome)
 		if setupErr != nil {
 			return rec, setupErr
@@ -483,13 +488,23 @@ func Run(ctx context.Context, o Opts) (rec history.Record, err error) {
 	}
 	defer os.Remove(promptPath)
 	var token, bin string
-	if o.Profile.BackendName() == "codex" {
+	switch rec.Backend {
+	case "codex":
 		rec.ErrorKind = "launch"
 		bin, err = codexBin()
 		if err != nil {
 			return rec, fmt.Errorf("codex CLI not found: %w", err)
 		}
-	} else {
+	case "agy":
+		rec.ErrorKind = "launch"
+		bin, err = exec.LookPath("agy")
+		if err != nil {
+			return rec, fmt.Errorf("Antigravity CLI (agy) not found: %w", err)
+		}
+		if o.Transcript != nil {
+			o.Transcript.AddSecrets(os.Getenv("GEMINI_API_KEY"), os.Getenv("GOOGLE_API_KEY"))
+		}
+	default:
 		if !o.Profile.UsesNativeAuth() {
 			token, err = o.Profile.ResolveTokenContext(ctx)
 			if err != nil {
@@ -550,6 +565,18 @@ func Run(ctx context.Context, o Opts) (rec history.Record, err error) {
 		leftover = a.leftover
 	}
 	s := a.s
+	if rec.Backend == "agy" {
+		rec.ObservedModel = s.ObservedModel
+		rec.Model = firstNonEmpty(s.ObservedModel, o.Model)
+		switch {
+		case s.ObservedModel != "":
+			rec.ModelSource = "native_acp"
+		case o.Model != "":
+			rec.ModelSource = "requested_fallback"
+		default:
+			rec.ModelSource, rec.ModelUnavailable = "unknown", "Antigravity ACP returned no model selection"
+		}
+	}
 	if rec.Backend == "claude" {
 		rec.ObservedModel = s.ObservedModel
 		if strings.Contains(a.stderr, "unrecognized_model") {
@@ -667,7 +694,7 @@ func Run(ctx context.Context, o Opts) (rec history.Record, err error) {
 	rec.Session, rec.Turns, rec.DurationMs, rec.Result =
 		firstNonEmpty(res.SessionID, s.Session), res.NumTurns, res.DurationMs, res.Result
 	rec.StructuredOutput = res.StructuredOutput
-	if rec.NativeProtocol != codexAppServerProtocol {
+	if rec.Backend != "agy" && rec.NativeProtocol != codexAppServerProtocol {
 		applyClaudeAccounting(&rec, &res, o, a.claudeBase)
 	}
 	if !res.IsError && a.runErr == nil && a.cause == nil {
@@ -752,11 +779,14 @@ func runAttempt(ctx context.Context, bin string, o Opts, promptPath, token strin
 	var cmd *exec.Cmd
 	var parser eventParser = &claudeParser{}
 	var appServer *appServerParser
+	var acp *agyACP
+	var acpPrompt string
 	var baseline *history.TokenUsage
 	var baselineError string
 	var claudeBase claudeBaseline
 	// Not CommandContext: that kills only the worker process and never its children.
-	if o.Profile.BackendName() == "codex" {
+	switch o.Profile.BackendName() {
+	case "codex":
 		if o.Native == nil || !o.Native.CodexAppServer {
 			baseline, baselineError = codexBaseline(o.Resume, o.CodexHome)
 		}
@@ -812,7 +842,23 @@ func runAttempt(ctx context.Context, bin string, o Opts, promptPath, token strin
 			}
 			parser = &codexParser{}
 		}
-	} else {
+	case "agy":
+		prompt, err := os.ReadFile(promptPath)
+		if err != nil {
+			return attempt{runErr: err}
+		}
+		acpPrompt = string(prompt) + "\nTask:\n" + o.Task
+		cmd = exec.Command(bin, agyArgs(o)...)
+		cmd.Dir = o.Dir
+		cmd.Env = o.Limits.ApplyEnv(o.baseEnvironment())
+		stdin, err := cmd.StdinPipe()
+		if err != nil {
+			return attempt{runErr: err}
+		}
+		defer stdin.Close()
+		acp = newAgyACP(ctx, stdin)
+		parser = acp
+	default:
 		if o.Resume != "" && !o.Salvage {
 			// Capture before the child starts: the result's cost and modelUsage are session totals.
 			claudeBase = captureClaudeBaseline(history.Path(), o.Resume)
@@ -884,6 +930,9 @@ func runAttempt(ctx context.Context, bin string, o Opts, promptPath, token strin
 	if appServer != nil {
 		appServer.start()
 	}
+	if acp != nil {
+		acp.start(o, acpPrompt)
+	}
 	group := proc.Started(cmd)
 	if h.started != nil {
 		h.started(group)
@@ -922,6 +971,9 @@ func runAttempt(ctx context.Context, bin string, o Opts, promptPath, token strin
 	case runErr = <-waited:
 	case <-ctx.Done():
 		// Timeout, idle limit or interrupt: stop the group, then collect the worker's exit.
+		if acp != nil {
+			_ = acp.stdin.Close()
+		}
 		if appServer != nil {
 			appServer.interruptAndWait(StopGrace / 2)
 			_ = appServer.w.Close()
@@ -960,6 +1012,10 @@ func runAttempt(ctx context.Context, bin string, o Opts, promptPath, token strin
 	}
 	if err := out.finish(); err != nil {
 		runErr = errors.Join(runErr, err)
+	}
+	if acp != nil {
+		close(acp.processDone)
+		runErr = errors.Join(runErr, <-acp.done)
 	}
 	var nativeExitCode *int
 	if cmd.ProcessState != nil {

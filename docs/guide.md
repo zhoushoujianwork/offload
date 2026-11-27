@@ -7,7 +7,7 @@ Run shell examples from the repository root.
 
 ## Install
 
-Requires Go 1.24+ and the CLI for your selected backend: [Claude Code](https://docs.anthropic.com/en/docs/claude-code) (`claude` on PATH or at `~/.claude/local/claude`) or [Codex](https://developers.openai.com/codex/cli/) (`codex` on PATH, already signed in).
+Requires Go 1.24+ and the CLI for your selected backend. Use [Claude Code](https://docs.anthropic.com/en/docs/claude-code) (`claude` on PATH or at `~/.claude/local/claude`), [Codex](https://developers.openai.com/codex/cli/) (`codex` on PATH, already signed in), or [Antigravity CLI](https://antigravity.google/docs/cli/acp/) (`agy` on PATH, already signed in).
 
 ```bash
 go install github.com/zhoushoujianwork/offload@latest
@@ -53,7 +53,7 @@ Run `offload config`, select **Profile**, then **Add profile** to save a bundle 
 
 `token_cmd` (preferred) prints the token on stdout, so secrets can live in the macOS Keychain, `pass`, 1Password CLI, etc. A literal `token` field also works.
 
-Optional `endpoint` (`cc` for a Claude Code proxy, `llm` for a generic LLM gateway) applies to Claude profiles only. It is an informational label shown by `offload profiles` and in the settings wizard; it does not change requests. Unknown values and Codex profiles with an endpoint are rejected.
+Optional `endpoint` (`cc` for a Claude Code proxy, `llm` for a generic LLM gateway) applies to Claude profiles only. It is an informational label shown by `offload profiles` and in the settings wizard.
 
 ### Official Claude (native login)
 
@@ -70,7 +70,7 @@ For a native run, offload still drops every caller `ANTHROPIC_*` variable and ke
 
 ### How switching works
 
-Profiles select a `backend`: `claude` (the default for existing profiles) or `codex`. Claude profiles provide the three variables Claude Code reads. For each Claude run, offload drops every `ANTHROPIC_*` variable from the caller's environment and sets exactly:
+Supported values for `backend` are `claude` (the default for existing profiles), `codex`, and `agy`. For each Claude gateway run, offload drops every `ANTHROPIC_*` variable from the caller's environment and sets the following values.
 
 | profile field | worker env |
 |---|---|
@@ -87,6 +87,10 @@ A profile with `"backend": "codex"` runs `codex exec --json`. It uses your exist
 By default, Codex runs with `--dangerously-bypass-approvals-and-sandbox` for both read-only and `-w` tasks; offload adds no sandbox (see Permissions below). Instructions and the task are sent over stdin. Codex also discovers its own agent instructions. JSONL events supply the report, session ID, and live tool progress; `turns` counts tool calls. Codex reports cumulative token usage. offload preserves run-scoped tokens and can calculate the limited API baseline estimate described below; this is separate from native billing.
 
 Interrupted Codex runs retain progress and a resume command. Automatic tool-less salvage is supported only for Claude.
+
+### Antigravity workers
+
+An `agy` profile launches `agy acp` with the working directory and any `--add-dir` paths. An optional `model` or `-m` selects a model ID offered by Antigravity. An optional `reasoning_effort` or `-effort` selects a thinking level available for that model. Follow-up runs use `offload -r <session>`. See the [Antigravity CLI quick start](../README.md#antigravity-cli) for profile setup and permissions.
 
 ### Choosing a profile
 

@@ -338,11 +338,11 @@ func settingsWizard(p settingsPrompt, cfg *config.Config, name string, add bool)
 		if _, exists := cfg.Profiles[name]; exists {
 			return errors.New("profile already exists")
 		}
-		index, err := settingsChoice(p, "Backend", []string{"Codex", "Claude gateway"}, 0)
+		index, err := settingsChoice(p, "Backend", []string{"Codex", "Claude gateway", "Antigravity (agy)"}, 0)
 		if err != nil {
 			return err
 		}
-		profile.Backend = []string{"codex", "claude"}[index]
+		profile.Backend = []string{"codex", "claude", "agy"}[index]
 	}
 	if profile.BackendName() == "codex" {
 		profile.Model, err = p.Ask("Model (empty inherits Codex default)", profile.Model)
@@ -369,6 +369,11 @@ func settingsWizard(p settingsPrompt, cfg *config.Config, name string, add bool)
 		}
 		profile.ReasoningEffort = efforts[index]
 		profile.ServiceTier, err = settingsFast(p, profile.ServiceTier, add)
+		if err != nil {
+			return err
+		}
+	} else if profile.BackendName() == "agy" {
+		profile.Model, err = p.Ask("Model (empty inherits Antigravity default)", profile.Model)
 		if err != nil {
 			return err
 		}

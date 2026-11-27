@@ -321,6 +321,7 @@ struct ProfilesSettingsView: View {
                     Picker("Backend", selection: $draft.backend) {
                         Text("Claude").tag("claude")
                         Text("Codex").tag("codex")
+                        Text("Antigravity").tag("agy")
                     }
                     .pickerStyle(.segmented).labelsHidden().frame(width: 200)
                 }
@@ -328,9 +329,27 @@ struct ProfilesSettingsView: View {
                     label("Use for")
                     TextField("optional: tasks this profile suits", text: $draft.useFor).textFieldStyle(.roundedBorder).lineLimit(1)
                 }
-                if draft.isCodex { codexRows } else { claudeRows }
+                if draft.isCodex {
+                    codexRows
+                } else if draft.isAgy {
+                    GridRow {
+                        label("Model")
+                        TextField("optional: inherit Antigravity default", text: $draft.model).textFieldStyle(.roundedBorder)
+                    }
+                    GridRow {
+                        label("Reasoning")
+                        Picker("Reasoning", selection: $draft.reasoning) {
+                            Text("inherit").tag("")
+                            ForEach(ProfileDraft.agyEfforts.dropFirst(), id: \.self) { Text($0).tag($0) }
+                        }
+                        .labelsHidden().frame(width: 200)
+                    }
+                } else {
+                    claudeRows
+                }
             }
-            Text(draft.isCodex ? "Codex uses its native sign-in."
+            Text(draft.isAgy ? "Antigravity uses the sign-in from the local agy CLI."
+                               : draft.isCodex ? "Codex uses its native sign-in."
                                : (draft.credential == .native ? "Claude uses the official Claude Code sign-in on this Mac."
                                   : "Tokens are saved in your local offload config file, readable only by you. They are never shown again."))
                 .font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(2).fixedSize(horizontal: false, vertical: true)
@@ -558,7 +577,7 @@ struct ProfilesSettingsView: View {
     }
 
     private var missingSecret: Bool {
-        !draft.isCodex && (draft.credential == .token || draft.credential == .tokenCmd)
+        !draft.isCodex && !draft.isAgy && (draft.credential == .token || draft.credential == .tokenCmd)
             && draft.secret.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 

@@ -149,6 +149,9 @@ func SamePromptOverlap(a, b history.Record) bool {
 // It refuses to replace a conflicting measured value. Interrupted native records
 // are retained as a lower bound (partial_run), never promoted to full-run totals.
 func (rd *Reader) Recover(r history.Record) (history.Record, bool, string) {
+	if r.Backend == "agy" {
+		return r, false, "Antigravity ACP has no native log accounting adapter"
+	}
 	if !Needed(r) {
 		return r, false, "already covered"
 	}

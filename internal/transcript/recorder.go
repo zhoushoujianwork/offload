@@ -56,6 +56,7 @@ type Recorder struct {
 	tools    map[string]string // tool_call_id -> tool name, for results
 	open     map[string]bool   // tool calls without a result yet
 	codexSeq map[string]bool   // codex item ids whose tool_call was already written
+	acpText  strings.Builder   // adjacent assistant chunks, redacted as one message
 }
 
 // Open creates the transcript file for a run. The file is created exclusively with mode 0600 in a
@@ -162,6 +163,7 @@ func (r *Recorder) End(info EndInfo) {
 	if info.Session != "" && validSession(info.Session) {
 		r.session = info.Session
 	}
+	r.flushACPText()
 	r.sum.WriteFailed = r.failed
 	e := Event{Type: TypeExecutionEnd, Status: info.Status, ExitCode: info.ExitCode, ErrorKind: info.ErrorKind,
 		StopReason: info.StopReason, TerminationClass: info.TerminationClass}

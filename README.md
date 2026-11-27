@@ -9,8 +9,8 @@ final report comes back. The main agent keeps design decisions and final review.
 - **Default profile first:** new runs inherit `OFFLOAD_PROFILE`, the default for an
   explicit `--caller`, or the configured default; explicit per-run overrides remain
   available when requested or required.
-- **Two backends:** Codex CLI and Claude Code, through Anthropic-compatible gateways
-  or Claude Code's own official login (`"auth_mode": "native"`).
+- **Local backends:** Codex CLI, Claude Code (Anthropic-compatible gateway or native login),
+  and Antigravity CLI over ACP.
 - **Named profiles:** a model, provider or managed Codex account, with an optional hint about which tasks it suits.
 - **Persistent sessions:** resume related work and inspect previous reports.
 - **macOS dashboard:** track tasks, switch profiles and manage accounts.
@@ -19,8 +19,7 @@ final report comes back. The main agent keeps design decisions and final review.
 
 ## Quick start
 
-Requires Go 1.24+ and a signed-in `codex`, or `claude` configured with a supported
-gateway. Both backend CLIs run locally.
+Requires Go 1.24+ and at least one configured local backend CLI.
 
 ```sh
 go install github.com/zhoushoujianwork/offload@latest
@@ -39,6 +38,25 @@ JSON
 
 Creating a profile selects it as the default. New features may require building
 from the current source with `go install .`.
+
+### Antigravity CLI
+
+Install `agy` on your PATH and sign in once with `agy acp --login` or an interactive
+`agy` session. Offload uses the existing Antigravity credentials.
+[Antigravity ACP setup](https://antigravity.google/docs/cli/acp/)
+
+```sh
+offload profile save --json <<'JSON'
+{"name":"agy","create":true,"backend":"agy"}
+JSON
+offload -p agy "Inspect this project and summarize its entry points."
+offload -r <session> "Continue the previous review."
+```
+
+Leave the model and reasoning effort empty to use Antigravity's defaults. Tool
+permissions follow Antigravity's settings, and Offload denies requests that would
+need interactive approval. This backend uses the default execution policy and does
+not enforce Offload tool lists or report per-run token usage or cost.
 
 ## Everyday commands
 
