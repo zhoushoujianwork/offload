@@ -337,7 +337,8 @@ func (c *Client) run(ctx context.Context, req Request, managed *activeContextRun
 		envSet = map[string]string{"OPENAI_API_KEY": managed.codexAPIKey}
 	}
 	redact := envSet
-	if managed != nil && c.profile.Token != "" {
+	// Only the Claude adapter passes the profile token to the child.
+	if managed != nil && c.profile.BackendName() == "claude" && c.profile.Token != "" {
 		redact = map[string]string{"ANTHROPIC_AUTH_TOKEN": c.profile.Token}
 	}
 	o := worker.Opts{EnvSet: envSet, EnvUnset: envUnset, ProfileName: c.cfg.ProfileName, Profile: c.profile, Model: req.Model,
