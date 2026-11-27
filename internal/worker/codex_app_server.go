@@ -31,20 +31,21 @@ type jsonRPCMessage struct {
 }
 
 type appServerParser struct {
-	mu              sync.Mutex
-	w               io.WriteCloser
-	nextID          int
-	pending         map[string]chan jsonRPCMessage
-	done            chan struct{}
-	doneOnce        sync.Once
-	err             error
-	s               streamSummary
-	threadID        string
-	turnID          string
-	report          strings.Builder
-	completedReport string
-	skillConfig     []appServerSkillConfig
-	o               Opts
+	mu               sync.Mutex
+	w                io.WriteCloser
+	nextID           int
+	turnStartRequest string
+	pending          map[string]chan jsonRPCMessage
+	done             chan struct{}
+	doneOnce         sync.Once
+	err              error
+	s                streamSummary
+	threadID         string
+	turnID           string
+	report           strings.Builder
+	completedReport  string
+	skillConfig      []appServerSkillConfig
+	o                Opts
 }
 
 func newAppServerParser(w io.WriteCloser, o Opts) *appServerParser {
@@ -76,6 +77,15 @@ func (p *appServerParser) feed(line []byte) {
 		p.mu.Lock()
 		ch := p.pending[key]
 		delete(p.pending, key)
+		if ch != nil && p.o.Context != nil && key == p.turnStartRequest && len(m.Error) == 0 {
+			var response struct {
+				Turn struct{ ID string } `json:"turn"`
+			}
+			if json.Unmarshal(m.Result, &response) == nil && response.Turn.ID != "" {
+				p.turnID = response.Turn.ID
+				p.o.Context.Injected()
+			}
+		}
 		p.mu.Unlock()
 		if ch == nil {
 			p.fail(errors.New("Codex app-server returned an unknown JSON-RPC id"))
@@ -247,6 +257,9 @@ func (p *appServerParser) request(method string, params any) (json.RawMessage, e
 	ch := make(chan jsonRPCMessage, 1)
 	p.pending[id] = ch
 	requestID := p.nextID
+	if p.o.Context != nil && method == "turn/start" {
+		p.turnStartRequest = id
+	}
 	p.mu.Unlock()
 	if err := p.write(map[string]any{"jsonrpc": "2.0", "id": requestID, "method": method, "params": params}); err != nil {
 		return nil, err
@@ -303,6 +316,9 @@ func (p *appServerParser) initialize() error {
 	if json.Unmarshal(threadRaw, &thread) != nil || thread.Thread.ID == "" {
 		return errors.New("Codex app-server returned an invalid thread")
 	}
+	if p.o.Context != nil && p.o.Resume != "" && thread.Thread.ID != p.o.Resume {
+		return errors.New("Codex app-server acknowledged a different native thread")
+	}
 	p.mu.Lock()
 	p.threadID, p.s.Session = thread.Thread.ID, thread.Thread.ID
 	p.s.ObservedModel = firstNonEmpty(thread.Model, thread.Thread.Model)
@@ -312,6 +328,9 @@ func (p *appServerParser) initialize() error {
 		var schema any
 		_ = json.Unmarshal([]byte(p.o.Native.JSONSchema), &schema)
 		turn["outputSchema"] = schema
+	}
+	if p.o.Context != nil {
+		p.o.Context.Dispatched()
 	}
 	turnRaw, err := p.request("turn/start", turn)
 	if err != nil {
