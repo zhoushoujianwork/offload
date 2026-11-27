@@ -536,6 +536,47 @@ func TestContextDispatchHandoffAndLeaseReceipt(t *testing.T) {
 	}
 }
 
+func TestContextCodexRedactsAPIKeyWithProfileToken(t *testing.T) {
+	f := newContextFixture(t)
+	state := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", state)
+	// An unused profile token must not cause partial masking of the API key.
+	const tokenPrefix = "synthetic-provider"
+	keySuffix := strings.TrimPrefix(fixtureAPIKey, tokenPrefix)
+	config := f.clients["codex"].cfg
+	config.Profile.Token = tokenPrefix
+	client, err := New(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := f.request(t, "codex", "redaction")
+	req.RecordHistory = true
+	var events []string
+	req.OnEvent = func(event RawEvent) error {
+		events = append(events, string(event.Data))
+		return nil
+	}
+	result, err := client.Run(context.Background(), req)
+	if err != nil || !f.observe(t, "codex").ExplicitProviderAuth {
+		t.Fatalf("Codex did not run with the expected provider credential: %v", err)
+	}
+	if !result.HistoryRecorded {
+		t.Fatalf("history not recorded: %v", result.HistoryError)
+	}
+	history, err := os.ReadFile(filepath.Join(state, "offload", "runs.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for surface, output := range map[string]string{
+		"report": result.Report, "raw record": string(result.RawRecord),
+		"raw events": strings.Join(events, "\n"), "history": string(history),
+	} {
+		if !strings.Contains(output, "fixture done [REDACTED]") || strings.Contains(output, keySuffix) {
+			t.Errorf("provider API key was not fully redacted in %s", surface)
+		}
+	}
+}
+
 func checkFixtureDispatch(t *testing.T, f contextFixture, req Request, result Result, seen contextFixtureObservation, broker *fixtureBroker) {
 	t.Helper()
 	receipt := result.ContextReceipt
