@@ -67,6 +67,9 @@ a normalized or complete UI transcript.
 
 [API, compatibility and validation details](execution-pkg-detail.md).
 
+For authorization-bound runtime setup, injection receipts and reference-based
+handoff, see [AGH context execution](context-execution.md).
+
 ## Embedding a full Host
 
 Optional `Request.Native` controls let an embedding Host preserve Claude session

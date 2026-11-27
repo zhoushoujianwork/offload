@@ -87,6 +87,8 @@ type ProcessEnvironment struct {
 type RunEvent = runevents.Event
 
 type Request struct {
+	// Context opts into AGH's versioned execution contract.
+	Context *ContextExecution `json:"context,omitempty"`
 	// ProcessEnvironment optionally changes this run's child environment only.
 	// Nil leaves the environment unchanged.
 	ProcessEnvironment *ProcessEnvironment
@@ -134,6 +136,7 @@ type Request struct {
 // Result is execution evidence, never task acceptance. Missing usage/cost stays
 // nil. RawRecord preserves the complete private CLI/history-compatible record.
 type Result struct {
+	ContextReceipt                              *ContextReceipt `json:"context_receipt,omitempty"`
 	EnvironmentDirectory                        string
 	MonitorError                                error
 	NativeStderr                                string
@@ -228,7 +231,14 @@ func LoadConfig(path, name string) (Config, error) {
 // Run owns one native invocation until cleanup completes. No Offload CLI is
 // launched. History is appended only when explicitly requested. Raw events are ordered;
 // observer errors stop this invocation. There are no retries/profile fallbacks.
-func (c *Client) Run(ctx context.Context, req Request) (result Result, resultErr error) {
+func (c *Client) Run(ctx context.Context, req Request) (Result, error) {
+	if req.Context != nil {
+		return c.runContext(ctx, req)
+	}
+	return c.run(ctx, req, nil)
+}
+
+func (c *Client) run(ctx context.Context, req Request, managed *activeContextRun) (result Result, resultErr error) {
 	started := req.StartedAt
 	if started.IsZero() {
 		started = time.Now()
@@ -323,6 +333,13 @@ func (c *Client) Run(ctx context.Context, req Request) (result Result, resultErr
 	if err != nil {
 		return setupError("configuration", err)
 	}
+	if managed != nil && managed.codexAPIKey != "" {
+		envSet = map[string]string{"OPENAI_API_KEY": managed.codexAPIKey}
+	}
+	redact := envSet
+	if managed != nil && c.profile.Token != "" {
+		redact = map[string]string{"ANTHROPIC_AUTH_TOKEN": c.profile.Token}
+	}
 	o := worker.Opts{EnvSet: envSet, EnvUnset: envUnset, ProfileName: c.cfg.ProfileName, Profile: c.profile, Model: req.Model,
 		EnvironmentDirectory: req.EnvironmentDirectory,
 		Native:               native,
@@ -333,6 +350,13 @@ func (c *Client) Run(ctx context.Context, req Request) (result Result, resultErr
 		ToolsDisabled: req.ToolsDisabled, AllowedTools: req.AllowedTools, DisallowedTools: req.DisallowedTools,
 		OnUnsupportedTools: req.OnUnsupportedTools, Timeout: timeout, StartedAt: started,
 		NoSalvage: !req.AllowSalvage, MaxWorkers: maxWorkers, Limits: c.limits, Transcript: req.Capture}
+	if managed != nil {
+		o.Context = &worker.ContextDispatch{
+			Clean: managed.mode == RuntimeClean, Executable: managed.executable,
+			BeforeStart: managed.authorize, Dispatched: func() { managed.dispatched.Store(true) },
+			Injected: func() { managed.injected.Store(true) },
+		}
+	}
 	if o.Model == "" {
 		o.Model = c.profile.Model
 	}
@@ -384,7 +408,7 @@ func (c *Client) Run(ctx context.Context, req Request) (result Result, resultErr
 			if c.profile.BackendName() == "agy" {
 				protocol = worker.AgyProtocol
 			}
-			err := req.OnEvent(RawEvent{RunID: id, CallerRunID: req.CallerRunID, Backend: c.profile.BackendName(), NativeProtocol: protocol, Data: redactEnvValues(line, envSet)})
+			err := req.OnEvent(RawEvent{RunID: id, CallerRunID: req.CallerRunID, Backend: c.profile.BackendName(), NativeProtocol: protocol, Data: redactEnvValues(line, redact)})
 			observerErr = errors.Join(observerErr, err)
 			if err != nil || progress == nil {
 				return err
@@ -403,9 +427,15 @@ func (c *Client) Run(ctx context.Context, req Request) (result Result, resultErr
 			record.Transcript = "captured"
 		}
 	}
-	record.Result = string(redactEnvValues([]byte(record.Result), envSet))
-	record.NativeStderr = string(redactEnvValues([]byte(record.NativeStderr), envSet))
-	record.Error = string(redactEnvValues([]byte(record.Error), envSet))
+	record.Result = string(redactEnvValues([]byte(record.Result), redact))
+	record.NativeStderr = string(redactEnvValues([]byte(record.NativeStderr), redact))
+	record.Error = string(redactEnvValues([]byte(record.Error), redact))
+	if managed != nil && len(record.StructuredOutput) > 0 && len(redact) > 0 {
+		redacted := redactEnvValues(record.StructuredOutput, redact)
+		if !bytes.Equal(redacted, record.StructuredOutput) {
+			record.StructuredOutput = nil
+		}
+	}
 	raw, encodeErr := json.Marshal(record)
 	usage, _ := json.Marshal(record.Usage)
 	if record.Usage == nil {
@@ -491,6 +521,10 @@ func redactEnvValues(line []byte, set map[string]string) []byte {
 	out := bytes.Clone(line)
 	for _, v := range set {
 		if v != "" {
+			escaped, _ := json.Marshal(v)
+			if len(escaped) > 2 && string(escaped[1:len(escaped)-1]) != v {
+				out = bytes.ReplaceAll(out, escaped[1:len(escaped)-1], []byte("[REDACTED]"))
+			}
 			out = bytes.ReplaceAll(out, []byte(v), []byte("[REDACTED]"))
 		}
 	}

@@ -173,7 +173,12 @@ func (o *Opts) prepareEnvironment(sourceHome string) (func() error, error) {
 		return nil, err
 	}
 	o.environment = []string{"HOME=" + filepath.Join(root, "home"), "XDG_CONFIG_HOME=" + filepath.Join(root, "config"), "XDG_CACHE_HOME=" + filepath.Join(root, "cache"), "XDG_DATA_HOME=" + filepath.Join(root, "data"), "XDG_STATE_HOME=" + filepath.Join(root, "data"), "CLAUDE_CONFIG_DIR=" + filepath.Join(root, "claude")}
-	for _, key := range []string{"PATH", "TMPDIR", "LANG", "LC_ALL", "SSL_CERT_FILE", "SSL_CERT_DIR"} {
+	keys := []string{"PATH", "TMPDIR", "LANG", "LC_ALL", "SSL_CERT_FILE", "SSL_CERT_DIR"}
+	if o.Context != nil && o.Context.Clean {
+		keys = []string{"PATH", "LANG", "LC_ALL"}
+		o.environment = append(o.environment, "TMPDIR="+filepath.Join(root, "cache"))
+	}
+	for _, key := range keys {
 		if value, ok := os.LookupEnv(key); ok {
 			o.environment = append(o.environment, key+"="+value)
 		}
@@ -192,6 +197,12 @@ func (o *Opts) prepareEnvironment(sourceHome string) (func() error, error) {
 		if _, err := codexRollout(o.Resume, destination); err != nil {
 			return nil, errors.New("native session is not recorded in this isolated environment")
 		}
+	}
+	if o.Context != nil && o.Context.Clean {
+		if _, err := os.Lstat(filepath.Join(destination, "auth.json")); !errors.Is(err, os.ErrNotExist) {
+			return nil, errors.New("clean Codex context requires an absent native auth.json")
+		}
+		return func() error { return nil }, nil
 	}
 	target := filepath.Join(destination, "auth.json")
 	source := filepath.Join(sourceHome, "auth.json")

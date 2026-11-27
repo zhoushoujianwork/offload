@@ -54,6 +54,7 @@ var errIdle = errors.New("worker idle")
 // Opts is one worker run.
 type Opts struct {
 	EnvironmentDirectory string
+	Context              *ContextDispatch
 	environment          []string
 	// EnvSet and EnvUnset are per-run caller changes to the child environment,
 	// applied before Offload's own credential and account variables.
@@ -100,6 +101,15 @@ type Opts struct {
 	// build defaults to the worker's environment.
 	MaxWorkers int
 	Limits     config.Limits
+}
+
+// ContextDispatch carries the managed launch policy and evidence hooks.
+type ContextDispatch struct {
+	Clean       bool
+	Executable  string
+	BeforeStart func(context.Context) error
+	Dispatched  func()
+	Injected    func()
 }
 
 // Capture is structurally shared with the public execution package, keeping
@@ -279,7 +289,7 @@ func childEnv(base []string, o Opts, token string) []string {
 			env = append(env, "CLAUDE_CONFIG_DIR="+o.Native.ProfileDirectory)
 		}
 		env = append(env, "CLAUDE_CODE_DISABLE_AUTO_MEMORY=1")
-		if !o.Native.Extraction && !o.Native.RestrictedReadOnly && len(o.AddDirs) > 0 {
+		if o.Context == nil && !o.Native.Extraction && !o.Native.RestrictedReadOnly && len(o.AddDirs) > 0 {
 			env = append(env, "CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD=1")
 		}
 		for k, v := range o.Native.StreamEnvironment {
@@ -364,11 +374,11 @@ func Run(ctx context.Context, o Opts) (rec history.Record, err error) {
 			return rec, fmt.Errorf("session managed account home changed")
 		}
 		o.CodexHome = accountHome
-	} else if o.Profile.BackendName() == "codex" && o.CodexHome == "" {
+	} else if o.Profile.BackendName() == "codex" && o.CodexHome == "" && o.Context == nil {
 		o.CodexHome = codexHome()
 	}
 	sourceHome := o.CodexHome
-	if o.EnvironmentDirectory != "" && o.Profile.BackendName() == "codex" && o.Profile.CodexAccount == "" {
+	if o.EnvironmentDirectory != "" && o.Profile.BackendName() == "codex" && o.Profile.CodexAccount == "" && o.Context == nil {
 		sourceHome = codexHome()
 		if o.CodexHome != "" && o.CodexHome != sourceHome && o.CodexHome != filepath.Join(o.EnvironmentDirectory, "codex") {
 			return rec, errors.New("isolated Codex account home changed")
@@ -491,7 +501,11 @@ func Run(ctx context.Context, o Opts) (rec history.Record, err error) {
 	switch rec.Backend {
 	case "codex":
 		rec.ErrorKind = "launch"
-		bin, err = codexBin()
+		if o.Context != nil {
+			bin = o.Context.Executable
+		} else {
+			bin, err = codexBin()
+		}
 		if err != nil {
 			return rec, fmt.Errorf("codex CLI not found: %w", err)
 		}
@@ -515,7 +529,9 @@ func Run(ctx context.Context, o Opts) (rec history.Record, err error) {
 			}
 		}
 		rec.ErrorKind = "launch"
-		if o.Native != nil && o.Native.Executable != "" {
+		if o.Context != nil {
+			bin = o.Context.Executable
+		} else if o.Native != nil && o.Native.Executable != "" {
 			bin = o.Native.Executable
 		} else {
 			bin, err = claudeBin()
@@ -551,6 +567,10 @@ func Run(ctx context.Context, o Opts) (rec history.Record, err error) {
 	hooks := hooks{starting: slot.Starting, startFailed: slot.StartFailed, started: func(g proc.Group) { slot.Track(g); pub.group(g) }, cleaning: func() { pub.phase(live.Cleaning) }, cleaned: slot.Clear}
 
 	a := runAttempt(ctx, bin, o, promptPath, token, o.Timeout, pub.update, hooks)
+	if a.contextErr != nil {
+		rec.ErrorKind = "context_denied"
+		return rec, a.contextErr
+	}
 	if a.gateErr != nil {
 		rec.ErrorKind = ErrorKind(a.gateErr)
 		return rec, a.gateErr
@@ -565,6 +585,13 @@ func Run(ctx context.Context, o Opts) (rec history.Record, err error) {
 		leftover = a.leftover
 	}
 	s := a.s
+	if o.Context != nil && o.Resume != "" && s.Result != nil {
+		observed := firstNonEmpty(s.Result.SessionID, s.Session)
+		if observed != o.Resume || s.Session != "" && s.Session != o.Resume {
+			rec.ErrorKind = "session_incompatible"
+			return rec, errors.New("native harness did not confirm the requested continuation")
+		}
+	}
 	if rec.Backend == "agy" {
 		rec.ObservedModel = s.ObservedModel
 		rec.Model = firstNonEmpty(s.ObservedModel, o.Model)
@@ -734,6 +761,7 @@ func Run(ctx context.Context, o Opts) (rec history.Record, err error) {
 
 // attempt is the outcome of one worker process.
 type attempt struct {
+	contextErr     error
 	gateErr        error // admission failure before any backend process starts
 	baseline       *history.TokenUsage
 	baselineError  string
@@ -911,6 +939,14 @@ func runAttempt(ctx context.Context, bin string, o Opts, promptPath, token strin
 	if err := config.CheckEnabled(); err != nil {
 		return attempt{runErr: err, gateErr: err}
 	}
+	if o.Context != nil {
+		if err := o.Context.BeforeStart(ctx); err != nil {
+			return attempt{contextErr: err}
+		}
+		if err := ctx.Err(); err != nil {
+			return attempt{contextErr: err}
+		}
+	}
 	kind := transcript.AttemptKindRun
 	if o.Salvage {
 		kind = transcript.AttemptKindReport
@@ -929,6 +965,9 @@ func runAttempt(ctx context.Context, bin string, o Opts, promptPath, token strin
 	}
 	if appServer != nil {
 		appServer.start()
+	} else if o.Context != nil {
+		o.Context.Dispatched()
+		o.Context.Injected()
 	}
 	if acp != nil {
 		acp.start(o, acpPrompt)
