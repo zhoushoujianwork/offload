@@ -381,6 +381,9 @@ func (c *Client) Run(ctx context.Context, req Request) (result Result, resultErr
 			if native != nil && native.CodexAppServer {
 				protocol = "codex-app-server"
 			}
+			if c.profile.BackendName() == "agy" {
+				protocol = worker.AgyProtocol
+			}
 			err := req.OnEvent(RawEvent{RunID: id, CallerRunID: req.CallerRunID, Backend: c.profile.BackendName(), NativeProtocol: protocol, Data: redactEnvValues(line, envSet)})
 			observerErr = errors.Join(observerErr, err)
 			if err != nil || progress == nil {

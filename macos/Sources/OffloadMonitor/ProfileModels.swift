@@ -301,6 +301,8 @@ struct ProfileDraft: Equatable {
 
     var baseURLHidden: Bool { original?.baseUrlRedacted == true }
     var isCodex: Bool { backend == "codex" }
+    var isAgy: Bool { backend == "agy" }
+    static let agyEfforts = ["", "low", "medium", "high", "xhigh", "max"]
     /// The credential choices the backend accepts. A Claude profile needs a token or a token command. Keeping the
     /// saved credential is offered only when the profile has one (a profile switched from Codex has none).
     var credentialChoices: [Credential] {
@@ -334,7 +336,7 @@ struct ProfileDraft: Equatable {
             guard Self.validName(trimmedName) else { throw ProfileDraftError.nameInvalid }
             guard !existingNames.contains(trimmedName) else { throw ProfileDraftError.nameTaken }
         }
-        guard Self.efforts.contains(reasoning) else { throw ProfileDraftError.badEffort }
+        guard (isAgy ? Self.agyEfforts : Self.efforts).contains(reasoning) else { throw ProfileDraftError.badEffort }
         guard Self.tiers.contains(tier) else { throw ProfileDraftError.badTier }
         guard Self.endpoints.contains(endpoint) else { throw ProfileDraftError.badEndpoint }
 
@@ -342,6 +344,13 @@ struct ProfileDraft: Equatable {
         if useFor != (o?.useFor ?? "") { r.useFor = useFor }
 
         if isNew || backend != (o?.backend.isEmpty == false ? o!.backend : "claude") { r.backend = backend }
+
+        if isAgy {
+            if model != (o?.model ?? "") { r.model = model }
+            let savedEffort = o?.backend == "agy" ? o?.reasoningEffort ?? "" : ""
+            if reasoning != savedEffort { r.reasoningEffort = reasoning }
+            return r
+        }
 
         if isCodex {
             if codexAccount != (o?.codexAccount ?? "") { r.codexAccount = codexAccount }
@@ -369,7 +378,7 @@ struct ProfileDraft: Equatable {
 
         switch credential {
         case .native:
-            if isNew || o?.authMode != "native" { r.authMode = "native" }
+            if isNew || o?.authMode != "native" || o?.backend == "agy" { r.authMode = "native" }
             if let o, !o.endpoint.isEmpty { r.endpoint = "" }
         case .keep:
             guard !isNew, o?.authMode != "none" else { throw ProfileDraftError.secretRequired("API token or token command") }

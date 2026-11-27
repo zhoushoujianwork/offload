@@ -98,7 +98,7 @@ func Read(o ReadOptions) Response {
 		return base(UnsupportedVersion, fmt.Sprintf("transcript schema_version %d is not supported; this reader supports %d", head.SchemaVersion, SchemaVersion))
 	case head.RunID != runID:
 		return base(Unreadable, "transcript identity does not match its file")
-	case head.Backend != "claude" && head.Backend != "codex":
+	case head.Backend != "claude" && head.Backend != "codex" && head.Backend != "agy":
 		return base(UnsupportedBackend, "backend "+safeText(head.Backend)+" has no transcript capture")
 	case o.CallerRunID != "" && head.CallerRunID != o.CallerRunID:
 		return base(IdentityMismatch, "run_id and caller_run_id do not belong to the same invocation")

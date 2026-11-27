@@ -96,7 +96,7 @@ func SetDefaultProfile(path, name string) error {
 
 func profileAuthMode(p config.Profile) string {
 	switch {
-	case p.UsesNativeAuth():
+	case p.UsesNativeAuth() || p.BackendName() == "agy":
 		return "native"
 	case p.TokenCmd != "":
 		return "token_cmd"

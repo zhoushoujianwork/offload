@@ -21,7 +21,7 @@ const codexAppServerProtocol = "codex-app-server"
 
 const codexAppServerMaxFrame = 32 << 20
 
-type appServerMessage struct {
+type jsonRPCMessage struct {
 	JSONRPC string          `json:"jsonrpc"`
 	ID      json.RawMessage `json:"id"`
 	Method  string          `json:"method"`
@@ -34,7 +34,7 @@ type appServerParser struct {
 	mu              sync.Mutex
 	w               io.WriteCloser
 	nextID          int
-	pending         map[string]chan appServerMessage
+	pending         map[string]chan jsonRPCMessage
 	done            chan struct{}
 	doneOnce        sync.Once
 	err             error
@@ -48,7 +48,7 @@ type appServerParser struct {
 }
 
 func newAppServerParser(w io.WriteCloser, o Opts) *appServerParser {
-	return &appServerParser{w: w, pending: make(map[string]chan appServerMessage), done: make(chan struct{}), o: o}
+	return &appServerParser{w: w, pending: make(map[string]chan jsonRPCMessage), done: make(chan struct{}), o: o}
 }
 
 func (p *appServerParser) summary() streamSummary {
@@ -58,7 +58,7 @@ func (p *appServerParser) summary() streamSummary {
 }
 
 func (p *appServerParser) feed(line []byte) {
-	var m appServerMessage
+	var m jsonRPCMessage
 	if len(line) > maxLineKept || json.Unmarshal(line, &m) != nil || m.JSONRPC != "" && m.JSONRPC != "2.0" {
 		p.fail(errors.New("Codex app-server emitted a malformed JSON-RPC frame"))
 		return
@@ -91,7 +91,7 @@ func (p *appServerParser) feed(line []byte) {
 	p.notification(m.Method, m.Params)
 }
 
-func (p *appServerParser) rejectServerRequest(m appServerMessage) {
+func (p *appServerParser) rejectServerRequest(m jsonRPCMessage) {
 	_ = p.write(map[string]any{"jsonrpc": "2.0", "id": json.RawMessage(m.ID), "error": map[string]any{"code": -32601, "message": "interactive server requests are not supported"}})
 	p.fail(fmt.Errorf("Codex app-server requested unsupported interaction %q", m.Method))
 }
@@ -244,7 +244,7 @@ func (p *appServerParser) request(method string, params any) (json.RawMessage, e
 	p.mu.Lock()
 	p.nextID++
 	id := strconv.Itoa(p.nextID)
-	ch := make(chan appServerMessage, 1)
+	ch := make(chan jsonRPCMessage, 1)
 	p.pending[id] = ch
 	requestID := p.nextID
 	p.mu.Unlock()
@@ -578,7 +578,7 @@ func (p *appServerParser) interruptAndWait(wait time.Duration) {
 	p.nextID++
 	id := p.nextID
 	key := strconv.Itoa(id)
-	response := make(chan appServerMessage, 1)
+	response := make(chan jsonRPCMessage, 1)
 	p.pending[key] = response
 	p.mu.Unlock()
 	if err := p.write(map[string]any{"jsonrpc": "2.0", "id": id, "method": "turn/interrupt", "params": map[string]any{"threadId": threadID, "turnId": turnID}}); err != nil {

@@ -99,6 +99,24 @@ func (p Profile) ValidateClaudeSettings() error {
 	}
 }
 
+func (p Profile) ValidateAgySettings() error {
+	if p.BackendName() != "agy" {
+		return nil
+	}
+	if p.BaseURL != "" || p.Token != "" || p.TokenCmd != "" || p.Endpoint != "" || p.AuthMode != "" {
+		return fmt.Errorf("agy uses native credentials and cannot use Offload gateway settings")
+	}
+	if p.CodexAccount != "" || p.ServiceTier != "" {
+		return fmt.Errorf("agy cannot use Codex account or service tier settings")
+	}
+	switch p.ReasoningEffort {
+	case "", "low", "medium", "high", "xhigh", "max":
+		return nil
+	default:
+		return fmt.Errorf("invalid agy reasoning effort")
+	}
+}
+
 // SaveProfile saves a complete bundle, preserving unknown JSON and unrelated profiles.
 // Adding selects the new profile; editing preserves the saved default.
 func SaveProfile(path, name string, p Profile, add bool) error {
@@ -140,8 +158,11 @@ func SaveProfile(path, name string, p Profile, add bool) error {
 	if !add && !exists {
 		return fmt.Errorf("unknown profile")
 	}
-	if p.BackendName() != "codex" && p.BackendName() != "claude" {
+	if !p.ValidBackend() {
 		return fmt.Errorf("unknown backend")
+	}
+	if err := p.ValidateAgySettings(); err != nil {
+		return err
 	}
 	if err := p.ValidateCodexSettings(); err != nil {
 		return err
